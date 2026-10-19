@@ -79,7 +79,7 @@
 | 后端静态检查 | `cd backend && go vet ./...` | ✅ 通过 |
 | 后端测试 | `cd backend && go test ./...`（含 `TEST_DATABASE_URL` 集成测试） | ✅ 全绿（并行包运行，连续 2 次）；本批顺带修掉两处**预存在**的测试隔离缺陷（见 §4.0.7） |
 | 前端类型检查 | `cd frontend && npx vue-tsc --noEmit` | ✅ 通过 |
-| 前端单测 | `cd frontend && npx vitest run` | ✅ **57 文件 / 537 项全绿** |
+| 前端单测 | `cd frontend && npx vitest run` | ✅ **57 文件 / 536 项全绿** |
 | 前端构建 | `cd frontend && npx vite build` | ✅ 通过 |
 | 数据库容器 | `docker compose -f deploy/compose.yaml ps` | ✅ postgres healthy |
 | 数据库迁移 | `cd backend && go run ./cmd/migrate`（全新库） | ✅ 22 个迁移全部应用，43 张表 |
@@ -1362,7 +1362,7 @@ STATS_RETENTION_DAYS=180
 
 | 批次 | 交付内容 | 验收要点 |
 |---|---|---|
-| **页脚「常用工具」** | `AppFooter.vue` 原先 `v-for` 渲染全部内置工具（19 项，页脚被撑得过长），改为只列 `BUILTIN_TOOLS.slice(0, 4)`（合成配方 / 坐标换算 / 物品 ID / 药水与酿造），并在列表下方新增「查看全部工具 →」入口指向 `/tools`，完整清单仍走工具中心 | 新增 `tests/app-footer.spec.ts` 3 例：常用工具恰好 4 项且与清单前 4 项一致、第 5 项起不出现在页脚、「查看全部工具」指向 `/tools`；另断言站点信息 4 项与非官方声明未被破坏 |
+| **页脚「常用工具」** | `AppFooter.vue` 原先 `v-for` 渲染全部内置工具（19 项，页脚被撑得过长），改为只列 `BUILTIN_TOOLS.slice(0, 4)`（合成配方 / 坐标换算 / 物品 ID / 药水与酿造）；完整清单走工具中心 | 新增 `tests/app-footer.spec.ts` 2 例：常用工具恰好 4 项且与清单前 4 项一致、第 5 项起不出现在页脚；另断言站点信息 4 项与非官方声明未被破坏 |
 
 ## 4.1 结论速览（按优先级）
 

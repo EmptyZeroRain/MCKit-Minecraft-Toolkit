@@ -41,9 +41,6 @@ const footerTools = BUILTIN_TOOLS.slice(0, FOOTER_TOOL_COUNT)
             <RouterLink :to="tool.route" class="hover:text-grass-300">{{ tool.name }}</RouterLink>
           </li>
         </ul>
-        <RouterLink to="/tools" class="mt-3 inline-block text-sm text-grass-300 hover:underline">
-          查看全部工具 →
-        </RouterLink>
       </div>
     </div>
 

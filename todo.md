@@ -440,9 +440,9 @@
 - [x] 新增接口同步更新 `backend/openapi/openapi.yaml`。（§17 投稿、§15 红石、§16 Mod 兼容性均已同步，`js-yaml` 校验通过）
 - [x] 为新增数据库变更编写迁移脚本。（`0017_feedback_submissions` / `0018_redstone` / `0019_mods`，含回滚说明）
 - [x] 为新增功能补充后端单元测试与必要的集成测试。（`content_test.go` 投稿校验；`redstone_test.go` / `mods_test.go` 导入器；`linkhealth` 集成测试实跑通过）
-- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 9 例；`mcsrc-source.spec.ts` 8 例、`mcsrc-decompiler.spec.ts` 7 例、`mcsrc-tokens.spec.ts` 6 例、`mcsrc-navigation.spec.ts` 6 例、`app-footer.spec.ts` 3 例；当前合计 57 文件 / 537 用例）
+- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 9 例；`mcsrc-source.spec.ts` 8 例、`mcsrc-decompiler.spec.ts` 7 例、`mcsrc-tokens.spec.ts` 6 例、`mcsrc-navigation.spec.ts` 6 例、`app-footer.spec.ts` 2 例；当前合计 57 文件 / 536 用例）
 - [x] 执行 `go vet ./...` 和 `go test ./...`。（全绿；并顺带修掉两处预存在的测试隔离缺陷：`cmd/api` 统计采集器缓冲跨用例累积、`linkhealth` 集成测试与 `cmd/api` 争用同一测试库 `public` schema——改为专用 schema；`go test ./...` 并行连续 2 次全绿）
-- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 57 文件 / 537 用例全绿；`vite build` 成功）
+- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 57 文件 / 536 用例全绿；`vite build` 成功）
 - [x] 为关键算法准备固定输入与预期输出的回归用例。（种子地图 / 结构、区块文件解析、附魔铁砧花费、指令生成均已有固定用例）
 - [x] 更新 `Function.md`，只将实际完成并验收的功能标记为已实现。
 - [x] 更新部署、备份恢复和数据导入说明。（`README.md` 补齐 `potions`/`villagers`/`mobs`/`devdocs`/`redstone`/`mods` 导入命令与 `--type all` 依赖顺序；部署与备份恢复章节经实测核对）

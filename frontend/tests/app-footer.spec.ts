@@ -15,7 +15,6 @@ function makeRouter() {
       '/feedback',
       '/privacy',
       '/copyright',
-      '/tools',
       ...BUILTIN_TOOLS.map((tool) => tool.route),
     ].map((path) => ({ path, component: { template: '<div />' } })),
   })
@@ -37,14 +36,6 @@ describe('页脚', () => {
     expect(items.map((li) => li.text())).toEqual(BUILTIN_TOOLS.slice(0, 4).map((tool) => tool.name))
     // 第 5 个及之后的工具不出现在页脚。
     expect(wrapper.text()).not.toContain(BUILTIN_TOOLS[4].name)
-  })
-
-  it('提供「查看全部工具」入口指向工具中心', async () => {
-    const wrapper = await mountFooter()
-    const link = wrapper.findAll('a').find((a) => a.text().includes('查看全部工具'))
-
-    expect(link).toBeTruthy()
-    expect(link!.attributes('href')).toBe('/tools')
   })
 
   it('站点信息与非官方声明保持完整', async () => {
