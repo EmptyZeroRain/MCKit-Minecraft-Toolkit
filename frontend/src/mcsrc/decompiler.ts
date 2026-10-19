@@ -6,6 +6,7 @@
 import * as Comlink from 'comlink'
 import type { McsrcDecompileResult, McsrcSide } from '@/types/mcsrc'
 import { fetchJarBlob } from '@/api/mcsrc'
+import { clearDeclarationCache } from './navigation'
 import type { DecompileWorkerApi } from './decompile.worker'
 
 export type { McsrcDecompileResult }
@@ -32,6 +33,9 @@ export function jarKey(version: string, side: McsrcSide): string {
 // 同一 (version, side) 的 jar 只取一次；失败即从缓存移除，允许重试。
 const jarCache = new Map<string, Promise<Blob>>()
 
+// 反编译结果缓存：跳转时在同一批类之间来回不重复反编译（单类约 1s）。
+const resultCache = new Map<string, Promise<McsrcDecompileResult>>()
+
 /** 取 jar（命中缓存则不重复下载） */
 export function getJar(version: string, side: McsrcSide): Promise<Blob> {
   const key = jarKey(version, side)
@@ -50,11 +54,22 @@ export async function decompileClass(
   side: McsrcSide,
   className: string,
 ): Promise<McsrcDecompileResult> {
-  const jar = await getJar(version, side)
-  return getWorker().decompileClass({ className, jarName: jarKey(version, side), jar })
+  const key = `${jarKey(version, side)}|${className}`
+  let pending = resultCache.get(key)
+  if (!pending) {
+    pending = (async () => {
+      const jar = await getJar(version, side)
+      return getWorker().decompileClass({ className, jarName: jarKey(version, side), jar })
+    })()
+    resultCache.set(key, pending)
+    pending.catch(() => resultCache.delete(key))
+  }
+  return pending
 }
 
-/** 清空 jar 缓存（如版本被重新准备后调用） */
+/** 清空 jar 与反编译结果缓存（如版本被重新准备后调用） */
 export function clearJarCache(): void {
   jarCache.clear()
+  resultCache.clear()
+  clearDeclarationCache()
 }

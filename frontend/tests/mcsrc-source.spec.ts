@@ -15,8 +15,16 @@ vi.mock('@/components/mcsrc/SourceViewer.vue', () => ({
   __esModule: true,
   default: {
     name: 'SourceViewer',
-    props: ['source', 'language'],
-    template: '<div data-test="source-stub">{{ source }}</div>',
+    props: ['source', 'language', 'tokens', 'reveal'],
+    emits: ['jump'],
+    // 桩组件通过按钮把「源码内跳转」抛给页面，便于在 jsdom 中断言跳转链路。
+    template: `<div data-test="source-stub">
+      <span data-test="stub-source">{{ source }}</span>
+      <span data-test="stub-token-count">{{ (tokens || []).length }}</span>
+      <span data-test="stub-reveal">{{ reveal ? reveal.type + ':' + reveal.name : '' }}</span>
+      <button data-test="stub-jump-class" @click="$emit('jump', { className: 'net.minecraft.world.level.Level', reveal: null })">jump-class</button>
+      <button data-test="stub-jump-method" @click="$emit('jump', { className: 'net.minecraft.server.MinecraftServer', reveal: { type: 'method', name: 'tick', descriptor: '()V' } })">jump-method</button>
+    </div>`,
   },
 }))
 
@@ -40,10 +48,18 @@ const authApi = vi.hoisted(() => ({ me: vi.fn() }))
 vi.mock('@/api/admin-auth', () => authApi)
 
 import McsrcView from '@/views/McsrcView.vue'
+import { clearDeclarationCache } from '@/mcsrc/navigation'
 import { ApiError } from '@/types/api'
-import type { McsrcClass, McsrcClassStructure, McsrcHierarchy, McsrcStatus } from '@/types/mcsrc'
+import type { McsrcClass, McsrcClassStructure, McsrcHierarchy, McsrcStatus, McsrcToken } from '@/types/mcsrc'
 
 const CLASS_NAME = 'net.minecraft.server.MinecraftServer'
+const LEVEL_NAME = 'net.minecraft.world.level.Level'
+
+/** 一段足以覆盖 token 计数与跳转的源码 token */
+const TOKENS: McsrcToken[] = [
+  { type: 'class', start: 0, length: 6, declaration: true, className: CLASS_NAME, inJar: true },
+  { type: 'method', start: 30, length: 4, declaration: false, className: LEVEL_NAME, name: 'tick', descriptor: '()V', inJar: true },
+]
 
 function readyStatus(): McsrcStatus {
   return {
@@ -131,6 +147,8 @@ describe('MC 源码浏览器 - 查看源码', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    // 跳转解析的成员集合缓存是模块级的，用例间必须清理（各用例的 mock 成员集合不同）。
+    clearDeclarationCache()
     versionsApi.listVersions.mockResolvedValue({
       latest: { release: '1.21.4', snapshot: '25w01a' },
       versions: [
@@ -148,6 +166,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
       className: CLASS_NAME,
       source: 'public abstract class MinecraftServer {}',
       language: 'java',
+      tokens: TOKENS,
     })
   })
 
@@ -161,6 +180,9 @@ describe('MC 源码浏览器 - 查看源码', () => {
     expect(panel.exists()).toBe(true)
     expect(panel.text()).toContain(CLASS_NAME)
     expect(wrapper.find('[data-test="source-stub"]').text()).toContain('public abstract class MinecraftServer {}')
+    // token 透传给查看器，且展示跳转提示。
+    expect(wrapper.find('[data-test="stub-token-count"]').text()).toBe(String(TOKENS.length))
+    expect(wrapper.find('[data-test="mcsrc-source-hint"]').text()).toContain('点击')
     // 源码面板替换了类列表。
     expect(wrapper.findAll('tbody tr').length).toBe(0)
   })
@@ -225,5 +247,55 @@ describe('MC 源码浏览器 - 查看源码', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(false)
+  })
+
+  it('源码内跳转：类 token 打开目标类源码', async () => {
+    const wrapper = await mountView()
+    await rowButton(wrapper, 0, '查看源码')!.trigger('click')
+    await flushPromises()
+    expect(decompiler.decompileClass).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-test="stub-jump-class"]').trigger('click')
+    await flushPromises()
+
+    // 类 token 不需要查询成员声明，直接反编译目标类。
+    expect(mcsrcApi.getClassDetail).not.toHaveBeenCalled()
+    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME)
+    expect(wrapper.find('[data-test="class-source"]').text()).toContain(LEVEL_NAME)
+    expect(wrapper.find('[data-test="stub-reveal"]').text()).toBe('')
+  })
+
+  it('源码内跳转：方法引用沿继承链定位到父类声明', async () => {
+    // MinecraftServer 自身没有 tick()，真正声明在父类 Level。
+    mcsrcApi.getClassDetail.mockImplementation(async (_version: string, name: string) => {
+      const structure = structureOf(name)
+      structure.methods = name === LEVEL_NAME ? structure.methods : []
+      return structure
+    })
+    const wrapper = await mountView()
+    await rowButton(wrapper, 0, '查看源码')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-test="stub-jump-method"]').trigger('click')
+    await flushPromises()
+
+    expect(mcsrcApi.getClassHierarchy).toHaveBeenCalledWith('1.21.4', CLASS_NAME, 'client')
+    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME)
+    // 跳转落点被带给查看器（stub-reveal 渲染 type:name）。
+    expect(wrapper.find('[data-test="stub-reveal"]').text()).toBe('method:tick')
+  })
+
+  it('同一类内跳转不重新反编译，仅更新定位目标', async () => {
+    // 声明就在当前类里：解析结果与当前源码类一致。
+    const wrapper = await mountView()
+    await rowButton(wrapper, 0, '查看源码')!.trigger('click')
+    await flushPromises()
+    expect(decompiler.decompileClass).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-test="stub-jump-method"]').trigger('click')
+    await flushPromises()
+
+    expect(decompiler.decompileClass).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="stub-reveal"]').text()).toBe('method:tick')
   })
 })

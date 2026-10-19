@@ -10,7 +10,13 @@ const mcsrcApi = vi.hoisted(() => ({ fetchJarBlob: vi.fn() }))
 vi.mock('@/api/mcsrc', () => mcsrcApi)
 
 import { clearJarCache, decompileClass, getJar, jarKey } from '@/mcsrc/decompiler'
-import { toClassFilePath, toDottedClassName, toInternalClassName } from '@/mcsrc/names'
+import {
+  classLookupCandidates,
+  outerClassName,
+  toClassFilePath,
+  toDottedClassName,
+  toInternalClassName,
+} from '@/mcsrc/names'
 
 const decompileClassMock = vi.fn()
 
@@ -30,6 +36,7 @@ describe('mcsrc 反编译客户端', () => {
       className: req.className,
       source: `// ${req.className}`,
       language: 'java',
+      tokens: [],
     }))
     wrapSpy.mockReturnValue({ decompileClass: decompileClassMock })
     mcsrcApi.fetchJarBlob.mockResolvedValue(new Blob(['jar-bytes']))
@@ -79,6 +86,20 @@ describe('mcsrc 反编译客户端', () => {
     expect(mcsrcApi.fetchJarBlob).toHaveBeenCalledTimes(1)
   })
 
+  it('同一类重复反编译命中结果缓存，clearJarCache 同时清空两类缓存', async () => {
+    await decompileClass('1.21.4', 'client', 'net.minecraft.server.MinecraftServer')
+    await decompileClass('1.21.4', 'client', 'net.minecraft.server.MinecraftServer')
+    // 第二次走结果缓存，不再进 Worker。
+    expect(decompileClassMock).toHaveBeenCalledTimes(1)
+    expect(mcsrcApi.fetchJarBlob).toHaveBeenCalledTimes(1)
+
+    // clearJarCache 同时清空 jar 与结果缓存（版本被重新准备后 jar 内容会变）。
+    clearJarCache()
+    await decompileClass('1.21.4', 'client', 'net.minecraft.server.MinecraftServer')
+    expect(decompileClassMock).toHaveBeenCalledTimes(2)
+    expect(mcsrcApi.fetchJarBlob).toHaveBeenCalledTimes(2)
+  })
+
   it('jar 缓存键与类名格式转换', () => {
     expect(jarKey('1.21.4', 'client')).toBe('1.21.4-client')
     expect(toInternalClassName('net.minecraft.server.MinecraftServer')).toBe(
@@ -89,6 +110,30 @@ describe('mcsrc 反编译客户端', () => {
     )
     expect(toClassFilePath('net.minecraft.world.level.Level$ExplosionInteraction')).toBe(
       'net/minecraft/world/level/Level$ExplosionInteraction.class',
+    )
+    // 内部类后缀剥离：判断「类是否在 jar 内」按最外层类。
+    expect(outerClassName('net/minecraft/world/level/Level$ExplosionInteraction')).toBe(
+      'net/minecraft/world/level/Level',
+    )
+    expect(outerClassName('net.minecraft.server.MinecraftServer')).toBe('net.minecraft.server.MinecraftServer')
+  })
+
+  it('类名探测序列：源码里的内部类写法（Outer.Inner）可对齐到 jar 条目（Outer$Inner）', () => {
+    // 顶层类：首选原名。
+    expect(classLookupCandidates('net.minecraft.world.level.Level')[0]).toBe(
+      'net/minecraft/world/level/Level',
+    )
+    // 源码中的内部类引用：先试 `adp/a`（不存在），再试 `adp$a`。
+    const candidates = classLookupCandidates('adp.a')
+    expect(candidates[0]).toBe('adp/a')
+    expect(candidates).toContain('adp$a')
+    // 内部类（$ 形式）与最外层类都在候选内。
+    const inner = classLookupCandidates('net.minecraft.server.MinecraftServer$1')
+    expect(inner[0]).toBe('net/minecraft/server/MinecraftServer$1')
+    expect(inner).toContain('net/minecraft/server/MinecraftServer')
+    // 多层内部类：逐级把 `.` 换成 `$`。
+    expect(classLookupCandidates('a.b.c')).toEqual(
+      expect.arrayContaining(['a/b$c', 'a$b/c']),
     )
   })
 })

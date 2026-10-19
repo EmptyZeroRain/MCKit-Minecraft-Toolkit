@@ -145,6 +145,50 @@ export interface McsrcDecompileRequest {
   jar: Blob
 }
 
+/** 反编译源码中的 token 类型（对应 Vineflower TokenCollector 的回调） */
+export type McsrcTokenType = 'class' | 'field' | 'method' | 'parameter' | 'local'
+
+/**
+ * 反编译源码中的 token：记录字符区间与语义，供着色与跳转使用。
+ * 区间基于 `McsrcDecompileResult.source` 的字符偏移（0 起，左闭右开）。
+ */
+export interface McsrcToken {
+  type: McsrcTokenType
+  /** 起始字符偏移 */
+  start: number
+  /** 字符长度 */
+  length: number
+  /** 是否为声明处（声明处不作为跳转起点） */
+  declaration: boolean
+  /**
+   * 点号全限定类名：
+   *   - class token → 被引用的类；
+   *   - field / method token → 引用点看到的所属类（可能不是真正的声明类，需沿继承链向上找）。
+   */
+  className: string
+  /** field / method token 的成员名 */
+  name?: string
+  /** field / method token 的 JVM 描述符（如 Ljava/lang/String; 或 (I)V） */
+  descriptor?: string
+  /** 目标类（去掉内部类后缀）是否存在于该 jar；false 表示不可跳转 */
+  inJar: boolean
+}
+
+/** 跳转后在目标类源码中需要定位的成员声明 */
+export interface McsrcRevealTarget {
+  type: 'field' | 'method'
+  name: string
+  descriptor?: string
+}
+
+/** 源码跳转请求（SourceViewer → 页面） */
+export interface McsrcJumpTarget {
+  /** 目标类（点号全限定名） */
+  className: string
+  /** 需要定位的成员；为空表示仅打开类源码 */
+  reveal: McsrcRevealTarget | null
+}
+
 /** 反编译结果（浏览器内 Vineflower 产出） */
 export interface McsrcDecompileResult {
   /** 点号全限定类名 */
@@ -152,4 +196,6 @@ export interface McsrcDecompileResult {
   /** Java 源码 */
   source: string
   language: 'java'
+  /** 源码 token（着色 / 跳转）；引擎未产出时为空数组 */
+  tokens: McsrcToken[]
 }

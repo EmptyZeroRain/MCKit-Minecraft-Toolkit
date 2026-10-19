@@ -3,7 +3,7 @@
 > 本文档由 `开发需求.md`、`PROGRESS.md`、`BACKEND_TODO.md`、`todo.md` 四份文件**整合**而成。
 > 原始文件已归档至 `bak/`，本文件为**项目总览与需求规格**的事实来源；**功能与验收状态以 `Function.md` 为准，待办与进度勾选以 `todo.md` 为准**。
 > 整合日期：2026-10-14 ｜ **最近同步：2026-10-19**
-> 本次同步补齐：§9-B 村民交易、§9-C 生物资料、§13–§23 全部交付与验收、迁移 `0012`–`0022`、内置工具 19 项、管理端内容审核页面（红石 / Mod）、开发文档接入全站搜索（`type=devdoc`）、后台角色与权限底座（`roles` + 17 个权限点）、统一账号体系（迁移 `0022`）、MC 源码浏览器切片 1 + 2 + 3-D1（含浏览器内 Vineflower WASM 反编译）。
+> 本次同步补齐：§9-B 村民交易、§9-C 生物资料、§13–§23 全部交付与验收、迁移 `0012`–`0022`、内置工具 19 项、管理端内容审核页面（红石 / Mod）、开发文档接入全站搜索（`type=devdoc`）、后台角色与权限底座（`roles` + 17 个权限点）、统一账号体系（迁移 `0022`）、MC 源码浏览器切片 1 + 2 + 3-D1 + 3-D2（含浏览器内 Vineflower WASM 反编译与源码内跳转）。
 > 需求版本：1.0 ｜ 技术栈：Go 1.27 + Chi + GORM + PostgreSQL 16 · Vue 3 + TypeScript + Vite
 
 ## 阅读指引
@@ -79,13 +79,14 @@
 | 后端静态检查 | `cd backend && go vet ./...` | ✅ 通过 |
 | 后端测试 | `cd backend && go test ./...`（含 `TEST_DATABASE_URL` 集成测试） | ✅ 全绿（并行包运行，连续 2 次）；本批顺带修掉两处**预存在**的测试隔离缺陷（见 §4.0.7） |
 | 前端类型检查 | `cd frontend && npx vue-tsc --noEmit` | ✅ 通过 |
-| 前端单测 | `cd frontend && npx vitest run` | ✅ **54 文件 / 517 项全绿** |
+| 前端单测 | `cd frontend && npx vitest run` | ✅ **56 文件 / 534 项全绿** |
 | 前端构建 | `cd frontend && npx vite build` | ✅ 通过 |
 | 数据库容器 | `docker compose -f deploy/compose.yaml ps` | ✅ postgres healthy |
 | 数据库迁移 | `cd backend && go run ./cmd/migrate`（全新库） | ✅ 22 个迁移全部应用，43 张表 |
 | 备份恢复 | `scripts/backup.sh` → 独立库恢复 | ✅ 14 张核心表行数逐一比对一致 |
 | MC 源码库真实链路 | `MCSRC_LIVE_TEST=1 go test ./internal/mcsrc/ -run TestLivePrepareRealJar` | ✅ 1.8.9 客户端 jar（8,461,484 字节）sha1 校验通过、索引 2507 个类、检索命中、二次准备不重复下载 |
 | MC 源码库 jar 下发 + 反编译真实链路 | 临时程序（真实 jar 的 `GET /mcsrc/jar` + Node 24 跑 `@run-slicer/vf`） | ✅ 200 且 sha1 与缓存摘要一致、`Range: bytes=0-3` → 206、`If-None-Match` → 304、未缓存 → 404；真实反编译 `net.minecraft.server.MinecraftServer` 成功（约 1 s，产出真实 Java 源码） |
+| MC 源码库 token / 跳转真实链路 | 临时脚本（真实 1.8.9 jar + Node 24 真实 Vineflower 纯 JS 运行时，逐段复刻 Worker 的 token 收集与类名对齐） | ✅ `MinecraftServer` 产出 1493 个 token（class 309 / method 450 / field 311 / parameter 156 / local 267）、抽样区间文本与源码一致、越界 0、`inJar` 与 jar 条目完全一致（1231 个可跳转）、类名无残留斜杠、内部类引用对齐 `$` 形式（`adp.a` → `adp$a`） |
 
 **结论**：代码可编译、测试可通过，无阻断级缺陷；功能与验收状态见 `Function.md §九`，剩余缺口见第四部分。
 
@@ -232,7 +233,7 @@ mc-tool-site/
 | `/potions`、`/potions/:slug` | 药水与酿造 | 效果与时长（普通/延长/增强）、酿造步骤链、通用规则、来源核验 |
 | `/dev`、`/dev/:slug` | 开发文档 | 开发知识库检索（名称/平台/主题/版本）、要点正文、关键接口速查、官方文档与可核验来源、同平台相关条目；已接入全站搜索（`type=devdoc`） |
 | `/mappings` | 版本映射查询 | 类/方法/字段的 obf / mid / named 三列名字对照，数据集选择与成员明细；未导入数据集时展示导入指引 |
-| `/mcsrc` | MC 源码浏览器 | 按版本浏览官方 jar 的类索引：版本与侧别（客户端/服务端）选择、缓存状态、类名/包名检索、类结构与继承关系、**浏览器内反编译源码**（Vineflower WASM，无需服务端 JVM）；jar 由服务端统一下载缓存（管理员触发「准备该版本」） |
+| `/mcsrc` | MC 源码浏览器 | 按版本浏览官方 jar 的类索引：版本与侧别（客户端/服务端）选择、缓存状态、类名/包名检索、类结构与继承关系、**浏览器内反编译源码**（Vineflower WASM，无需服务端 JVM）、**源码内跳转**（Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类）；jar 由服务端统一下载缓存（管理员触发「准备该版本」） |
 | `/coordinate` | 坐标换算 | 主世界/下界坐标换算 |
 | `/wiki/:slug` | 百科详情 | 文章、目录、来源、更新时间 |
 | `/about` | 关于本站 | 非官方声明、项目介绍 |
@@ -1343,6 +1344,20 @@ STATS_RETENTION_DAYS=180
 > **验证边界**：本机无浏览器 / Playwright，界面交互只做到单测层面；但**反编译引擎本身**已用真实 1.8.9 jar 在 Node 上跑通（同一 `@run-slicer/vf` 与相同 `decompile` 调用形状），后端 jar 端点用真实 8.46 MB jar 端到端验证（含 Range / ETag）。
 > **运行环境**：`go run ./cmd/api`（`:8080`）已重启并注册 `GET /mcsrc/jar`；实测缺 `version` → 422、未缓存版本 → 404。
 
+### 4.0.10 本轮已完成与验证（2026-10-19，mcsrc 切片 3-D2：token 着色 + 点击跳转）
+
+| 批次 | 交付内容 | 验收要点 |
+|---|---|---|
+| **上游语义对齐** | 逐文件核对 `mcsrc-main` 的 `src/logic/{Tokens,FindDeclaration}.ts`、`src/ui/{Code,CodeUtils,CodeExtensions}.tsx`，确认 token 模型（`class` / `field` / `method` / `parameter` / `local` + `declaration` 标记 + `className` / `name` / `descriptor`）、装饰方式（`inlineClassName` 分色 + 可跳转手型）与跳转机制（Monaco **定义提供器 + 编辑器打开器** ⇒ Ctrl/⌘ + 点击 / F12 / 右键「转到定义」）；字段与方法的声明定位为「先看引用点所属类，未命中再沿祖先链逐级向上」 | 结论：**不需要新增后端接口**——声明定位所需数据（`classes/detail` / `classes/hierarchy`）切片 2 已交付，本切片是纯前端 |
+| **Worker：token 收集** | `decompile.worker.ts` 向引擎传 `tokenCollector`（`start` / `visitClass` / `visitField` / `visitMethod` / `visitParameter` / `visitLocal` / `end`）按源码字符区间产出 token，另为 import 行补 class token，排序后随源码返回；`decompiler.ts` 新增**按 `(version, side, className)` 的反编译结果缓存**（跳转来回不重复反编译，`clearJarCache` 同时清空 jar 与结果缓存） | `tests/mcsrc-decompiler.spec.ts` 新增「同一类重复反编译命中结果缓存，`clearJarCache` 同时清空两类缓存」；`tests/mcsrc-source.spec.ts` 断言 token 数量透传给查看器 |
+| **类名对齐（关键修正）** | 实测确认：Vineflower `visitClass` 对内部类给出**内部名 + `$`**（`adp$a`），而**源码文本**里内部类写作 `adp.a`（Java 语法），jar 条目与后端索引是 `adp$a`。故新增 `names.ts#classLookupCandidates()`（原名 → 最外层类 → 逐级把包分隔符换成 `$`），Worker 用 jar 条目集合探测后把 token 的 `className` 统一到后端约定，并据此标注 `inJar`（仅 jar 内类可跳转） | `tests/mcsrc-decompiler.spec.ts` 新增类名探测序列用例；**真实 jar 验证**：内部类引用 `adp.a` → `adp$a`、`MinecraftServer$1` 均对齐，`inJar=true` 的类名 100% 能在 jar 中命中 |
+| **跳转解析** | 新增 `src/mcsrc/navigation.ts#resolveDeclaration()`：类 token 直接返回自身；字段 / 方法 token 先用 `classes/detail` 查引用点所属类是否声明该成员（方法按 `name + descriptor` 区分重载、字段按名），未命中再按 `classes/hierarchy` 祖先链逐级向上，返回**声明类 + 定位目标**；类不在 jar 内（索引 404）视为「不声明」继续向上，最终回退到引用点所属类；成员集合按类缓存 | `tests/mcsrc-navigation.spec.ts` 6 例：类 token 直通不查索引、成员在引用点所属类命中、沿祖先链定位、字段按名匹配、全部未命中回退、索引缺失不抛异常且成员集合命中缓存只查一次 |
+| **前端接入** | `SourceViewer.vue`：token 装饰（`inlineClassName` 分色 + 可跳转 token 手型光标与点状下划线）、Java 定义提供器（返回 `mcsrc-goto://` 自定义 URI，片段为 `method:name:descriptor`）、悬停提示（显示跳转目标与快捷键）、编辑器打开器（解析 URI → 抛 `jump` 事件）、成员声明定位（`setSelection` + `revealRangeInCenter`）；`McsrcView.vue`：收到 `jump` 后解析声明类并打开源码（目标即当前类时只重新定位、不重复反编译）+ 面板顶部跳转提示；`style.css`：明暗双主题 token 配色 | `tests/mcsrc-source.spec.ts` 新增 3 例（类 token 打开目标类、方法引用沿继承链定位到父类声明并传递落点、同类内跳转不重复反编译）+ 跳转提示断言；`tests/mcsrc-tokens.spec.ts` 6 例（偏移命中与越界、行列 ⇄ 偏移、跳转片段编解码、声明定位含重载区分） |
+| **真实上游验证** | Node 24 + 真实 1.8.9 客户端 jar（2507 类）+ 真实 Vineflower 纯 JS 运行时，逐段复刻 Worker 逻辑跑 token 全链路 | 反编译 `net.minecraft.server.MinecraftServer`（31,093 字符）产出 **1493 个 token**（引擎 1457 + import 36：class 309 / method 450 / field 311 / parameter 156 / local 267）；抽样 8 类 token 的区间文本与源码一致、**越界 0**、`inJar` 标注与 jar 条目完全一致（**1231 个可跳转**）、类名无残留斜杠、`inJar=true` 的类名均命中 jar、方法 / 字段描述符格式全部合法、内部类引用已对齐 `$` 形式 |
+| **横向** | `Function.md` §2.26（标题 + 新增「源码 token 与着色」「点击跳转」「类名对齐」行 + 前端页面 / 分期路线 / 与上游差异说明）、§7.1 测试表、§九 状态表；`todo.md` §22（切片 3-D2 验收块 + 勾选）、§18 计数；`PROJECT.md` §4.1 | `vue-tsc --noEmit` 通过；`vitest run` **56 文件 / 534 例**全绿；`vite build` 通过；本切片**未改后端代码**，`openapi.yaml` 无新增 path |
+
+> **验证边界**：本机无浏览器 / Playwright，Monaco 装饰与点击交互只做到单测层面（`SourceViewer` 在单测中被替换为桩组件，断言 token 透传、跳转事件与落点）；但 token 收集链路已用真实 jar + 真实引擎逐段复刻验证（见上表），跳转解析逻辑为纯函数级单测覆盖。
+
 ## 4.1 结论速览（按优先级）
 
 | 级别 | 事项 | 归属 | 依据 |
@@ -1353,7 +1368,7 @@ STATS_RETENTION_DAYS=180
 | **P1** | 无 CI 流水线；后端集成测试默认跳过，未纳入自动化（集成测试已可手动注入 `TEST_DATABASE_URL` 实跑） | 工程 | §13.2 / §14 |
 | **P1** | ✅ 开发文档已接入全站搜索（`type=devdoc`）：迁移 `0020` 建 `dev_docs.search_vector` + GIN，`internal/search` 命中标题 / 摘要 / 正文 / 标签，仅返回已发布 | 后端 | §5.1 / §21 |
 | **P1** | ✅ 迁移（干净库 22 个 / 43 表）与备份恢复（14 表行数一致）**已实测**；Docker Compose 全链路未在真机验收 | 部署 | §15 / §20 |
-| **P2** | ✅ MC 源码浏览器已实现切片 1 + 2 + **3-D1**（版本选择 + jar 缓存 + 类索引 / 检索 + 类结构 / 继承关系 + **源码浏览**：`GET /mcsrc/jar` 下发缓存 jar、浏览器内 Vineflower WASM 反编译、Monaco 展示，**无需部署侧 JVM**）；切片 3 余项（跳转定义与查找引用 / 字节码指令 / 映射重命名 / Javadoc）待办 | 后端 + 前端 | §22 / §4.0.6–§4.0.9 |
+| **P2** | ✅ MC 源码浏览器已实现切片 1 + 2 + 3-D1 + **3-D2**（版本选择 + jar 缓存 + 类索引 / 检索 + 类结构 / 继承关系 + 源码浏览：`GET /mcsrc/jar` 下发缓存 jar、浏览器内 Vineflower WASM 反编译、Monaco 展示 + **token 着色与点击跳转**：Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类，**无需部署侧 JVM**）；切片 3 余项（查找引用 / 字节码指令 / 映射重命名 / Javadoc）待办 | 后端 + 前端 | §22 / §4.0.6–§4.0.10 |
 | **P2** | ✅ 统一账号体系（合并 `admins` / `users` 为 `accounts` + `role` 外键引用 `roles.name` + 8 个外键重指 + 删旧表 + 单一会话 Cookie）**已验收**（迁移 0022） | 后端 | §23 / §4.0.7 |
 | **P2** | 标签仅存 JSONB，未建 `resource_tags/tool_tags/wiki_tags` 关联表 | 后端 | §7.8 |
 | **P2** | 迁移无回滚命令（仅注释给出反向 SQL） | 后端 | §7 |

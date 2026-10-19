@@ -15,6 +15,7 @@ import Pagination from '@/components/common/Pagination.vue'
 import { listVersions } from '@/api/versions'
 import { getClassDetail, getClassHierarchy, getStatus, listClasses, listPrepared, prepare } from '@/api/mcsrc'
 import { decompileClass } from '@/mcsrc/decompiler'
+import { resolveDeclaration } from '@/mcsrc/navigation'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { useRecentToolsStore } from '@/stores/recent-tools'
@@ -28,8 +29,11 @@ import {
   type McsrcClass,
   type McsrcClassStructure,
   type McsrcHierarchy,
+  type McsrcJumpTarget,
+  type McsrcRevealTarget,
   type McsrcSide,
   type McsrcStatus,
+  type McsrcToken,
 } from '@/types/mcsrc'
 import { VERSION_TYPE_LABELS, type VersionEntry, type VersionType } from '@/types/version'
 import { formatSize, formatDate } from '@/utils/format'
@@ -216,6 +220,8 @@ function onPageChange(p: number) {
 // ---- 源码视图（浏览器内 Vineflower/WASM 反编译，无需部署侧 JVM）----
 const sourceClass = ref('')
 const sourceText = ref('')
+const sourceTokens = ref<McsrcToken[]>([])
+const sourceReveal = ref<McsrcRevealTarget | null>(null)
 const sourceLoading = ref(false)
 const sourceError = ref('')
 
@@ -232,6 +238,8 @@ function closeClass() {
 function closeSource() {
   sourceClass.value = ''
   sourceText.value = ''
+  sourceTokens.value = []
+  sourceReveal.value = null
   sourceError.value = ''
   sourceLoading.value = false
 }
@@ -260,11 +268,13 @@ async function openClass(name: string) {
   detailLoading.value = false
 }
 
-/** 打开源码视图：在浏览器内用 Vineflower（WASM）反编译该类 */
-async function openSource(name: string) {
+/** 打开源码视图：在浏览器内用 Vineflower（WASM）反编译该类；`reveal` 指定打开后要定位的成员 */
+async function openSource(name: string, reveal: McsrcRevealTarget | null = null) {
   if (!selectedId.value) return
   sourceClass.value = name
   sourceText.value = ''
+  sourceTokens.value = []
+  sourceReveal.value = reveal
   sourceError.value = ''
   sourceLoading.value = true
   try {
@@ -272,12 +282,33 @@ async function openSource(name: string) {
     // 期间用户可能已切换类 / 关闭面板，丢弃过期结果。
     if (sourceClass.value !== name) return
     sourceText.value = res.source
+    sourceTokens.value = res.tokens
   } catch (err) {
     if (sourceClass.value !== name) return
     sourceError.value = err instanceof ApiError ? err.message : '反编译失败'
   } finally {
     if (sourceClass.value === name) sourceLoading.value = false
   }
+}
+
+/**
+ * 源码内跳转：类 token → 打开目标类；字段 / 方法 token → 先沿继承链定位声明类再打开。
+ * 目标就是当前类时不重新反编译，仅把新的定位目标交给查看器。
+ */
+async function onSourceJump(target: McsrcJumpTarget) {
+  if (!selectedId.value) return
+  const resolved = await resolveDeclaration(selectedId.value, side.value, {
+    className: target.className,
+    type: target.reveal?.type ?? 'class',
+    name: target.reveal?.name,
+    descriptor: target.reveal?.descriptor,
+  })
+  if (resolved.className === sourceClass.value) {
+    // 换新对象以触发查看器的 reveal 侦听（同一目标连续点击时也要重新定位）。
+    sourceReveal.value = resolved.reveal ? { ...resolved.reveal } : null
+    return
+  }
+  await openSource(resolved.className, resolved.reveal)
 }
 
 async function doPrepare() {
@@ -529,6 +560,9 @@ onMounted(async () => {
                   <p class="mt-1 text-xs text-text-muted">
                     Java 源码由 Vineflower 在浏览器内反编译（WASM），仅供阅读参考，与官方源码可能有出入。
                   </p>
+                  <p class="mt-1 text-xs text-text-muted" data-test="mcsrc-source-hint">
+                    Ctrl/⌘ + 点击（或 F12）类名与成员名可跳转：类跳类、字段与方法先定位到真正的声明类。
+                  </p>
                 </div>
                 <div class="flex shrink-0 items-center gap-2">
                   <CopyButton tool="mcsrc" :text="sourceClass" />
@@ -549,8 +583,11 @@ onMounted(async () => {
               <SourceViewer
                 v-else
                 :source="sourceText"
+                :tokens="sourceTokens"
+                :reveal="sourceReveal"
                 language="java"
                 class="h-[65vh] overflow-hidden rounded-md border border-border-dark"
+                @jump="onSourceJump"
               />
             </div>
 

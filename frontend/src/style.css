@@ -265,6 +265,41 @@ body {
   color: var(--mc-text-primary);
 }
 
+/* ===== mcsrc 反编译源码 token（Monaco inline decoration）=====
+ * 由 SourceViewer 以 inlineClassName 施加，故需 !important 覆盖 Monaco 的词法着色。
+ * 配色对齐 VSCode 默认主题（暗色为 :root 默认，亮色单列），避免与站点主题冲突。
+ */
+.mcsrc-token-class {
+  color: #4ec9b0 !important;
+}
+.mcsrc-token-method {
+  color: #dcdcaa !important;
+}
+.mcsrc-token-field,
+.mcsrc-token-parameter,
+.mcsrc-token-local {
+  color: #9cdcfe !important;
+}
+
+[data-theme='light'] .mcsrc-token-class {
+  color: #267f99 !important;
+}
+[data-theme='light'] .mcsrc-token-method {
+  color: #795e26 !important;
+}
+[data-theme='light'] .mcsrc-token-field,
+[data-theme='light'] .mcsrc-token-parameter,
+[data-theme='light'] .mcsrc-token-local {
+  color: #001080 !important;
+}
+
+/* 可跳转的 token：手型光标 + 点状下划线（提示可点击，且不干扰阅读） */
+.mcsrc-token-jumpable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
 /* 减少动画偏好 */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -396,13 +396,22 @@
 >   **真实上游端到端**：临时程序实测 1.8.9 客户端 jar（8,461,484 字节 / sha1 `3870888a…`）——`GET /jar` 200 且 sha1 与缓存摘要一致、`Range: bytes=0-3` → 206（`504b0304`）、`If-None-Match` → 304、未缓存版本 → 404；
 >   **真实反编译链路**（Node 24，与 Worker 相同的引擎与调用形状）从真实 1.8.9 jar（2507 类）反编译 `net.minecraft.server.MinecraftServer` 成功（耗时约 1s，产出含 `class MinecraftServer` 与 `tick` 方法的真实 Java 源码）；
 >   前端 `vue-tsc` 通过、`vitest run` **54 文件 / 517 例**全绿（新增 `tests/mcsrc-source.spec.ts` 5 例 + `tests/mcsrc-decompiler.spec.ts` 5 例）、`vite build` 通过（`SourceViewer` 3.96 MB 与 `vf.wasm` 3.77 MB 均为懒加载分块）。
-> - **未做（切片 3 余项）**：跳转定义与查找引用、字节码指令视图、映射重命名展示、Javadoc 备注。
+> **已落地并验收（切片 3-D2：token 着色 + 点击跳转 —— 跳转定义，字段与方法沿继承链定位声明类）**：
+> - **上游语义对齐**：逐文件核对 `mcsrc-main` 的 `src/logic/{Tokens,FindDeclaration}.ts`、`src/ui/{Code,CodeUtils,CodeExtensions}.tsx`，确认上游的 token 模型（`class` / `field` / `method` / `parameter` / `local` + `declaration` 标记 + `className` / `name` / `descriptor`）、装饰方式（`inlineClassName` 分色 + 可跳转手型）与跳转机制（Monaco **定义提供器 + 编辑器打开器**，即 Ctrl/⌘ + 点击 / F12 / 右键「转到定义」）；字段与方法的声明定位是「先看引用点所属类，未命中再沿祖先链逐级向上」。
+> - **Worker 收集 token**：`decompile.worker.ts` 向引擎传 `tokenCollector`（`start` / `visitClass` / `visitField` / `visitMethod` / `visitParameter` / `visitLocal` / `end`），按源码字符区间产出 token；额外为 import 行补 class token；结果按 `start` 排序后随源码返回，并**按 `(version, side, className)` 缓存反编译结果**（跳转来回不重复反编译）。
+> - **类名对齐（关键修正）**：实测发现 Vineflower 的 `visitClass` 对内部类给出的是**内部名 + `$`**（如 `adp$a`），而**源码文本**里内部类写作 `adp.a`（Java 语法），jar 条目与后端索引用 `adp$a`。因此新增 `classLookupCandidates()`（原名 → 最外层类 → 逐级把包分隔符换成 `$`）在 Worker 内用 jar 条目集合探测，把 token 的 `className` 统一对齐到后端约定；`inJar` 由此可准确标注（仅 jar 内类可跳转）。
+> - **跳转解析** `src/mcsrc/navigation.ts`：`resolveDeclaration(version, side, query)` —— 类 token 直接返回自身；字段 / 方法 token 先用 `classes/detail` 查引用点所属类是否声明该成员（方法按 `name + descriptor` 区分重载、字段按名），未命中再按 `classes/hierarchy` 的祖先链逐级向上，返回**声明类 + 定位目标**；类不在 jar 内（索引 404）视为「不声明」并继续向上，最终回退到引用点所属类（至少能打开源码）。成员集合按类缓存（跳转同一批类不重复请求索引）。
+> - **前端接入**：`SourceViewer.vue` 新增 token 装饰（`inlineClassName` 分色 + 可跳转 token 手型光标与点状下划线）、Java 定义提供器（返回 `mcsrc-goto://` 自定义 URI，含 `#method:name:descriptor` 片段）、悬停提示（显示跳转目标与快捷键）、编辑器打开器（解析 URI → 抛出 `jump` 事件）、以及**成员声明定位**（`setSelection` + `revealRangeInCenter`）；`McsrcView.vue` 收到 `jump` 后解析声明类并打开源码（目标即当前类时只重新定位、不重复反编译），源码面板顶部给出跳转提示；`style.css` 新增明暗双主题 token 配色。
+> - **验收记录**：`vue-tsc --noEmit` 通过；`vitest run` **56 文件 / 534 例**全绿（新增 `tests/mcsrc-tokens.spec.ts` 6 例 + `tests/mcsrc-navigation.spec.ts` 6 例，扩展 `mcsrc-decompiler.spec.ts` +2、`mcsrc-source.spec.ts` +3）；`vite build` 通过；
+>   **真实上游验证**（Node 24 + 真实 1.8.9 客户端 jar + 真实 Vineflower 纯 JS 运行时，逐段复刻 Worker 逻辑）：反编译 `net.minecraft.server.MinecraftServer`（31,093 字符）产出 **1493 个 token**（引擎 1457 + import 36：class 309 / method 450 / field 311 / parameter 156 / local 267），抽样 8 类 token 的字符区间与源码文本一致、**越界 0 个**、`inJar` 标注与 jar 条目完全一致（1231 个可跳转）、类名**无残留斜杠**且 `inJar=true` 的类名均能在 jar 中命中、方法 / 字段描述符格式全部合法、内部类引用（`adp.a` → `adp$a`、`MinecraftServer$1`）已正确对齐 `$` 形式。
+> - **未做（切片 3 余项）**：查找引用（需新增引用索引）、字节码指令视图、映射重命名展示、Javadoc 备注。
 
 - [x] 切片 1：版本选择（复用 `POST /api/v1/versions`）+ jar 获取与缓存（官方 sha1 校验 + 单飞 + 体积上限）。
 - [x] 切片 1：类索引与检索（zip 中央目录建索引 + 相关度排序 + 包过滤 + 分页）。
 - [x] 切片 2：类结构视图（修饰符 / 种类 / 父类 / 接口 / 字段 / 方法，纯 Go 解析 class 字节码）+ 继承关系（祖先链 + 直接子类）。
 - [x] 切片 3-D1：源码浏览（浏览器内 Vineflower WASM 反编译 + Monaco 展示）——`GET /mcsrc/jar` 下发缓存 jar，反编译在访客浏览器内完成，**无需部署侧 JVM**。
-- [ ] 切片 3 余项：跳转定义与查找引用、字节码指令视图、映射重命名展示、Javadoc 备注。
+- [x] 切片 3-D2：token 着色 + 点击跳转（Ctrl/⌘ 点击 / F12 跳转定义；类跳类，字段与方法沿继承链定位声明类并选中声明处）。
+- [ ] 切片 3 余项：查找引用、字节码指令视图、映射重命名展示、Javadoc 备注。
 
 ### 23. 后台账号与权限体系
 
@@ -431,9 +440,9 @@
 - [x] 新增接口同步更新 `backend/openapi/openapi.yaml`。（§17 投稿、§15 红石、§16 Mod 兼容性均已同步，`js-yaml` 校验通过）
 - [x] 为新增数据库变更编写迁移脚本。（`0017_feedback_submissions` / `0018_redstone` / `0019_mods`，含回滚说明）
 - [x] 为新增功能补充后端单元测试与必要的集成测试。（`content_test.go` 投稿校验；`redstone_test.go` / `mods_test.go` 导入器；`linkhealth` 集成测试实跑通过）
-- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 9 例；本批新增 `mcsrc-source.spec.ts` 5 例、`mcsrc-decompiler.spec.ts` 5 例；当前合计 54 文件 / 517 用例）
+- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 9 例；`mcsrc-source.spec.ts` 8 例、`mcsrc-decompiler.spec.ts` 7 例、本批新增 `mcsrc-tokens.spec.ts` 6 例、`mcsrc-navigation.spec.ts` 6 例；当前合计 56 文件 / 534 用例）
 - [x] 执行 `go vet ./...` 和 `go test ./...`。（全绿；并顺带修掉两处预存在的测试隔离缺陷：`cmd/api` 统计采集器缓冲跨用例累积、`linkhealth` 集成测试与 `cmd/api` 争用同一测试库 `public` schema——改为专用 schema；`go test ./...` 并行连续 2 次全绿）
-- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 54 文件 / 517 用例全绿；`vite build` 成功）
+- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 56 文件 / 534 用例全绿；`vite build` 成功）
 - [x] 为关键算法准备固定输入与预期输出的回归用例。（种子地图 / 结构、区块文件解析、附魔铁砧花费、指令生成均已有固定用例）
 - [x] 更新 `Function.md`，只将实际完成并验收的功能标记为已实现。
 - [x] 更新部署、备份恢复和数据导入说明。（`README.md` 补齐 `potions`/`villagers`/`mobs`/`devdocs`/`redstone`/`mods` 导入命令与 `--type all` 依赖顺序；部署与备份恢复章节经实测核对）
@@ -478,6 +487,6 @@
 11. [ ] 按实际用户需求扩展红石资料、Mod 兼容性与投稿体系。
 12. [x] 新增「我的世界开发栏目」（§21）：开发文档知识库（NeoForge / Forge / Fabric / 原版数据）+ 版本映射与类 / 方法查询（映射数据由 `cmd/import-mappings` 按官方来源导入，不预置）。
 13. [x] 补齐后台账号与权限体系（§23）：角色与权限底座 + 角色管理页 + 普通用户管理。
-14. [ ] 整合 MC 源码浏览器（§22）：切片 1（版本选择 + jar 缓存 + 类索引 / 检索）与切片 2（类结构视图 + 继承关系，纯 Go 无 JVM）已交付；切片 3（反编译源码浏览）需先确认部署侧 Java 运行时。
+14. [ ] 整合 MC 源码浏览器（§22）：切片 1（版本选择 + jar 缓存 + 类索引 / 检索）、切片 2（类结构视图 + 继承关系，纯 Go 无 JVM）、切片 3-D1（浏览器内 Vineflower WASM 反编译 + Monaco 源码浏览）、切片 3-D2（token 着色 + 点击跳转）已交付；切片 3 余项（查找引用 / 字节码指令视图 / 映射重命名 / Javadoc 备注）待办。
 
 > **执行原则：** 一次优先完成一个可验收的垂直功能；先保证数据准确、版本明确和安全边界，再扩展功能数量。没有完成测试和验收的事项，不要在 `Function.md` 中标记为“已实现”。
