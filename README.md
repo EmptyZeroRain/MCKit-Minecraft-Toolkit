@@ -4,6 +4,8 @@
 
 技术栈：Go 1.27 + Chi + GORM + PostgreSQL 16 · Vue 3 + TypeScript + Vite
 
+![首页](./images/首页.png)
+
 ## 功能概览
 
 - **资料查询**：物品 ID 对照、合成配方、药水与酿造、村民交易、生物资料（掉落 / 生成 / 驯服繁殖）、红石元件与机器设计、Mod 与整合包（依赖 / 冲突**仅呈现已记录项**，不做自动冲突分析）。
@@ -12,6 +14,24 @@
 - **百科与资源**：中文 Wiki 条目抓取与浏览；资源导航（类型 / 版本 / 加载器筛选、来源跳转、失效链接检查）。
 - **全站搜索**：跨 **工具 / 资源 / 百科 / 物品 / 开发文档** 统一检索，支持类型与版本筛选、相关度 / 最近更新排序与无结果引导。
 - **用户与后台**：可选账号（收藏 / 最近使用 / 常用种子；公开工具免登录）；管理后台含内容 CRUD、投稿审核（红石 / Mod / 反馈）、链接健康复查、数据质量与导入历史、运营看板、审计日志。
+
+## 界面预览
+
+| 前台功能 | MC 源码浏览器 |
+|---|---|
+| <img src="./images/功能1.png" width="420" alt="前台功能"> | <img src="./images/代码浏览器.png" width="420" alt="MC 源码浏览器"> |
+
+| 后台登录 | 后台总览 |
+|---|---|
+| <img src="./images/后台登陆.png" width="420" alt="后台登录"> | <img src="./images/后台.png" width="420" alt="后台总览"> |
+
+| 后台内容管理 | 运营看板 |
+|---|---|
+| <img src="./images/后台功能截图.png" width="420" alt="后台内容管理"> | <img src="./images/后台运营看板.png" width="420" alt="运营看板"> |
+
+| 数据质量检查 | 操作日志 |
+|---|---|
+| <img src="./images/后题质量检查.png" width="420" alt="数据质量检查"> | <img src="./images/后台操作日志.png" width="420" alt="操作日志"> |
 
 ## 目录结构
 
@@ -33,6 +53,7 @@
 ├── frontend/              # Vue 3 前端
 ├── deploy/                # Docker Compose + Caddy
 ├── scripts/               # dev.sh / backup.sh / restore.sh
+├── images/                # README 界面截图
 ├── .env.example
 └── README.md
 ```
