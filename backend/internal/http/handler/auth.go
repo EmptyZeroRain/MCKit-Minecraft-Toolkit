@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -24,6 +25,7 @@ type AuthHandler struct {
 	cfg          *config.Config
 	secure       bool
 	audit        *audit.Service
+	perms        middleware.PermissionResolver
 }
 
 // NewAuthHandler 创建认证处理器。
@@ -42,8 +44,30 @@ func (h *AuthHandler) WithAudit(a *audit.Service) *AuthHandler {
 	return h
 }
 
-// sessionCookieName 便于测试读取。
-const sessionCookieName = "mc_admin_session"
+// WithPermissions 注入角色权限解析器，使登录 / 会话接口返回权限点集合。
+// 前端据此显示后台入口；未注入时返回空集合，后端路由仍按权限兜底。
+func (h *AuthHandler) WithPermissions(resolver middleware.PermissionResolver) *AuthHandler {
+	h.perms = resolver
+	return h
+}
+
+// permissionsFor 解析角色权限；解析器缺失或出错时返回空集合（不阻断登录）。
+func (h *AuthHandler) permissionsFor(ctx context.Context, role string) []string {
+	if h.perms == nil {
+		return []string{}
+	}
+	perms, err := h.perms.PermissionsForRole(ctx, role)
+	if err != nil || perms == nil {
+		return []string{}
+	}
+	return perms
+}
+
+// isAdminSide 判断会话是否属于后台账号（统一账号后 role = 'user' 为普通用户）。
+// 后台登录入口与后台自助接口据此拒绝普通用户会话，避免普通用户误入后台。
+func isAdminSide(session *auth.Session) bool {
+	return session != nil && session.Role != domain.RoleUser
+}
 
 // loginRequest 登录请求体。
 type loginRequest struct {
@@ -105,7 +129,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     middleware.SessionCookieName(),
 		Value:    result.SessionID,
 		Path:     "/",
 		HttpOnly: true,
@@ -115,21 +139,22 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	response.OK(w, map[string]any{
-		"id":         result.Admin.ID,
-		"username":   result.Admin.Username,
-		"role":       result.Admin.Role,
-		"csrf_token": result.CSRFToken,
-		"expires_at": result.ExpiresAt.Format(time.RFC3339),
+		"id":          result.Admin.ID,
+		"username":    result.Admin.Username,
+		"role":        result.Admin.Role,
+		"permissions": h.permissionsFor(r.Context(), result.Admin.Role),
+		"csrf_token":  result.CSRFToken,
+		"expires_at":  result.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
 // Logout POST /api/v1/admin/auth/logout
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
+	if cookie, err := r.Cookie(middleware.SessionCookieName()); err == nil && cookie.Value != "" {
 		_ = h.authService.Logout(r.Context(), cookie.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     middleware.SessionCookieName(),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -144,15 +169,17 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // Me POST /api/v1/admin/auth/me
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	session := middleware.SessionFrom(r.Context())
-	if session == nil {
+	// 普通用户会话（role = 'user'）不属后台，返回 401 让前端视为未登录后台。
+	if !isAdminSide(session) {
 		response.Unauthorized(w, r)
 		return
 	}
 	response.OK(w, map[string]any{
-		"id":         session.AdminID,
-		"username":   session.Username,
-		"role":       session.Role,
-		"csrf_token": session.CSRFToken,
+		"id":          session.AccountID,
+		"username":    session.Username,
+		"role":        session.Role,
+		"permissions": h.permissionsFor(r.Context(), session.Role),
+		"csrf_token":  session.CSRFToken,
 	})
 }
 
@@ -165,7 +192,8 @@ type changePasswordRequest struct {
 // ChangePassword POST /api/v1/admin/auth/change-password
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	session := middleware.SessionFrom(r.Context())
-	if session == nil {
+	// 后台自助改密仅对后台账号开放（普通用户走 /user/change-password）。
+	if !isAdminSide(session) {
 		response.Unauthorized(w, r)
 		return
 	}
@@ -183,7 +211,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.authService.ChangePassword(r.Context(), session.AdminID, req.OldPassword, req.NewPassword); err != nil {
+	if err := h.authService.ChangePassword(r.Context(), session.AccountID, req.OldPassword, req.NewPassword); err != nil {
 		if errors.Is(err, auth.ErrCredentials) {
 			response.Validation(w, r, []response.ErrorDetail{
 				{Field: "old_password", Message: "旧密码不正确"},
@@ -201,11 +229,11 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 修改成功后注销当前会话，强制重新登录。
-	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
+	if cookie, err := r.Cookie(middleware.SessionCookieName()); err == nil && cookie.Value != "" {
 		_ = h.authService.Logout(r.Context(), cookie.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     middleware.SessionCookieName(),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

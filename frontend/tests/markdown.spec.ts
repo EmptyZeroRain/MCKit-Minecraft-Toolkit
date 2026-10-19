@@ -66,4 +66,39 @@ describe('安全 Markdown 渲染', () => {
     expect(html).toContain('<td>a|b</td>')
     expect(html).toContain('<td>V</td>')
   })
+
+  it('相邻代码块各自独立成块，不粘连（Java / TOML 两段示例）', () => {
+    const html = renderSafeMarkdown(
+      '```java\npublic class ExampleMod {}\n```\n\n```toml\nmodLoader = "javafml"\n```',
+    )
+    // 两段各自是完整代码块
+    expect(html.match(/<pre><code>/g)).toHaveLength(2)
+    expect(html.match(/<\/code><\/pre>/g)).toHaveLength(2)
+    expect(html).toContain('public class ExampleMod {}')
+    expect(html).toContain('modLoader = &quot;javafml&quot;')
+  })
+
+  it('表格在离开表格处结算，不会跑到文末', () => {
+    const html = renderSafeMarkdown(
+      '## 常用运行任务\n\n| 任务 | 用途 |\n| --- | --- |\n| runClient | 启动客户端 |\n\n## 注意\n\n- 事项一',
+    )
+    const tableIdx = html.indexOf('<table>')
+    const noteIdx = html.indexOf('<h2>注意</h2>')
+    expect(tableIdx).toBeGreaterThan(-1)
+    expect(noteIdx).toBeGreaterThan(-1)
+    // 表格应出现在「注意」标题之前（原位），而不是文末
+    expect(tableIdx).toBeLessThan(noteIdx)
+  })
+
+  it('文末的列表与引用被正确闭合', () => {
+    expect(renderSafeMarkdown('- 一\n- 二')).toContain('</ul>')
+    expect(renderSafeMarkdown('1. 一\n2. 二')).toContain('</ol>')
+    expect(renderSafeMarkdown('> 引用')).toContain('</blockquote>')
+  })
+
+  it('正文中偶然含竖线的句子不会被误判为表格', () => {
+    const html = renderSafeMarkdown('命令 A | B 都可执行')
+    expect(html).not.toContain('<table>')
+    expect(html).toContain('<p>命令 A | B 都可执行</p>')
+  })
 })

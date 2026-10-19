@@ -1,7 +1,9 @@
 // Package user 提供普通用户账号与个人数据（收藏 / 最近使用 / 常用种子）服务（需求 §12）。
 //
-// 安全边界：普通用户与管理员完全分离，本包不涉及任何后台权限；
-// 个人数据查询一律以 user_id 过滤，杜绝越权访问他人数据。
+// 安全边界：
+//   - 统一账号（迁移 0022）后普通用户与后台账号同表（accounts），靠 role 区分，
+//     因此账号查询一律叠加 role = 'user'，否则管理员账号会被当成普通用户登录 / 改密；
+//   - 本包不涉及任何后台权限；个人数据查询一律以 user_id 过滤，杜绝越权访问他人数据。
 package user
 
 import (
@@ -46,10 +48,12 @@ type GormRepo struct{ db *gorm.DB }
 // NewRepo 创建 GORM 仓储。
 func NewRepo(db *gorm.DB) *GormRepo { return &GormRepo{db: db} }
 
-// FindByUsername 按用户名查询；不存在返回 (nil, nil)。
+// FindByUsername 按用户名查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
 func (r *GormRepo) FindByUsername(ctx context.Context, username string) (*domain.User, error) {
 	var u domain.User
-	err := r.db.WithContext(ctx).Where("username = ?", username).First(&u).Error
+	err := r.db.WithContext(ctx).
+		Where("username = ? AND role = ?", username, domain.RoleUser).
+		First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -59,10 +63,12 @@ func (r *GormRepo) FindByUsername(ctx context.Context, username string) (*domain
 	return &u, nil
 }
 
-// FindByID 按 ID 查询；不存在返回 (nil, nil)。
+// FindByID 按 ID 查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
 func (r *GormRepo) FindByID(ctx context.Context, id string) (*domain.User, error) {
 	var u domain.User
-	err := r.db.WithContext(ctx).Where("id = ?", id).First(&u).Error
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND role = ?", id, domain.RoleUser).
+		First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -83,15 +89,18 @@ func (r *GormRepo) UpdateLastLogin(ctx context.Context, id string) error {
 		Where("id = ?", id).Update("last_login_at", gorm.Expr("now()")).Error
 }
 
-// ChangePassword 更新密码哈希。
+// ChangePassword 更新密码哈希（仅普通用户，避免改到后台账号）。
 func (r *GormRepo) ChangePassword(ctx context.Context, id, hash string) error {
 	return r.db.WithContext(ctx).Model(&domain.User{}).
-		Where("id = ?", id).Update("password_hash", hash).Error
+		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Update("password_hash", hash).Error
 }
 
-// DeleteUser 删除账号（个人数据级联删除）。
+// DeleteUser 删除普通用户账号（个人数据级联删除；仅普通用户）。
 func (r *GormRepo) DeleteUser(ctx context.Context, id string) error {
-	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&domain.User{}).Error
+	return r.db.WithContext(ctx).
+		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Delete(&domain.User{}).Error
 }
 
 // ListFavorites 列出收藏，按创建时间倒序。

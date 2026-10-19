@@ -199,6 +199,7 @@ func writeAdminAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, adminaccount.ErrUsernameTaken):
 		response.Conflict(w, r, err.Error())
 	case errors.Is(err, adminaccount.ErrBadRole),
+		errors.Is(err, adminaccount.ErrReservedRole),
 		errors.Is(err, adminaccount.ErrBadUsername),
 		errors.Is(err, adminaccount.ErrWeakPassword),
 		errors.Is(err, adminaccount.ErrLastAdmin):

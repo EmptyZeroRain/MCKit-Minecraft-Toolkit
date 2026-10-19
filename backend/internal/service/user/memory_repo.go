@@ -15,6 +15,7 @@ import (
 //
 // 用途：单元测试与「无数据库」的本地演示/冒烟测试。
 // 生产环境使用 GormRepo（见 repo.go）。行为需与 GormRepo 保持一致：
+//   - 账号查询叠加 role = 'user'（与 GormRepo 一致，排除后台账号）；
 //   - 删除用户时级联清除其收藏 / 最近使用 / 常用种子；
 //   - 收藏与最近使用按 (user, kind, object) 去重；
 //   - 列表按时间倒序；最近使用按上限裁剪。
@@ -36,12 +37,12 @@ func NewMemoryRepo() *MemoryRepo {
 	}
 }
 
-// FindByUsername 按用户名查询；不存在返回 (nil, nil)。
+// FindByUsername 按用户名查询普通用户；不存在返回 (nil, nil)。
 func (m *MemoryRepo) FindByUsername(_ context.Context, username string) (*domain.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, u := range m.users {
-		if u.Username == username {
+		if u.Username == username && u.Role == domain.RoleUser {
 			cp := u
 			return &cp, nil
 		}
@@ -49,12 +50,12 @@ func (m *MemoryRepo) FindByUsername(_ context.Context, username string) (*domain
 	return nil, nil
 }
 
-// FindByID 按 ID 查询。
+// FindByID 按 ID 查询普通用户。
 func (m *MemoryRepo) FindByID(_ context.Context, id string) (*domain.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.users[id]
-	if !ok {
+	if !ok || u.Role != domain.RoleUser {
 		return nil, nil
 	}
 	cp := u
@@ -67,6 +68,10 @@ func (m *MemoryRepo) Create(_ context.Context, u *domain.User) error {
 	defer m.mu.Unlock()
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
+	}
+	// 内存实现不经过数据库默认值，需在此补齐角色，保持与 GormRepo 一致。
+	if u.Role == "" {
+		u.Role = domain.RoleUser
 	}
 	u.CreatedAt = time.Now()
 	u.UpdatedAt = u.CreatedAt

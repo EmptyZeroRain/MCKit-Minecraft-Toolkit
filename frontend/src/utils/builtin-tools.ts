@@ -153,6 +153,14 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
     route: '/mappings',
   },
   {
+    slug: 'mcsrc',
+    name: 'MC 源码浏览器',
+    summary: '按版本浏览官方 jar 的类索引与检索类名',
+    category: '查询类',
+    icon: '📚',
+    route: '/mcsrc',
+  },
+  {
     slug: 'region-inspect',
     name: '存档诊断',
     summary: '解析 level.dat 与 .mca，输出世界信息与只读诊断',

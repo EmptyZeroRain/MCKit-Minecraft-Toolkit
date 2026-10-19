@@ -25,6 +25,7 @@ import (
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/http/response"
 	lk "mckit/backend/internal/linkcheck"
+	"mckit/backend/internal/mcsrc"
 	"mckit/backend/internal/mcversion"
 	db "mckit/backend/internal/repository"
 	"mckit/backend/internal/search"
@@ -37,9 +38,11 @@ import (
 	"mckit/backend/internal/service/linkhealth"
 	"mckit/backend/internal/service/metrics"
 	"mckit/backend/internal/service/resource"
+	"mckit/backend/internal/service/role"
 	"mckit/backend/internal/service/searchstats"
 	"mckit/backend/internal/service/sitemap"
 	"mckit/backend/internal/service/user"
+	"mckit/backend/internal/service/useradmin"
 )
 
 func main() {
@@ -51,7 +54,6 @@ func main() {
 	}
 	cfgInstance = cfg
 	middleware.SetCookieName(cfg.SessionCookieName)
-	middleware.SetUserCookieName(cfg.UserSessionCookieName)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: levelFromString(cfg.LogLevel),
@@ -154,9 +156,23 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		response.OK(w, map[string]string{"status": "ok", "service": "mckit-api"})
 	})
 
+	// MC 元数据客户端：版本信息与源码库共用（源码库需按版本取 jar 下载地址）。
+	var mcMetaClient *mcversion.Client
+	// MC 源码库（mcsrc）缓存：服务端下载并缓存 jar、构建类索引。
+	var mcsrcStore *mcsrc.Store
+	if cfgInstance != nil {
+		mcMetaClient = mcversion.New(cfgInstance.MCMetaCacheDir, cfgInstance.MCMetaCacheTTL)
+		if cfgInstance.MCSRCEnabled {
+			mcsrcStore = mcsrc.NewStore(
+				cfgInstance.MCSRCCacheDir,
+				int64(cfgInstance.MCSRCJarMaxMB)<<20,
+				cfgInstance.MCSRCIndexMaxClasses,
+			)
+		}
+	}
+
 	// MC 元数据：版本信息与物品 ID 对照表（移植自 CreeperCode，无需数据库）。
 	if cfgInstance != nil {
-		mcMetaClient := mcversion.New(cfgInstance.MCMetaCacheDir, cfgInstance.MCMetaCacheTTL)
 		mcMetaHandler := handler.NewMcMetaHandler(mcMetaClient, loadBlockIDs(cfgInstance.BlockIDFile, cfgInstance.MCMetaCacheDir))
 		r.Post("/versions", mcMetaHandler.ListVersions)
 		r.Post("/versions/detail", mcMetaHandler.VersionDetail)
@@ -188,7 +204,14 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	// 审计日志服务
 	auditSvc := audit.NewService(gormDB)
 
-	authHandler := handler.NewAuthHandler(authSvc, sessionStore, cfgInstance).WithAudit(auditSvc)
+	// 角色与权限点（后台「角色管理」底座）：
+	// 角色权限存 roles 表，路由用 RequirePermission 校验，替换原硬编码 RequireRole(admin)；
+	// 登录/会话接口一并返回权限点，供前端按权限显示入口（后端仍兜底）。
+	roleSvc := role.NewService(gormDB)
+
+	authHandler := handler.NewAuthHandler(authSvc, sessionStore, cfgInstance).
+		WithAudit(auditSvc).
+		WithPermissions(roleSvc)
 
 	r.Route("/admin/auth", func(ar chi.Router) {
 		ar.Post("/login", authHandler.Login)
@@ -204,21 +227,24 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	})
 
 	// 普通用户账号与个人工作台（需求 §12）：
-	// 与管理员完全分离；读接口仅需登录，写接口叠加 CSRF；登录按 (用户名, IP) 限流。
+	// 统一账号（迁移 0022）后与后台共用 accounts 与会话 Cookie，
+	// 但接口仍只接受 role = 'user' 的会话（RequireUserRole），后台账号访问返回 401；
+	// 读接口仅需登录，写接口叠加 CSRF；登录按 (用户名, IP) 限流。
 	userSvc := user.NewService(user.NewRepo(gormDB), sessionStore, 5, 900)
-	userHandler := handler.NewUserHandler(userSvc, cfgInstance.SessionSecure, cfgInstance.UserSessionCookieName)
+	userHandler := handler.NewUserHandler(userSvc, cfgInstance.SessionSecure)
 	r.Route("/user", func(ur chi.Router) {
 		ur.Post("/register", userHandler.Register)
 		ur.Post("/login", userHandler.Login)
 		ur.Group(func(authed chi.Router) {
-			authed.Use(middleware.RequireUserAuth(userSvc))
+			authed.Use(middleware.RequireAuth(authSvc))
+			authed.Use(middleware.RequireUserRole())
 			authed.Post("/logout", userHandler.Logout)
 			authed.Post("/me", userHandler.Me)
 			authed.Post("/favorites/list", userHandler.ListFavorites)
 			authed.Post("/recents/list", userHandler.ListRecents)
 			authed.Post("/seeds/list", userHandler.ListSeeds)
 			authed.Group(func(csrf chi.Router) {
-				csrf.Use(middleware.UserCSRF)
+				csrf.Use(middleware.CSRF)
 				csrf.Post("/change-password", userHandler.ChangePassword)
 				csrf.Post("/delete", userHandler.DeleteAccount)
 				csrf.Post("/favorites/toggle", userHandler.ToggleFavorite)
@@ -234,12 +260,54 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	// 审计日志（admin 专属）
 	auditHandler := handler.NewAuditHandler(auditSvc)
 
+	// 角色与权限点（后台「角色管理」底座，需求 §6.2）：
+	// 角色权限存 roles 表，路由用 RequirePermission 校验，替换原硬编码 RequireRole(admin)。
+	roleHandler := handler.NewRoleHandler(roleSvc, auditSvc)
+
+	// MC 源码库（mcsrc）：公开只读状态与类检索；触发下载 / 建索引为管理员专属，
+	// 并叠加限流与并发上限（单次可达数百 MB，禁止并发叠加）。
+	if mcsrcStore != nil {
+		mcsrcHandler := handler.NewMcsrcHandler(mcsrcStore, mcMetaClient)
+		mcsrcHeavy := middleware.RateLimit(cfgInstance.MCHeavyRPS, cfgInstance.MCHeavyBurst)
+		mcsrcConc := middleware.ConcurrencyLimit(1)
+		r.Route("/mcsrc", func(mr chi.Router) {
+			mr.Post("/status", mcsrcHandler.Status)
+			mr.Post("/prepared", mcsrcHandler.Prepared)
+			mr.Post("/classes/list", mcsrcHandler.Classes)
+			// 类结构视图与继承关系：纯字节码解析，不反编译、不依赖 JVM，
+			// 与检索同属公开只读（不触发下载）。
+			mr.Post("/classes/detail", mcsrcHandler.ClassDetail)
+			mr.Post("/classes/hierarchy", mcsrcHandler.ClassHierarchy)
+			// jar 下载：公开只读，供前端在浏览器内做反编译（Vineflower WASM）。
+			// 唯一的 GET 接口，需要 Range / ETag 语义（见 handler 注释）。
+			mr.Get("/jar", mcsrcHandler.Jar)
+			mr.Group(func(wr chi.Router) {
+				wr.Use(middleware.RequireAuth(authSvc))
+				wr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsMCsrc))
+				wr.Use(middleware.CSRF)
+				wr.Use(mcsrcHeavy)
+				wr.Use(mcsrcConc)
+				wr.Post("/prepare", mcsrcHandler.Prepare)
+			})
+		})
+	}
+	r.Route("/admin/roles", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermRolesManage))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", roleHandler.List)
+		ar.Post("/permissions", roleHandler.Permissions)
+		ar.Post("/create", roleHandler.Create)
+		ar.Post("/update", roleHandler.Update)
+		ar.Post("/delete", roleHandler.Delete)
+	})
+
 	// 管理员账号管理（admin 专属，需求 §6.1 / §6.2）
 	adminAccountSvc := adminaccount.NewService(gormDB)
 	adminAccountHandler := handler.NewAdminAccountHandler(adminAccountSvc, authSvc, auditSvc)
 	r.Route("/admin/admins", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermAccountsAdmins))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", adminAccountHandler.List)
 		ar.Post("/create", adminAccountHandler.Create)
@@ -248,18 +316,28 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Post("/delete", adminAccountHandler.Delete)
 	})
 
+	// 普通用户管理（admin 专属）：账号列表 + 个人数据计数（后台「普通用户管理」）。
+	userAdminSvc := useradmin.NewService(gormDB)
+	userAdminHandler := handler.NewUserAdminHandler(userAdminSvc)
+	r.Route("/admin/users", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermAccountsUsers))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", userAdminHandler.List)
+	})
+
 	// 数据质量与导入任务（admin 专属，TODO §2 / §4）
 	dataQualitySvc := dataquality.NewService(gormDB)
 	dataQualityHandler := handler.NewDataQualityHandler(dataQualitySvc)
 	r.Route("/admin/data-quality", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsDataQuality))
 		ar.Use(middleware.CSRF)
 		ar.Post("/overview", dataQualityHandler.Overview)
 	})
 	r.Route("/admin/data-import-jobs", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsDataQuality))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", dataQualityHandler.ListJobs)
 	})
@@ -273,7 +351,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	searchTermsHandler := handler.NewSearchTermsHandler(searchStatsSvc)
 	r.Route("/admin/search-terms", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsSearchStats))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", searchTermsHandler.List)
 	})
@@ -290,7 +368,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsSvc)
 	r.Route("/admin/analytics", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsAnalytics))
 		ar.Use(middleware.CSRF)
 		ar.Post("/overview", analyticsHandler.Overview)
 		ar.Post("/tools", analyticsHandler.Tools)
@@ -320,12 +398,14 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Use(middleware.CSRF)
 		// 链接健康与人工确认（TODO §6）
 		ar.Route("/link-health", func(lr chi.Router) {
+			lr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsLinkHealth))
 			lr.Post("/run", linkHealthHandler.Run)
 			lr.Post("/list", linkHealthHandler.List)
 			lr.Post("/confirm", linkHealthHandler.Confirm)
 			lr.Post("/{id}/confirm", linkHealthHandler.Confirm)
 		})
 		ar.Route("/resources", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentResources))
 			// 前端契约：动作子路径 + 全 POST
 			rr.Post("/list", adminHandler.ListResources)
 			rr.Post("/create", adminHandler.CreateResource)
@@ -345,6 +425,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Post("/{id}/check-link", adminHandler.CheckResourceLink)
 		})
 		ar.Route("/tools", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentTools))
 			rr.Post("/list", adminHandler.ListTools)
 			rr.Post("/create", adminHandler.CreateTool)
 			rr.Post("/detail", handler.WithBodyID(adminHandler.ToolDetail))
@@ -357,6 +438,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Delete("/{id}", adminHandler.RemoveTool)
 		})
 		ar.Route("/wiki", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentWiki))
 			rr.Post("/list", adminHandler.ListWiki)
 			rr.Post("/create", adminHandler.CreateWiki)
 			rr.Post("/detail", handler.WithBodyID(adminHandler.WikiDetail))
@@ -369,6 +451,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Delete("/{id}", adminHandler.RemoveWiki)
 		})
 		ar.Route("/categories", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentCategories))
 			rr.Post("/list", adminHandler.ListCategories)
 			rr.Post("/create", adminHandler.CreateCategory)
 			rr.Post("/update", adminHandler.UpdateCategory)
@@ -377,6 +460,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Post("/new", adminHandler.CreateCategory)
 		})
 		ar.Route("/tags", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentTags))
 			rr.Post("/list", adminHandler.ListTags)
 			rr.Post("/create", adminHandler.CreateTag)
 			rr.Post("/update", adminHandler.UpdateTag)
@@ -385,6 +469,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Post("/new", adminHandler.CreateTag)
 		})
 		ar.Route("/feedback", func(rr chi.Router) {
+			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentFeedback))
 			rr.Post("/list", adminHandler.ListFeedback)
 			rr.Post("/update", handler.WithBodyID(adminHandler.UpdateFeedback))
 			rr.Post("/reviews", handler.WithBodyID(adminHandler.ListFeedbackReviews))
@@ -397,7 +482,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	r.Route("/admin/audit-logs", func(ar chi.Router) {
 		ar.Group(func(protected chi.Router) {
 			protected.Use(middleware.RequireAuth(authSvc))
-			protected.Use(middleware.RequireRole(domain.RoleAdmin))
+			protected.Use(middleware.RequirePermission(roleSvc, domain.PermOpsAudit))
 			protected.Use(middleware.CSRF)
 			protected.Post("/", auditHandler.List)
 			protected.Post("/list", auditHandler.List)
@@ -412,7 +497,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	redstoneAdminHandler := handler.NewRedstoneAdminHandler(catalogSvc, auditSvc)
 	r.Route("/admin/redstone", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermReviewRedstone))
 		ar.Use(middleware.CSRF)
 		ar.Post("/designs/list", redstoneAdminHandler.ListDesigns)
 		ar.Post("/designs/review", redstoneAdminHandler.ReviewDesign)
@@ -422,14 +507,14 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	modAdminHandler := handler.NewModAdminHandler(catalogSvc, auditSvc)
 	r.Route("/admin/mods", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermReviewMods))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", modAdminHandler.AdminMods)
 		ar.Post("/review", modAdminHandler.ReviewMod)
 	})
 	r.Route("/admin/modpacks", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
-		ar.Use(middleware.RequireRole(domain.RoleAdmin))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermReviewMods))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", modAdminHandler.AdminModpacks)
 		ar.Post("/review", modAdminHandler.ReviewModpack)

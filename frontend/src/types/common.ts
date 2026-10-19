@@ -181,6 +181,6 @@ export const RECIPE_TYPE_LABELS: Record<RecipeType, string> = {
 /** 通用状态：发布相关 */
 export type PublishStatus = 'published' | 'draft'
 
-/** 后台角色 */
-export const ADMIN_ROLES = ['admin', 'editor'] as const
-export type AdminRole = (typeof ADMIN_ROLES)[number]
+/** 内置后台角色标识；自定义角色为任意标识，故 AdminRole 放宽为 string（真实取值以 roles 表为准） */
+export const BUILTIN_ADMIN_ROLES = ['admin', 'editor'] as const
+export type AdminRole = string

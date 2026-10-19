@@ -166,6 +166,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '版本映射查询' },
       },
       {
+        // MC 源码浏览器（mcsrc 整合 · 切片 1）：按版本浏览官方 jar 的类索引。
+        // 后端下载并缓存 jar、建立类索引；源码正文（反编译）见后续迭代。
+        path: 'mcsrc',
+        name: 'mcsrc',
+        component: () => import('@/views/McsrcView.vue'),
+        meta: { title: 'MC 源码浏览器' },
+      },
+      {
         path: 'commands',
         name: 'commands',
         component: () => import('@/views/CommandsView.vue'),
@@ -420,6 +428,20 @@ const routes: RouteRecordRaw[] = [
         name: 'admin-admins',
         component: () => import('@/views/admin/AdminAdminsView.vue'),
         meta: { title: '管理员账号', requiresAdmin: true, noindex: true },
+      },
+      {
+        // 普通用户管理（admin 专属，只读列表 + 个人数据计数）。
+        path: 'users',
+        name: 'admin-users',
+        component: () => import('@/views/admin/AdminUsersView.vue'),
+        meta: { title: '普通用户', requiresAdmin: true, noindex: true },
+      },
+      {
+        // 角色管理（需 roles.manage 权限点；后端 403 兜底）。
+        path: 'roles',
+        name: 'admin-roles',
+        component: () => import('@/views/admin/AdminRolesView.vue'),
+        meta: { title: '角色管理', requiresAdmin: true, noindex: true },
       },
       {
         path: 'profile',

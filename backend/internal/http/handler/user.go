@@ -15,23 +15,22 @@ import (
 
 // UserHandler 普通用户账号与个人数据处理器（需求 §12）。
 //
-// 安全边界：
-//   - 与管理员完全分离，用户会话角色固定为 "user"，不参与任何后台鉴权；
+// 安全边界（统一账号迁移 0022 后）：
+//   - 普通用户与后台账号同表（accounts），靠 role = 'user' 区分；
+//     路由层用 RequireAuth + RequireUserRole 双重限制，管理员会话无法进入；
+//   - 会话 Cookie 与后台共用（SESSION_COOKIE_NAME），不再有独立 Cookie；
 //   - 写操作要求 CSRF（中间件校验会话绑定 token）；
-//   - 个人数据一律以当前会话用户 ID 过滤，无越权入口；
+//   - 个人数据一律以当前会话账号 ID 过滤，无越权入口；
 //   - 登录失败按 (用户名, IP) 限流；注册与登录叠加全局限流。
 type UserHandler struct {
-	svc        *user.Service
-	secure     bool
-	cookieName string
+	svc    *user.Service
+	secure bool
 }
 
-// NewUserHandler 创建用户处理器。cookieName 为空时取默认值。
-func NewUserHandler(svc *user.Service, secure bool, cookieName string) *UserHandler {
-	if cookieName == "" {
-		cookieName = "mc_user_session"
-	}
-	return &UserHandler{svc: svc, secure: secure, cookieName: cookieName}
+// NewUserHandler 创建用户处理器。
+// Cookie 名统一取 middleware.SessionCookieName()（与鉴权中间件同一来源）。
+func NewUserHandler(svc *user.Service, secure bool) *UserHandler {
+	return &UserHandler{svc: svc, secure: secure}
 }
 
 // maxUserBody 用户接口请求体上限（远小于上传类接口）。
@@ -109,10 +108,10 @@ func writeUserError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// setSessionCookie 种下用户会话 Cookie。
+// setSessionCookie 种下会话 Cookie（与后台共用的统一会话）。
 func (h *UserHandler) setSessionCookie(w http.ResponseWriter, sessionID string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     h.cookieName,
+		Name:     middleware.SessionCookieName(),
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
@@ -122,10 +121,10 @@ func (h *UserHandler) setSessionCookie(w http.ResponseWriter, sessionID string, 
 	})
 }
 
-// clearSessionCookie 清除用户会话 Cookie。
+// clearSessionCookie 清除会话 Cookie。
 func (h *UserHandler) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     h.cookieName,
+		Name:     middleware.SessionCookieName(),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -184,7 +183,7 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout POST /api/v1/user/logout
 func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	if session := middleware.UserSessionFrom(r.Context()); session != nil {
+	if session := middleware.SessionFrom(r.Context()); session != nil {
 		_ = h.svc.Logout(r.Context(), session.SessionID)
 	}
 	h.clearSessionCookie(w)
@@ -193,13 +192,13 @@ func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 // Me POST /api/v1/user/me
 func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
-	session := middleware.UserSessionFrom(r.Context())
+	session := middleware.SessionFrom(r.Context())
 	if session == nil {
 		response.Unauthorized(w, r)
 		return
 	}
 	response.OK(w, map[string]any{
-		"id":         session.AdminID,
+		"id":         session.AccountID,
 		"username":   session.Username,
 		"csrf_token": session.CSRFToken,
 	})
@@ -207,7 +206,7 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 // ChangePassword POST /api/v1/user/change-password（CSRF）
 func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	session := middleware.UserSessionFrom(r.Context())
+	session := middleware.SessionFrom(r.Context())
 	if session == nil {
 		response.Unauthorized(w, r)
 		return
@@ -216,7 +215,7 @@ func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if err := h.svc.ChangePassword(r.Context(), session.AdminID, req.OldPassword, req.NewPassword); err != nil {
+	if err := h.svc.ChangePassword(r.Context(), session.AccountID, req.OldPassword, req.NewPassword); err != nil {
 		writeUserError(w, r, err)
 		return
 	}
@@ -227,7 +226,7 @@ func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 // DeleteAccount POST /api/v1/user/delete（CSRF，需密码二次确认）
 func (h *UserHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
-	session := middleware.UserSessionFrom(r.Context())
+	session := middleware.SessionFrom(r.Context())
 	if session == nil {
 		response.Unauthorized(w, r)
 		return
@@ -236,7 +235,7 @@ func (h *UserHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if err := h.svc.DeleteAccount(r.Context(), session.AdminID, req.Password); err != nil {
+	if err := h.svc.DeleteAccount(r.Context(), session.AccountID, req.Password); err != nil {
 		writeUserError(w, r, err)
 		return
 	}
@@ -388,10 +387,10 @@ func (h *UserHandler) DeleteSeed(w http.ResponseWriter, r *http.Request) {
 
 // currentUserID 从会话读取用户 ID；缺失返回 401 并返回 ok=false。
 func currentUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	session := middleware.UserSessionFrom(r.Context())
-	if session == nil || session.AdminID == "" {
+	session := middleware.SessionFrom(r.Context())
+	if session == nil || session.AccountID == "" {
 		response.Unauthorized(w, r)
 		return "", false
 	}
-	return session.AdminID, true
+	return session.AccountID, true
 }

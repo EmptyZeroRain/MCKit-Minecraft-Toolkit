@@ -309,6 +309,39 @@ describe('§21 开发文档详情页', () => {
     expect(wrapper.text()).toContain('NeoForge 注册表与 DeferredRegister')
   })
 
+  it('「资料来源与校验」单列每项一行渲染（回归：曾用两列网格致标签与值错行）', async () => {
+    const router = makeRouter()
+    await push(router, '/dev/neoforge-events')
+
+    const wrapper = mount(DevDocDetailView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const dl = wrapper.find('#dev-source-title + dl')
+    expect(dl.exists()).toBe(true)
+    // 单列：不再使用两列网格（否则半宽单元格会挤得标签与值错行）
+    expect(dl.classes()).not.toContain('grid')
+    expect(dl.classes()).not.toContain('sm:grid-cols-2')
+
+    // 每项一行：标签与其值处于同一行容器内，且标签不换行
+    const rows = dl.findAll(':scope > div')
+    const expected: Array<[string, string]> = [
+      ['官方文档', 'https://docs.neoforged.net/docs/concepts/events'],
+      ['可核验来源', 'https://github.com/neoforged/Documentation/blob/main/docs/concepts/events.md'],
+      ['适用版本', '1.20.1+'],
+      ['数据版本', 'docs-main-2026-10-18'],
+      ['最近校验', '2026/10/18'],
+      ['兼容平台', 'NeoForge'],
+    ]
+    expect(rows).toHaveLength(expected.length)
+    expected.forEach(([label, value], i) => {
+      const row = rows[i]
+      expect(row.find('dt').text()).toBe(label)
+      expect(row.text()).toContain(value)
+      expect(row.classes()).toContain('flex')
+      expect(row.find('dt').classes()).toContain('shrink-0')
+    })
+  })
+
   it('未收录条目时给出错误态而非空白页', async () => {
     ;(getDevDoc as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('数据不存在'))
     const router = makeRouter()

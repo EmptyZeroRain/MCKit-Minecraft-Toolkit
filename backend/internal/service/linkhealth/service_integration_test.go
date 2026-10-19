@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,26 @@ import (
 	db "mckit/backend/internal/repository"
 	"mckit/backend/internal/repository/types"
 )
+
+// linkhealthSchema 本包集成测试专用 schema。
+//
+// 背景：本包与 cmd/api 集成测试共用同一个测试库（TEST_DATABASE_URL），
+// 而 go test 默认并行跑包，cmd/api 的 integrationSetup 会执行
+// `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`，会把本包正在使用的
+// 表与数据一并删掉，导致本包偶发失败（曾出现 TestRunCheckAndConfirmIntegration 失败）。
+// 因此本包把对象全部建在独立 schema 中，与 public 隔离。
+const linkhealthSchema = "linkhealth_it"
+
+// withSearchPath 在 DSN 上追加 search_path 运行时参数。
+// pgx（GORM postgres 驱动的默认实现）会把连接串中的未知参数作为运行时参数下发，
+// 因此连接池里每条新连接都带上该 search_path，无需逐连接执行 SET。
+func withSearchPath(dsn, schema string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "search_path=" + schema
+}
 
 // 链接健康集成测试：验证「批量复查 → 落库 → 更新资源链接状态 → 人工确认 → 复查跳过已确认项」全链路。
 //
@@ -25,9 +46,26 @@ func TestRunCheckAndConfirmIntegration(t *testing.T) {
 		t.Skip("未设置 TEST_DATABASE_URL，跳过数据库集成测试")
 	}
 	ctx := context.Background()
-	gdb, err := db.Open(url)
+
+	// 1) 先在默认 schema 下重建本包专用 schema，避免与 cmd/api 的 public 相互干扰。
+	adminDB, err := db.Open(url)
 	if err != nil {
 		t.Fatalf("连接测试库失败: %v", err)
+	}
+	if err := adminDB.Exec("DROP SCHEMA IF EXISTS " + linkhealthSchema + " CASCADE").Error; err != nil {
+		t.Fatalf("清理测试 schema 失败: %v", err)
+	}
+	if err := adminDB.Exec("CREATE SCHEMA " + linkhealthSchema).Error; err != nil {
+		t.Fatalf("创建测试 schema 失败: %v", err)
+	}
+	if sqlDB, err := adminDB.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+
+	// 2) 用带 search_path 的连接执行迁移与断言。
+	gdb, err := db.Open(withSearchPath(url, linkhealthSchema))
+	if err != nil {
+		t.Fatalf("连接测试 schema 失败: %v", err)
 	}
 	if _, err := db.Migrate(ctx, gdb, "../../../migrations"); err != nil {
 		t.Fatalf("执行迁移失败: %v", err)

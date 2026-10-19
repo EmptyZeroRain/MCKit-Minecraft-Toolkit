@@ -9,7 +9,10 @@ import (
 	"mckit/backend/internal/domain"
 )
 
-// AdminRepo 管理员数据访问接口（便于测试隔离）。
+// AdminRepo 后台账号数据访问接口（便于测试隔离）。
+//
+// 统一账号（迁移 0022）后 admins 与 users 合并为 accounts，
+// 本接口只服务后台登录入口，因此查询必须排除普通用户（role = 'user'）。
 type AdminRepo interface {
 	FindByUsername(username string) (*domain.Admin, error)
 	FindByID(id string) (*domain.Admin, error)
@@ -18,7 +21,7 @@ type AdminRepo interface {
 	ChangePassword(adminID, newHash string) error
 }
 
-// GORMAdminRepo 基于 GORM 的管理员仓库实现。
+// GORMAdminRepo 基于 GORM 的后台账号仓库实现。
 type GORMAdminRepo struct {
 	db *gorm.DB
 }
@@ -28,10 +31,11 @@ func NewAdminRepo(db *gorm.DB) *GORMAdminRepo {
 	return &GORMAdminRepo{db: db}
 }
 
-// FindByUsername 按用户名查询，唯一索引保证至多一条。
+// FindByUsername 按用户名查询后台账号（排除 role = 'user' 的普通用户）。
+// 排除普通用户是安全边界：普通用户不得从 /admin/auth/login 登录后台。
 func (r *GORMAdminRepo) FindByUsername(username string) (*domain.Admin, error) {
 	var admin domain.Admin
-	err := r.db.Where("username = ?", username).First(&admin).Error
+	err := r.db.Where("username = ? AND role <> ?", username, domain.RoleUser).First(&admin).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -41,10 +45,10 @@ func (r *GORMAdminRepo) FindByUsername(username string) (*domain.Admin, error) {
 	return &admin, nil
 }
 
-// FindByID 按 ID 查询。
+// FindByID 按 ID 查询后台账号（同样排除普通用户）。
 func (r *GORMAdminRepo) FindByID(id string) (*domain.Admin, error) {
 	var admin domain.Admin
-	err := r.db.Where("id = ?", id).First(&admin).Error
+	err := r.db.Where("id = ? AND role <> ?", id, domain.RoleUser).First(&admin).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}

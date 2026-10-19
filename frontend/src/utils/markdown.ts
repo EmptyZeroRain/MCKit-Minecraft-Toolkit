@@ -61,6 +61,13 @@ function splitTableRow(line: string): string[] {
   return cells
 }
 
+/** 是否为 Markdown 表格分隔行（如 `| --- | :--: |`）。 */
+function isTableSeparator(line: string): boolean {
+  if (!line.includes('|')) return false
+  const cells = splitTableRow(line)
+  return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c))
+}
+
 export function renderSafeMarkdown(source: string): string {
   const lines = source.replace(/\r\n/g, '\n').split('\n')
   const out: string[] = []
@@ -77,14 +84,30 @@ export function renderSafeMarkdown(source: string): string {
       inList = null
     }
   }
+  const closeQuote = () => {
+    if (inQuote) {
+      out.push('</blockquote>')
+      inQuote = false
+    }
+  }
+  // 表格必须在「离开表格的那一行」之前结算：否则表格会被推迟到文末输出。
+  const flushTable = () => {
+    if (inTable) {
+      out.push(renderTable(tableBuf))
+      tableBuf = []
+      inTable = false
+    }
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
 
-    // 代码块 ```lang
+    // 代码块 ```lang（围栏内一律按字面处理）
     if (line.trimStart().startsWith('```')) {
       if (!inCode) {
         closeList()
+        closeQuote()
+        flushTable()
         inCode = true
         codeBuf = []
       } else {
@@ -103,14 +126,36 @@ export function renderSafeMarkdown(source: string): string {
     // 分割线
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
       closeList()
+      closeQuote()
+      flushTable()
       out.push('<hr/>')
       continue
+    }
+
+    // 表格：仅当「当前行含 |」且「下一行是分隔行」时才开始，
+    // 避免把正文里偶然含 | 的句子误判为表格。
+    const startsTable = line.includes('|') && isTableSeparator(lines[i + 1] ?? '')
+    if (inTable && startsTable) flushTable() // 相邻两张表：先结算上一张
+    if (!inTable && startsTable) {
+      closeList()
+      closeQuote()
+      tableBuf = [splitTableRow(line)]
+      inTable = true
+      continue
+    }
+    if (inTable) {
+      if (line.includes('|')) {
+        if (!isTableSeparator(line)) tableBuf.push(splitTableRow(line))
+        continue
+      }
+      flushTable()
     }
 
     // 标题
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/)
     if (heading) {
       closeList()
+      closeQuote()
       const level = heading[1].length
       out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`)
       continue
@@ -128,10 +173,7 @@ export function renderSafeMarkdown(source: string): string {
       out.push(`<p>${content}</p>`)
       continue
     }
-    if (inQuote) {
-      out.push('</blockquote>')
-      inQuote = false
-    }
+    closeQuote()
 
     // 无序列表
     const ul = trimmed.match(/^[-*+]\s+(.*)$/)
@@ -163,25 +205,6 @@ export function renderSafeMarkdown(source: string): string {
       continue
     }
 
-    // 表格（简版：相邻行含 | 且第二行为分隔）
-    if (line.includes('|')) {
-      const cells = splitTableRow(line)
-      if (cells.length > 0) {
-        if (/^:?-{2,}:?$/.test(cells[0]) || (cells.length >= 2 && /^:?-{2,}:?$/.test(cells[1]))) {
-          // 分隔行，忽略
-          continue
-        }
-        tableBuf.push(cells)
-        inTable = true
-        continue
-      }
-    }
-    if (inTable && !line.includes('|')) {
-      out.push(renderTable(tableBuf))
-      tableBuf = []
-      inTable = false
-    }
-
     closeList()
     out.push(`<p>${renderInline(linkify(trimmed))}</p>`)
   }
@@ -189,7 +212,9 @@ export function renderSafeMarkdown(source: string): string {
   if (inCode) {
     out.push(`<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`)
   }
-  if (inTable) out.push(renderTable(tableBuf))
+  flushTable()
+  closeList()
+  closeQuote()
 
   return out.join('\n')
 }

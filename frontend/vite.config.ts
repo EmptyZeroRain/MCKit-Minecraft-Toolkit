@@ -26,4 +26,9 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
+  // 反编译 Worker 内部有动态 import（Vineflower 的 WASM→JS 运行时回退），
+  // 会产生代码分割，因此 Worker 必须用 ES 格式（默认 iife 不支持 code-splitting）。
+  worker: {
+    format: 'es',
+  },
 })

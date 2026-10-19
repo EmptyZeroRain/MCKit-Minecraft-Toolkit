@@ -15,7 +15,8 @@ import {
   resetAdminPassword,
   deleteAdmin,
 } from '@/api/admin-admins'
-import type { AdminUser } from '@/types/admin'
+import { listRoles } from '@/api/admin-roles'
+import type { AdminUser, RoleRow } from '@/types/admin'
 import type { AdminRole } from '@/types/common'
 import { ApiError } from '@/types/api'
 import { timeAgo } from '@/utils/format'
@@ -29,6 +30,9 @@ const total = ref(0)
 const totalPages = ref(1)
 const loading = ref(false)
 const error = ref('')
+
+// 可选角色（来自「角色管理」，含自定义角色）
+const roles = ref<RoleRow[]>([])
 
 // 创建表单
 const createForm = reactive<{ username: string; password: string; role: AdminRole }>({
@@ -67,6 +71,27 @@ async function load() {
   }
 }
 
+// loadRoles 拉取可选角色；失败不阻断账号列表（仅角色下拉为空）。
+async function loadRoles() {
+  try {
+    roles.value = await listRoles()
+    if (!roles.value.some((r) => r.name === createForm.role) && roles.value.length) {
+      createForm.role = roles.value.find((r) => r.name === 'editor')?.name ?? roles.value[0].name
+    }
+  } catch {
+    roles.value = []
+  }
+}
+
+// roleOptions 行内下拉选项：以角色表为准，并保留当前账号的角色（角色被改名/删除时仍可正确展示）。
+function roleOptions(item: AdminUser): { name: string; label: string }[] {
+  const options = roles.value.map((r) => ({ name: r.name, label: r.label }))
+  if (item.role && !options.some((o) => o.name === item.role)) {
+    options.push({ name: item.role, label: item.role })
+  }
+  return options
+}
+
 function onPageChange(p: number) {
   filters.page = p
   load()
@@ -96,9 +121,7 @@ async function handleCreate() {
   try {
     await createAdmin({ username, password: createForm.password, role: createForm.role })
     ui.success('管理员账号已创建')
-    createForm.username = ''
-    createForm.password = ''
-    createForm.role = 'editor'
+    handleCreateReset()
     load()
   } catch (err) {
     ui.error(err instanceof ApiError ? err.message : '创建失败')
@@ -174,7 +197,16 @@ async function confirmDelete() {
   }
 }
 
-onMounted(load)
+function handleCreateReset() {
+  createForm.username = ''
+  createForm.password = ''
+  createForm.role = roles.value.find((r) => r.name === 'editor')?.name ?? roles.value[0]?.name ?? 'editor'
+}
+
+onMounted(() => {
+  loadRoles()
+  load()
+})
 </script>
 
 <template>
@@ -213,8 +245,7 @@ onMounted(load)
               v-model="createForm.role"
               class="h-10 w-full rounded-md border border-border-dark bg-ink-900 px-3 text-sm text-text-primary focus:border-grass-500 focus:outline-none"
             >
-              <option value="editor">编辑（editor）</option>
-              <option value="admin">管理员（admin）</option>
+              <option v-for="r in roles" :key="r.name" :value="r.name">{{ r.label }}（{{ r.name }}）</option>
             </select>
           </template>
         </FormField>
@@ -268,8 +299,7 @@ onMounted(load)
                   :disabled="busyId === item.id"
                   @change="changeRole(item, ($event.target as HTMLSelectElement).value as AdminRole)"
                 >
-                  <option value="editor">编辑</option>
-                  <option value="admin">管理员</option>
+                  <option v-for="r in roleOptions(item)" :key="r.name" :value="r.name">{{ r.label }}</option>
                 </select>
               </td>
               <td class="px-4 py-3">

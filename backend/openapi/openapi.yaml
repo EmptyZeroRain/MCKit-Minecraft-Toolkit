@@ -27,6 +27,8 @@ tags:
     description: 普通用户账号与个人数据（需登录，写操作 + CSRF）
   - name: admin
     description: 后台管理（需登录 + CSRF）
+  - name: mcsrc
+    description: MC 源码浏览器（jar 缓存与类索引；准备接口为管理员专属）
 
 paths:
   /health:
@@ -1043,7 +1045,7 @@ paths:
     post:
       tags: [user]
       summary: 用户登录
-      description: 成功时种下 HttpOnly 会话 Cookie（默认 mc_user_session），并在响应中返回 csrf_token。
+      description: 成功时种下 HttpOnly 统一会话 Cookie（`SESSION_COOKIE_NAME`，默认 mc_session），并在响应中返回 csrf_token。
       requestBody:
         content:
           application/json:
@@ -1418,6 +1420,30 @@ paths:
             schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "204": { description: 已删除 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/users/list:
+    post:
+      tags: [admin]
+      summary: 普通用户列表（admin 专属；含个人数据计数）
+      description: |
+        按用户名模糊匹配（`q`）与状态（`status`：`active` / `disabled` / 空表示不限）筛选，分页返回。
+        每条附带 `favorite_count` / `recent_count` / `seed_count`（该用户收藏 / 最近使用 / 常用种子数量）。
+        普通用户与管理员账号体系分离，本接口不改变其权限。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 用户名模糊匹配 }
+                status: { type: string, enum: [active, disabled], description: 省略表示不限 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/data-quality/overview:
@@ -2113,12 +2139,268 @@ paths:
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
 
+  /admin/roles/list:
+    post:
+      tags: [admin]
+      summary: 角色列表（需 accounts.roles 权限）
+      description: |
+        角色总量小（内置 3 个 + 自定义少量），一次性返回，不分页。
+        `is_system=true` 为内置角色（不可删除/改名，但权限可调整，且 `admin` 必须保留全量权限）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /admin/roles/permissions:
+    post:
+      tags: [admin]
+      summary: 权限点目录（需 accounts.roles 权限）
+      description: 返回权限点分组（组名 + 组内权限点 + 中文名），供前端按组勾选。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /admin/roles/create:
+    post:
+      tags: [admin]
+      summary: 新建自定义角色（需 accounts.roles 权限）
+      description: |
+        `name` 为角色主键（不可改名），仅允许小写字母/数字/下划线/中划线；
+        权限点必须是权限点目录中的合法值，非法值返回 422。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: 角色标识（主键，不可改名） }
+                label: { type: string, description: 展示名 }
+                description: { type: string }
+                permissions:
+                  type: array
+                  items: { type: string }
+                  description: 权限点列表（见 /admin/roles/permissions）
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/roles/update:
+    post:
+      tags: [admin]
+      summary: 更新角色（需 accounts.roles 权限）
+      description: |
+        仅更新传入字段（`label` / `description` / `permissions`）。
+        内置 `admin` 角色必须保留全量权限，削权返回 422；内置角色不可改名。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                label: { type: string }
+                description: { type: string }
+                permissions: { type: array, items: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/roles/delete:
+    post:
+      tags: [admin]
+      summary: 删除自定义角色（需 accounts.roles 权限）
+      description: 内置角色不可删除（422）；仍被账号引用的角色不可删除（409）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: 角色标识（主键） }
+      responses:
+        "204": { description: 已删除 }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/status:
+    post:
+      tags: [mcsrc]
+      summary: 查询某版本 jar 的缓存与索引状态（公开只读）
+      description: |
+        返回该版本（侧别）是否已缓存官方 jar、是否已建立类索引，以及体积 / 类数量 / 时间。
+        jar 由服务端统一下载缓存，避免每个访客各自下载数百 MB。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string, description: "MC 版本号，如 1.21.4" }
+                side: { type: string, enum: [client, server], description: 默认 client }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/prepared:
+    post:
+      tags: [mcsrc]
+      summary: 已缓存的版本列表（公开只读）
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /mcsrc/classes/list:
+    post:
+      tags: [mcsrc]
+      summary: 类索引检索（公开只读）
+      description: |
+        在已建立索引的版本中检索类。匹配大小写不敏感，相关度排序：
+        简单名相等 > 简单名前缀 > 简单名包含 > 全限定名包含。
+        未建立索引时返回 409 `NEED_PREPARE`。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                q: { type: string, description: 关键词（匹配简单名与全限定名） }
+                pkg: { type: string, description: 包名前缀过滤 }
+                include_inner: { type: boolean, description: 是否包含内部类（默认 false） }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 200, description: 默认 50 }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "409":
+          description: 该版本尚未建立类索引（`NEED_PREPARE`）
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/classes/detail:
+    post:
+      tags: [mcsrc]
+      summary: 类结构视图（公开只读）
+      description: |
+        返回单个类的结构：修饰符、种类（class / interface / enum / annotation）、class 文件版本、
+        父类与直接接口、字段与方法（描述符已渲染为 Java 类型，如 `(Ljava/lang/String;I)V` → `void m(java.lang.String, int)`）。
+        仅解析该类的 class 字节码（不反编译、不依赖 JVM），与 jar 体积无关。
+        `in_jar_super` / `in_jar_interfaces` 表示父类 / 接口是否也在本 jar 内（可在前端继续下钻）。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, class]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                class: { type: string, description: "全限定类名（点分或斜杠分隔均可）" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { description: "该版本尚未缓存 jar（`NOT_FOUND`），或类不在 jar 中（`CLASS_NOT_FOUND`）" }
+        "413": { description: "class 条目超出解析上限（`CLASS_TOO_LARGE`）" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/classes/hierarchy:
+    post:
+      tags: [mcsrc]
+      summary: 类继承关系（公开只读）
+      description: |
+        返回祖先链（直接父类逐级向上，直至跳出本 jar 的终点，如 `java.lang.Object`）与
+        直接子类（含实现本接口的类，最多 500 个，超出时 `truncated=true`），
+        并给出直接子类总数与递归子类总数。
+        首次调用需扫描本 jar 内全部 class 建立关系索引（按 jar 摘要缓存于内存），之后为毫秒级。
+        该版本已缓存 jar 但未建类索引时返回 409 `NEED_PREPARE`。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, class]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                class: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { description: "该版本尚未缓存 jar（`NOT_FOUND`），或类不在 jar 中（`CLASS_NOT_FOUND`）" }
+        "409":
+          description: 该版本尚未建立类索引（`NEED_PREPARE`）
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/jar:
+    get:
+      tags: [mcsrc]
+      summary: 下载已缓存的 jar（公开只读）
+      description: |
+        以流式响应返回服务端已缓存的官方 jar，供前端在**浏览器内**用 Vineflower（WASM）
+        反编译源码——无需部署侧 JVM，也不把 jar 纳入仓库或数据库。
+        支持 `Range` 与条件请求（`ETag` 取 jar 的官方 sha1），便于浏览器缓存与断点续传。
+        **这是本模块唯一的 GET 接口**：二进制大文件下载无法用项目惯例的「POST + JSON body」表达。
+        该版本尚未缓存时返回 404，且**不会**触发下载。
+      parameters:
+        - name: version
+          in: query
+          required: true
+          schema: { type: string }
+        - name: side
+          in: query
+          required: false
+          schema: { type: string, enum: [client, server], default: client }
+      responses:
+        "200":
+          description: "jar 字节流（`Content-Type: application/java-archive`，含 `ETag` 与 `Accept-Ranges`）"
+          content:
+            application/java-archive:
+              schema: { type: string, format: binary }
+        "206": { description: Range 请求返回的部分内容 }
+        "304": { description: "`If-None-Match` 命中 `ETag`（内容未变）" }
+        "404": { description: 该版本尚未缓存 jar（`NOT_FOUND`） }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/prepare:
+    post:
+      tags: [admin]
+      summary: 下载 jar 并建立类索引（需 ops.mcsrc 权限）
+      description: |
+        触发服务端下载官方 jar（校验官方 sha1）并建立类索引，幂等：已缓存且摘要一致时直接返回。
+        单次可达数百 MB，因此限管理员触发，并叠加限流与并发上限（同一时刻只允许一个准备任务）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server], description: 默认 client }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { description: "版本不存在，或该版本缺少对应侧别的下载地址（`NO_DOWNLOAD`）" }
+        "413": { description: "jar 体积超过上限（`JAR_TOO_LARGE`）" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "502": { description: "上游下载失败或 sha1 校验不符（`JAR_CHECKSUM_MISMATCH`）" }
+
 components:
   securitySchemes:
     cookieAuth:
       type: apiKey
       in: cookie
-      name: mc_admin_session
+      # 统一会话 Cookie（迁移 0022）：管理员与普通用户共用，名字由 SESSION_COOKIE_NAME 配置。
+      name: mc_session
 
   parameters:
     CsrfToken:

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -75,7 +76,7 @@ func integrationSetup(t *testing.T) (*gorm.DB, http.Handler) {
 		cfgInstance = &config.Config{
 			AppEnv:               "test",
 			AppBaseURL:           "http://localhost:5173",
-			SessionCookieName:    "mc_admin_session",
+			SessionCookieName:    "mc_session",
 			SessionSecure:        false,
 			LogLevel:             "error",
 			RateLimitRPS:         1000,
@@ -85,6 +86,10 @@ func integrationSetup(t *testing.T) (*gorm.DB, http.Handler) {
 			MCMetaCacheDir:       "cache",
 			MCMetaCacheTTL:       time.Hour,
 			BlockIDFile:          "data/物品id.md",
+			MCSRCEnabled:         true,
+			MCSRCCacheDir:        filepath.Join(os.TempDir(), "mckit-mcsrc-it"),
+			MCSRCJarMaxMB:        64,
+			MCSRCIndexMaxClasses: 1000,
 		}
 		middleware.SetCookieName(cfgInstance.SessionCookieName)
 
@@ -131,15 +136,30 @@ func seedAdmins(gdb *gorm.DB) error {
 	return nil
 }
 
-// resetData 清理业务数据，保留管理员账号。
+// resetData 清理业务数据，保留后台账号。
+//
+// 统一账号（迁移 0022）后 admins/users 合并为 accounts，不能整表 TRUNCATE
+// （会删掉 seedAdmins 建的后台账号），改为只删除 role = 'user' 的普通用户；
+// 其个人数据（收藏 / 最近使用 / 常用种子）由外键 ON DELETE CASCADE 一并清理。
 func resetData(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
+	// 统计采集器（itCollector）是包级单例，内存缓冲会跨用例累积：
+	// 先落库、再随下面的 TRUNCATE 一起清掉，避免上一用例的统计事件
+	// 被后续用例的 Flush 带进本次断言（曾导致 TestUsageStatsAndAnalytics 偶发失败）。
+	if itCollector != nil {
+		if err := itCollector.Flush(context.Background()); err != nil {
+			t.Fatalf("清理统计缓冲失败: %v", err)
+		}
+	}
 	err := gdb.Exec(`TRUNCATE resources, tools, wiki_entries, items, recipes, commands,
 		feedback, categories, tags, audit_logs, data_import_jobs, search_terms, dev_docs,
 		tool_stats_daily, resource_stats_daily, api_stats_daily, search_stats_daily
 		RESTART IDENTITY CASCADE`).Error
 	if err != nil {
 		t.Fatalf("清理测试数据失败: %v", err)
+	}
+	if err := gdb.Exec("DELETE FROM accounts WHERE role = ?", domain.RoleUser).Error; err != nil {
+		t.Fatalf("清理普通用户失败: %v", err)
 	}
 }
 
@@ -176,8 +196,9 @@ func loginAs(t *testing.T, router http.Handler, username string) (*http.Cookie, 
 		t.Fatalf("解析登录响应失败: %v", err)
 	}
 	var cookie *http.Cookie
+	// 统一账号（迁移 0022）：后台与前台共用一个会话 Cookie，名字以配置为准。
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == "mc_admin_session" {
+		if c.Name == middleware.SessionCookieName() {
 			cookie = c
 		}
 	}
@@ -489,6 +510,455 @@ func TestSearchDevDocs(t *testing.T) {
 }
 
 // TestLinkCheckBlocksSSRF 覆盖 §13.2：非法/内网 URL 无法通过链接检查，且只更新状态。
+// TestAdminUsersList 覆盖后台「普通用户管理」（admin 专属）：
+// 列表分页 + 个人数据计数 + 状态 / 关键词筛选，且 editor 无权访问。
+func TestAdminUsersList(t *testing.T) {
+	gdb, router := integrationSetup(t)
+	resetData(t, itDB)
+
+	hash, err := auth.HashPassword("user-pass-123456")
+	if err != nil {
+		t.Fatalf("哈希用户密码失败: %v", err)
+	}
+	// 统一账号后普通用户必须显式带 role = 'user'（否则会被判为后台账号）。
+	alice := domain.User{Username: "alice", PasswordHash: hash, Role: domain.RoleUser, IsActive: true}
+	bob := domain.User{Username: "bob", PasswordHash: hash, Role: domain.RoleUser, IsActive: true}
+	if err := gdb.Create(&alice).Error; err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	if err := gdb.Create(&bob).Error; err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	// 注意：users.is_active 带 default true，GORM Create 会忽略零值 false，
+	// 因此「禁用」必须走 Update（与后台启用/禁用的真实路径一致）。
+	if err := gdb.Model(&domain.User{}).Where("id = ?", bob.ID).
+		Update("is_active", false).Error; err != nil {
+		t.Fatalf("禁用用户失败: %v", err)
+	}
+
+	// alice：2 收藏 / 1 最近使用 / 1 常用种子；bob：全 0。
+	for _, f := range []domain.UserFavorite{
+		{UserID: alice.ID, Kind: "tool", ObjectID: "redstone", Label: "红石资料", URL: "/tools/redstone"},
+		{UserID: alice.ID, Kind: "item", ObjectID: "minecraft:stone", Label: "石头", URL: "/items/minecraft:stone"},
+	} {
+		if err := gdb.Create(&f).Error; err != nil {
+			t.Fatalf("创建收藏失败: %v", err)
+		}
+	}
+	if err := gdb.Create(&domain.UserRecent{UserID: alice.ID, Kind: "tool", ObjectID: "redstone", Label: "红石资料", URL: "/tools/redstone"}).Error; err != nil {
+		t.Fatalf("创建最近使用失败: %v", err)
+	}
+	if err := gdb.Create(&domain.UserSeed{UserID: alice.ID, Name: "测试种子", Seed: "123456789"}).Error; err != nil {
+		t.Fatalf("创建常用种子失败: %v", err)
+	}
+
+	type userRow struct {
+		Username      string `json:"username"`
+		IsActive      bool   `json:"is_active"`
+		FavoriteCount int64  `json:"favorite_count"`
+		RecentCount   int64  `json:"recent_count"`
+		SeedCount     int64  `json:"seed_count"`
+	}
+	type listResp struct {
+		Data []userRow `json:"data"`
+		Meta struct {
+			Total int64 `json:"total"`
+		} `json:"meta"`
+	}
+
+	// 1) editor 访问被拒（403）。
+	editorCookie, editorCSRF := loginAs(t, router, itEditorUser)
+	rec := do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{}`, editorCookie, editorCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("editor 期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 2) admin 访问成功，计数正确。
+	cookie, csrf := loginAs(t, router, itAdminUser)
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{}`, cookie, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var got listResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if got.Meta.Total != 2 || len(got.Data) != 2 {
+		t.Fatalf("期望 2 名用户，实际 total=%d len=%d", got.Meta.Total, len(got.Data))
+	}
+	byName := map[string]userRow{}
+	for _, u := range got.Data {
+		byName[u.Username] = u
+	}
+	a := byName["alice"]
+	if a.FavoriteCount != 2 || a.RecentCount != 1 || a.SeedCount != 1 {
+		t.Fatalf("alice 计数不符：%+v", a)
+	}
+	if b := byName["bob"]; b.FavoriteCount != 0 || b.RecentCount != 0 || b.SeedCount != 0 || b.IsActive {
+		t.Fatalf("bob 数据不符：%+v", b)
+	}
+
+	// 3) 状态筛选：仅禁用。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{"status":"disabled"}`, cookie, csrf)
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Meta.Total != 1 || len(got.Data) != 1 || got.Data[0].Username != "bob" {
+		t.Fatalf("禁用筛选不符：%+v", got)
+	}
+
+	// 4) 关键词筛选：用户名模糊匹配。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{"q":"ali"}`, cookie, csrf)
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Meta.Total != 1 || got.Data[0].Username != "alice" {
+		t.Fatalf("关键词筛选不符：%+v", got)
+	}
+}
+
+// TestUnifiedAccountBoundaries 覆盖迁移 0022「统一账号体系」的边界：
+//   - admins / users 合并为 accounts，靠 role 区分身份，注册固定 role = 'user'；
+//   - 双登录入口互不串号：普通用户不能登后台，后台账号不能登前台；
+//   - 会话 Cookie 合并为同一个，但接口仍按角色隔离（401 / 403）。
+func TestUnifiedAccountBoundaries(t *testing.T) {
+	gdb, router := integrationSetup(t)
+	resetData(t, itDB)
+
+	const userPass = "user-pass-123456"
+
+	// 1) 注册普通用户：固定 role = 'user' 且默认启用。
+	rec := do(t, router, http.MethodPost, "/api/v1/user/register",
+		fmt.Sprintf(`{"username":"it-normal","password":%q}`, userPass), nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("注册期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var acc domain.Account
+	if err := gdb.Where("username = ?", "it-normal").First(&acc).Error; err != nil {
+		t.Fatalf("查询注册账号失败: %v", err)
+	}
+	if acc.Role != domain.RoleUser || !acc.IsActive {
+		t.Fatalf("注册账号角色/状态不符：role=%q active=%v", acc.Role, acc.IsActive)
+	}
+
+	// 2) 普通用户不能从后台入口登录（401，不泄露账号是否存在）。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/auth/login",
+		fmt.Sprintf(`{"username":"it-normal","password":%q}`, userPass), nil, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("普通用户登后台期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 3) 后台账号不能从前台入口登录。
+	rec = do(t, router, http.MethodPost, "/api/v1/user/login",
+		fmt.Sprintf(`{"username":%q,"password":%q}`, itAdminUser, itPassword), nil, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("后台账号登前台期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 4) 普通用户登录前台：会话 Cookie 与后台同名（统一会话）。
+	rec = do(t, router, http.MethodPost, "/api/v1/user/login",
+		fmt.Sprintf(`{"username":"it-normal","password":%q}`, userPass), nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("前台登录期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var userCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == middleware.SessionCookieName() {
+			userCookie = c
+		}
+	}
+	if userCookie == nil {
+		t.Fatal("前台登录缺少统一会话 Cookie")
+	}
+	var loginResp struct {
+		Data struct {
+			CSRFToken string `json:"csrf_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("解析前台登录响应失败: %v", err)
+	}
+	userCSRF := loginResp.Data.CSRFToken
+
+	// 5) 普通用户会话访问后台自助接口 → 401（前端据此视为未登录后台）。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/auth/me", `{}`, userCookie, userCSRF)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("普通用户访问 /admin/auth/me 期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 6) 普通用户会话访问后台业务接口 → 403（role=user 不含任何权限点）。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{}`, userCookie, userCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("普通用户访问后台接口期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 7) 后台会话访问普通用户接口 → 401（RequireUserRole 兜底）。
+	adminCookie, adminCSRF := loginAs(t, router, itAdminUser)
+	rec = do(t, router, http.MethodPost, "/api/v1/user/me", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("后台会话访问 /user/me 期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 8) 后台「普通用户管理」只返回普通用户，后台账号不混入。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/users/list", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("普通用户列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var userList struct {
+		Data []struct {
+			Username string `json:"username"`
+		} `json:"data"`
+		Meta struct {
+			Total int64 `json:"total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &userList); err != nil {
+		t.Fatalf("解析用户列表失败: %v", err)
+	}
+	if userList.Meta.Total != 1 || len(userList.Data) != 1 || userList.Data[0].Username != "it-normal" {
+		t.Fatalf("普通用户列表应只含 it-normal：%+v", userList)
+	}
+
+	// 9) 后台「管理员账号管理」不返回普通用户，且拒绝创建 role = 'user'。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/admins/list", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("管理员列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var adminList struct {
+		Data []struct {
+			Username string `json:"username"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &adminList); err != nil {
+		t.Fatalf("解析管理员列表失败: %v", err)
+	}
+	for _, a := range adminList.Data {
+		if a.Username == "it-normal" {
+			t.Fatal("普通用户不应出现在管理员列表")
+		}
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/admins/create",
+		`{"username":"it-should-fail","password":"another-strong-pass-1","role":"user"}`,
+		adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("创建 role=user 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRoleManagement 覆盖后台「角色与权限底座」：
+// 权限点目录、角色 CRUD 与守卫（内置不可删、被引用不可删、admin 必须全量权限），
+// 以及自定义角色对路由访问的真实约束（RequirePermission）。
+func TestRoleManagement(t *testing.T) {
+	gdb, router := integrationSetup(t)
+	resetData(t, itDB)
+
+	adminCookie, adminCSRF := loginAs(t, router, itAdminUser)
+	editorCookie, editorCSRF := loginAs(t, router, itEditorUser)
+
+	// 1) editor 没有 roles.manage → 403。
+	rec := do(t, router, http.MethodPost, "/api/v1/admin/roles/list", `{}`, editorCookie, editorCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("editor 访问角色列表期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 2) admin 列出内置角色，且 admin 角色持有全量权限。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/list", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("角色列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Data []domain.Role `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("解析角色列表失败: %v", err)
+	}
+	byName := map[string]domain.Role{}
+	for _, r := range listResp.Data {
+		byName[r.Name] = r
+	}
+	for _, want := range []string{domain.RoleAdmin, domain.RoleEditor, domain.RoleUser} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("缺少内置角色 %s：%+v", want, byName)
+		}
+	}
+	if len(byName[domain.RoleAdmin].Permissions) != len(domain.AllPermissions()) {
+		t.Fatalf("内置 admin 应持有全量权限，实际 %v", byName[domain.RoleAdmin].Permissions)
+	}
+
+	// 3) 权限点目录：分组非空且全部为合法权限点。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/permissions", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("权限点目录期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var permResp struct {
+		Data []domain.PermissionGroup `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &permResp); err != nil {
+		t.Fatalf("解析权限点目录失败: %v", err)
+	}
+	if len(permResp.Data) == 0 {
+		t.Fatal("权限点目录不应为空")
+	}
+	total := 0
+	for _, g := range permResp.Data {
+		for _, p := range g.Permissions {
+			total++
+			if !domain.IsValidPermission(p.Key) {
+				t.Fatalf("目录包含非法权限点 %s", p.Key)
+			}
+		}
+	}
+	if total != len(domain.AllPermissions()) {
+		t.Fatalf("目录权限点数量 %d 与 AllPermissions %d 不一致", total, len(domain.AllPermissions()))
+	}
+
+	// 4) 新建自定义角色（仅工具管理）。
+	const roleName = "it-toolkeeper"
+	const keeperUser = "it-toolkeeper-user"
+	cleanupRole := func() {
+		gdb.Exec("DELETE FROM accounts WHERE username = ?", keeperUser)
+		gdb.Exec("DELETE FROM roles WHERE name = ?", roleName)
+	}
+	cleanupRole()
+	t.Cleanup(cleanupRole)
+
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/create",
+		`{"name":"`+roleName+`","label":"工具维护","description":"仅可管理工具","permissions":["content.tools"]}`,
+		adminCookie, adminCSRF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("创建角色期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 5) 非法权限点 → 422。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/create",
+		`{"name":"it-bad-perm","label":"非法","permissions":["nope.nope"]}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("非法权限点期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 6) 内置角色不可删除 → 422。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/delete",
+		`{"name":"editor"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("删除内置角色期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 7) 内置 admin 角色不可被削权 → 422。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/update",
+		`{"name":"admin","permissions":["content.tools"]}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("削权内置 admin 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 8) 用自定义角色建管理员账号，验证权限点真实生效。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/admins/create",
+		`{"username":"`+keeperUser+`","password":"`+itPassword+`","role":"`+roleName+`"}`,
+		adminCookie, adminCSRF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("创建自定义角色账号期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	keeperCookie, keeperCSRF := loginAs(t, router, keeperUser)
+
+	// 有 content.tools → 工具列表 200。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/tools/list", `{}`, keeperCookie, keeperCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("工具列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	// 无 content.resources → 403。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/list", `{}`, keeperCookie, keeperCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("资源列表期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	// 无 roles.manage → 403。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/list", `{}`, keeperCookie, keeperCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("角色列表期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 9) 角色仍被账号引用时不可删除 → 409。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/delete",
+		`{"name":"`+roleName+`"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("删除被引用角色期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 10) 删除账号后可删除角色。
+	var keeper domain.Admin
+	if err := gdb.Where("username = ?", keeperUser).First(&keeper).Error; err != nil {
+		t.Fatalf("查询自定义角色账号失败: %v", err)
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/admins/delete",
+		`{"id":"`+keeper.ID.String()+`"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("删除账号期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/roles/delete",
+		`{"name":"`+roleName+`"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("删除角色期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMcsrcRoutesAuthGating 覆盖「MC 源码库」路由的鉴权边界：
+// 只读接口公开（且非法入参不触发上游请求），触发下载 / 建索引为管理员专属。
+func TestMcsrcRoutesAuthGating(t *testing.T) {
+	_, router := integrationSetup(t)
+
+	// 公开只读：非法版本号 → 422（不会发起上游请求）。
+	rec := do(t, router, http.MethodPost, "/api/v1/mcsrc/status", `{"version":"../etc/passwd"}`, nil, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("非法版本号期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 公开只读：已准备列表 → 200。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepared", `{}`, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("已准备列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 公开只读：类结构视图 / 继承关系（版本未准备 → 404，不会触发下载）。
+	// 注意：断言 404 而非具体错误码——若缓存目录存在历史 jar，
+	// 也会因类不存在而返回 404 CLASS_NOT_FOUND，两种情形都是 404。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/classes/detail",
+		`{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`, nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未准备版本的类详情期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/classes/hierarchy",
+		`{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`, nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未准备版本的继承关系期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 公开只读：jar 下载（版本未缓存 → 404，不会触发下载；匿名可访问即证明公开）。
+	// 用一个绝不会被缓存的版本号，避免共享临时缓存目录里的历史 jar 造成误判。
+	rec = do(t, router, http.MethodGet, "/api/v1/mcsrc/jar?version=0.0.0-absent", "", nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未缓存版本的 jar 期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 公开只读：jar 缺 version → 422（入参校验先于任何 IO）。
+	rec = do(t, router, http.MethodGet, "/api/v1/mcsrc/jar", "", nil, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("jar 缺 version 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 公开只读：缺 class → 422（入参校验先于任何 IO）。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/classes/detail", `{"version":"1.21.4"}`, nil, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺 class 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 触发下载：匿名 → 401。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"1.21.4"}`, nil, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("匿名触发下载期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 触发下载：editor 无 ops.mcsrc → 403。
+	editorCookie, editorCSRF := loginAs(t, router, itEditorUser)
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"1.21.4"}`, editorCookie, editorCSRF)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("editor 触发下载期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+}
+
 func TestLinkCheckBlocksSSRF(t *testing.T) {
 	gdb, router := integrationSetup(t)
 	resetData(t, itDB)
@@ -724,7 +1194,7 @@ func TestAdminSelfGuards(t *testing.T) {
 	}
 
 	// 收敛为唯一启用 admin 后，降级自己应被拒绝
-	gdb.Exec("UPDATE admins SET is_active = false WHERE role = 'admin' AND username <> ?", itAdminUser)
+	gdb.Exec("UPDATE accounts SET is_active = false WHERE role = 'admin' AND username <> ?", itAdminUser)
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/admins/update",
 		fmt.Sprintf(`{"id":%q,"role":"editor"}`, adminID), cookie, csrf)
 	if rec.Code != http.StatusUnprocessableEntity {

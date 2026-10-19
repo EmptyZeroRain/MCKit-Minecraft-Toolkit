@@ -35,7 +35,7 @@ func TestRequireRole(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/admin/x", nil)
 			if tc.withSession {
 				req = req.WithContext(WithSession(req.Context(), &auth.Session{
-					AdminID: "a", Role: tc.role,
+					AccountID: "a", Role: tc.role,
 				}))
 			}
 			rec := httptest.NewRecorder()

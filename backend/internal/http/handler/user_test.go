@@ -22,19 +22,22 @@ func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionSto
 	repo := user.NewMemoryRepo()
 	sessions := auth.NewMemorySessionStore()
 	svc := user.NewService(repo, sessions, 5, 900)
-	h := NewUserHandler(svc, false, "mc_user_session")
+	// 统一账号（迁移 0022）后管理员与普通用户共用会话 Cookie，处理器与中间件同名。
+	middleware.SetCookieName("mc_test_session")
+	h := NewUserHandler(svc, false)
 
 	r := chi.NewRouter()
 	r.Route("/user", func(ur chi.Router) {
 		ur.Post("/register", h.Register)
 		ur.Post("/login", h.Login)
 		ur.Group(func(authed chi.Router) {
-			authed.Use(middleware.RequireUserAuth(svc))
+			authed.Use(middleware.RequireAuth(svc))
+			authed.Use(middleware.RequireUserRole())
 			authed.Post("/logout", h.Logout)
 			authed.Post("/me", h.Me)
 			authed.Post("/favorites/list", h.ListFavorites)
 			authed.Group(func(csrf chi.Router) {
-				csrf.Use(middleware.UserCSRF)
+				csrf.Use(middleware.CSRF)
 				csrf.Post("/favorites/toggle", h.ToggleFavorite)
 			})
 		})
@@ -51,7 +54,7 @@ func doJSON(r chi.Router, method, path, cookie, csrf string, body any) *httptest
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	if cookie != "" {
-		req.AddCookie(&http.Cookie{Name: "mc_user_session", Value: cookie})
+		req.AddCookie(&http.Cookie{Name: "mc_test_session", Value: cookie})
 	}
 	if csrf != "" {
 		req.Header.Set("X-CSRF-Token", csrf)
@@ -123,7 +126,7 @@ func TestUserRoutesRejectAdminSession(t *testing.T) {
 	// 伪造一个管理员角色的会话塞入同一存储，并携带其 Cookie 访问用户接口。
 	if err := sessions.Create(context.Background(), auth.Session{
 		SessionID: "admin-sid",
-		AdminID:   "admin-1",
+		AccountID: "admin-1",
 		Username:  "root",
 		Role:      "admin",
 		CSRFToken: "admin-csrf",

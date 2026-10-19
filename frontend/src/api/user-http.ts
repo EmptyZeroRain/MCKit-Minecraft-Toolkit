@@ -13,7 +13,7 @@ const userHttp = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
-  withCredentials: true, // 用户会话 Cookie（mc_user_session）
+  withCredentials: true, // 统一会话 Cookie（与后台共用，SESSION_COOKIE_NAME）
 })
 
 let csrfToken = ''

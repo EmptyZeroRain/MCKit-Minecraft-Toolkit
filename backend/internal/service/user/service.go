@@ -83,7 +83,7 @@ type LoginResult struct {
 // sessionTTL 用户会话有效期（与管理员一致：72 小时）。
 const sessionTTL = 72 * time.Hour
 
-// Register 注册新用户。
+// Register 注册新普通用户（固定 role = 'user'，不授予任何后台权限）。
 func (s *Service) Register(ctx context.Context, username, password string) (*domain.User, error) {
 	username = strings.TrimSpace(username)
 	if !usernameRe.MatchString(username) {
@@ -103,7 +103,12 @@ func (s *Service) Register(ctx context.Context, username, password string) (*dom
 	if err != nil {
 		return nil, err
 	}
-	u := &domain.User{Username: username, PasswordHash: hash, IsActive: true}
+	u := &domain.User{
+		Username:     username,
+		PasswordHash: hash,
+		Role:         domain.RoleUser,
+		IsActive:     true,
+	}
 	if err := s.repo.Create(ctx, u); err != nil {
 		return nil, err
 	}
@@ -146,8 +151,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (*Lo
 	expiresAt := time.Now().Add(sessionTTL)
 	sess := auth.Session{
 		SessionID: sessionID,
-		// 复用 AdminID 字段承载用户 ID（会话结构通用），Role 标记为普通用户。
-		AdminID:   u.ID.String(),
+		AccountID: u.ID.String(),
 		Username:  u.Username,
 		Role:      domain.RoleUser,
 		CSRFToken: csrfToken,
@@ -196,7 +200,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 	if err := s.repo.ChangePassword(ctx, userID, hash); err != nil {
 		return err
 	}
-	return s.sessions.DeleteByAdminID(ctx, userID)
+	return s.sessions.DeleteByAccountID(ctx, userID)
 }
 
 // DeleteAccount 删除账号及其全部个人数据（需密码二次确认）。
@@ -217,7 +221,7 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, password string) er
 	if err := s.repo.DeleteUser(ctx, userID); err != nil {
 		return err
 	}
-	return s.sessions.DeleteByAdminID(ctx, userID)
+	return s.sessions.DeleteByAccountID(ctx, userID)
 }
 
 // ListFavorites 列出收藏。

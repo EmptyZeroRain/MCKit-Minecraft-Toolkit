@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// Session 表示一个已登录的管理员会话。
+// Session 表示一个已登录账号的会话（统一账号体系：管理员与普通用户共用）。
 type Session struct {
 	SessionID string
-	AdminID   string
+	AccountID string
 	Username  string
 	Role      string
 	CSRFToken string
@@ -23,8 +23,8 @@ type SessionStore interface {
 	Delete(ctx context.Context, sessionID string) error
 	// Touch 续期会话。
 	Touch(ctx context.Context, sessionID string, ttl time.Duration) error
-	// DeleteByAdminID 使某管理员的全部会话失效（改密、被停用/删除时调用）。
-	DeleteByAdminID(ctx context.Context, adminID string) error
+	// DeleteByAccountID 使某账号的全部会话失效（改密、被停用/改角色/删除时调用）。
+	DeleteByAccountID(ctx context.Context, accountID string) error
 }
 
 // sessionTTL 默认会话有效期。
@@ -96,16 +96,16 @@ func (m *MemorySessionStore) Touch(_ context.Context, sessionID string, ttl time
 	return nil
 }
 
-// DeleteByAdminID 删除指定管理员的全部会话。
+// DeleteByAccountID 删除指定账号的全部会话。
 // 内存实现需遍历所有会话；共享存储（如 Redis）应改用集合索引避免全扫。
-func (m *MemorySessionStore) DeleteByAdminID(_ context.Context, adminID string) error {
-	if adminID == "" {
+func (m *MemorySessionStore) DeleteByAccountID(_ context.Context, accountID string) error {
+	if accountID == "" {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for sid, s := range m.sessions {
-		if s.AdminID == adminID {
+		if s.AccountID == accountID {
 			delete(m.sessions, sid)
 		}
 	}

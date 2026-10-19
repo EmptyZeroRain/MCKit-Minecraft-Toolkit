@@ -36,6 +36,8 @@ go.work.sum
 .env
 .env.*
 !.env.example
+# MC 源码浏览器（mcsrc）下载缓存：jar 体积可达数百 MB 且属可重建派生物，禁止入库
+backend/cache/mcsrc/
 backend/bin/
 backend/coverage.out
 backend/wikicrawl

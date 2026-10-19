@@ -23,6 +23,7 @@ var Tools = []Tool{
 	{Slug: "mods", Route: "/mods"},
 	{Slug: "dev-docs", Route: "/dev"},
 	{Slug: "mappings", Route: "/mappings"},
+	{Slug: "mcsrc", Route: "/mcsrc"},
 	{Slug: "commands", Route: "/commands"},
 	{Slug: "command-generator", Route: "/command-generator"},
 	{Slug: "enchant-calculator", Route: "/enchant-calculator"},

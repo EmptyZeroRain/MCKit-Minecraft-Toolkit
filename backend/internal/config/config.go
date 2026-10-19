@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,12 +19,10 @@ type Config struct {
 
 	DatabaseURL string
 
-	SessionSecret     string
+	SessionSecret string
+	// SessionCookieName 统一会话 Cookie 名（迁移 0022 后管理员与普通用户共用一个会话）。
 	SessionCookieName string
 	SessionSecure     bool
-
-	// UserSessionCookieName 普通用户会话 Cookie 名（与管理员分离）。
-	UserSessionCookieName string
 
 	CORSAllowedOrigins []string
 	CSRFExemptOrigins  []string
@@ -64,6 +63,17 @@ type Config struct {
 	// BlockIDFile 物品对照表（物品id.md）路径。
 	BlockIDFile string
 
+	// MC 源码库（mcsrc）后端支持：服务端下载并缓存 Minecraft jar，构建类索引，
+	// 供「源码浏览器」按版本浏览与搜索，避免每个访客各自下载数百 MB。
+	// MCSRCEnabled 是否启用（默认 true；关闭后相关接口返回 503）。
+	MCSRCEnabled bool
+	// MCSRCCacheDir jar 与索引的磁盘缓存目录（默认 <MCMetaCacheDir>/mcsrc）。
+	MCSRCCacheDir string
+	// MCSRCJarMaxMB 单个 jar 体积上限（MB，默认 512），防止异常文件耗尽磁盘。
+	MCSRCJarMaxMB int
+	// MCSRCIndexMaxClasses 单个 jar 建索引的类数量上限（默认 60000），防止异常膨胀。
+	MCSRCIndexMaxClasses int
+
 	// 使用统计与运营看板（TODO §13）。
 	// StatsEnabled 是否启用使用统计采集（默认 true）。
 	StatsEnabled bool
@@ -86,8 +96,6 @@ func Load() (*Config, error) {
 		SessionSecret:     os.Getenv("SESSION_SECRET"),
 		SessionCookieName: os.Getenv("SESSION_COOKIE_NAME"),
 		SessionSecure:     parseBool(os.Getenv("SESSION_SECURE_COOKIE"), false),
-
-		UserSessionCookieName: os.Getenv("USER_SESSION_COOKIE_NAME"),
 
 		CORSAllowedOrigins: splitList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		CSRFExemptOrigins:  splitList(os.Getenv("CSRF_EXEMPT_ORIGINS")),
@@ -115,6 +123,11 @@ func Load() (*Config, error) {
 		MCMetaCacheTTL: time.Duration(parseInt(os.Getenv("MCMETA_CACHE_TTL_HOURS"), 168)) * time.Hour,
 		BlockIDFile:    os.Getenv("BLOCK_ID_FILE"),
 
+		MCSRCEnabled:         parseBool(os.Getenv("MCSRC_ENABLED"), true),
+		MCSRCCacheDir:        os.Getenv("MCSRC_CACHE_DIR"),
+		MCSRCJarMaxMB:        parseInt(os.Getenv("MCSRC_JAR_MAX_MB"), 512),
+		MCSRCIndexMaxClasses: parseInt(os.Getenv("MCSRC_INDEX_MAX_CLASSES"), 60000),
+
 		StatsEnabled:       parseBool(os.Getenv("STATS_ENABLED"), true),
 		StatsFlushSeconds:  parseInt(os.Getenv("STATS_FLUSH_SECONDS"), 60),
 		StatsRetentionDays: parseInt(os.Getenv("STATS_RETENTION_DAYS"), 180),
@@ -130,10 +143,7 @@ func Load() (*Config, error) {
 		cfg.AppBaseURL = "http://localhost:5173"
 	}
 	if cfg.SessionCookieName == "" {
-		cfg.SessionCookieName = "mc_admin_session"
-	}
-	if cfg.UserSessionCookieName == "" {
-		cfg.UserSessionCookieName = "mc_user_session"
+		cfg.SessionCookieName = "mc_session"
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
@@ -158,6 +168,15 @@ func Load() (*Config, error) {
 	}
 	if cfg.BlockIDFile == "" {
 		cfg.BlockIDFile = "data/物品id.md"
+	}
+	if cfg.MCSRCCacheDir == "" {
+		cfg.MCSRCCacheDir = filepath.Join(cfg.MCMetaCacheDir, "mcsrc")
+	}
+	if cfg.MCSRCJarMaxMB <= 0 {
+		cfg.MCSRCJarMaxMB = 512
+	}
+	if cfg.MCSRCIndexMaxClasses <= 0 {
+		cfg.MCSRCIndexMaxClasses = 60000
 	}
 	if cfg.RegionCacheMaxMB <= 0 {
 		cfg.RegionCacheMaxMB = 256

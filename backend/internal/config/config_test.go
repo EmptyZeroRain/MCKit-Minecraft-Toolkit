@@ -29,8 +29,9 @@ func TestLoadValid(t *testing.T) {
 	if cfg.AppAddr != ":8080" {
 		t.Errorf("默认 APP_ADDR 应为 :8080，实际 %q", cfg.AppAddr)
 	}
-	if cfg.SessionCookieName != "mc_admin_session" {
-		t.Errorf("默认 Cookie 名异常: %q", cfg.SessionCookieName)
+	// 统一账号（迁移 0022）：管理员与普通用户共用一个会话 Cookie。
+	if cfg.SessionCookieName != "mc_session" {
+		t.Errorf("默认统一会话 Cookie 名异常: %q", cfg.SessionCookieName)
 	}
 	if cfg.LinkCheckTimeout != 8*time.Second {
 		t.Errorf("默认链接检查超时应为 8s，实际 %v", cfg.LinkCheckTimeout)

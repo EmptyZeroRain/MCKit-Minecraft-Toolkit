@@ -60,13 +60,13 @@ func (h *AdminHandler) SetLinkChecker(lc linkChecker) {
 	h.linkChecker = lc
 }
 
-// actorID 从会话读取操作者 ID。
+// actorID 从会话读取操作者账号 ID（统一账号，含后台账号与普通用户）。
 func actorID(r *http.Request) string {
 	s := middleware.SessionFrom(r.Context())
 	if s == nil {
 		return ""
 	}
-	return s.AdminID
+	return s.AccountID
 }
 
 // actorName 返回当前管理员的用户名（用于审核留痕；未登录返回空串）。

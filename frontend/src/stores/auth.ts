@@ -15,6 +15,20 @@ export const useAuthStore = defineStore('auth', {
     isLoggedIn: (state) => state.user !== null,
     isAdmin: (state) => state.user?.role === 'admin',
     displayName: (state) => state.user?.username ?? '',
+    /**
+     * 是否具备某权限点（决定后台入口显隐）。
+     * 后端登录 / 会话接口会返回 permissions；缺失时按内置角色默认权限兜底
+     * （admin 全权、editor 仅内容管理），与后端内置角色保持一致。
+     * 注意：前端显隐只是体验优化，真正的权限校验在后端。
+     */
+    hasPermission: (state) => (perm: string) => {
+      const user = state.user
+      if (!user) return false
+      if (user.permissions) return user.permissions.includes(perm)
+      if (user.role === 'admin') return true
+      if (user.role === 'editor') return perm.startsWith('content.')
+      return false
+    },
   },
   actions: {
     /** 应用启动时恢复会话（调用 /auth/me） */

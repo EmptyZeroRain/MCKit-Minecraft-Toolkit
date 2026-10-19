@@ -6,24 +6,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// RoleUser 普通用户角色常量。
-// 说明：普通用户与管理员表体系分离，此常量仅用于会话标记，不授予任何后台权限。
+// RoleUser 普通用户角色常量（roles 表内置角色）。
+// 统一账号后即 accounts.role = 'user'；该角色不含任何后台权限点。
 const RoleUser = "user"
-
-// User 普通用户账号（需求 §12）。
-// 与 Admin 分离，避免普通用户触碰后台；密码仅存 Argon2id 哈希。
-type User struct {
-	ID           uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Username     string     `gorm:"uniqueIndex;size:40;not null" json:"username"`
-	PasswordHash string     `gorm:"not null" json:"-"`
-	IsActive     bool       `gorm:"not null;default:true" json:"is_active"`
-	LastLoginAt  *time.Time `json:"last_login_at"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-}
-
-// TableName 显式指定表名。
-func (User) TableName() string { return "users" }
 
 // UserFavorite 登录用户的收藏（工具 / 物品 / 资源 / 百科）。
 type UserFavorite struct {

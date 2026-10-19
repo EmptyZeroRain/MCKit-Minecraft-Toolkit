@@ -88,7 +88,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (*Lo
 	expiresAt := time.Now().Add(sessionTTL)
 	sess := Session{
 		SessionID: sessionID,
-		AdminID:   admin.ID.String(),
+		AccountID: admin.ID.String(),
 		Username:  admin.Username,
 		Role:      admin.Role,
 		CSRFToken: csrfToken,
@@ -152,7 +152,7 @@ func (s *Service) ChangePassword(ctx context.Context, adminID, oldPassword, newP
 		return err
 	}
 	// 使该管理员所有会话失效：已登录的设备（含当前设备）必须用新密码重新登录。
-	if err := s.sessions.DeleteByAdminID(ctx, adminID); err != nil {
+	if err := s.sessions.DeleteByAccountID(ctx, adminID); err != nil {
 		return err
 	}
 	return nil
@@ -161,5 +161,5 @@ func (s *Service) ChangePassword(ctx context.Context, adminID, oldPassword, newP
 // DeleteSessionsForAdmin 使指定管理员的全部会话失效。
 // 供账号管理（停用、改角色、重置密码、删除）调用。
 func (s *Service) DeleteSessionsForAdmin(ctx context.Context, adminID string) error {
-	return s.sessions.DeleteByAdminID(ctx, adminID)
+	return s.sessions.DeleteByAccountID(ctx, adminID)
 }

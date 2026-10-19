@@ -25,6 +25,7 @@ function makeRouter() {
       { path: '/admin/feedback', component: { template: '<div />' } },
       { path: '/admin/profile', component: { template: '<div />' } },
       { path: '/admin/admins', component: { template: '<div />' } },
+      { path: '/admin/users', component: { template: '<div />' } },
     ],
   })
 }
@@ -93,5 +94,22 @@ describe('管理侧边栏 · 角色入口', () => {
     const text = wrapper.text()
     expect(text).not.toContain('管理员账号')
     expect(text).toContain('账号设置')
+  })
+
+  it('admin 可见「普通用户」入口（后台普通用户管理）', async () => {
+    const wrapper = await mountWithRole('admin')
+    expect(wrapper.text()).toContain('普通用户')
+  })
+
+  it('editor 不显示「普通用户」入口（admin 专属）', async () => {
+    const wrapper = await mountWithRole('editor')
+    expect(wrapper.text()).not.toContain('普通用户')
+  })
+
+  it('侧边栏提供「返回前台」与「退出登录」', async () => {
+    const wrapper = await mountWithRole('admin')
+    const text = wrapper.text()
+    expect(text).toContain('返回前台')
+    expect(text).toContain('退出登录')
   })
 })

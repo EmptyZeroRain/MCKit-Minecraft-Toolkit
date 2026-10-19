@@ -1,6 +1,6 @@
 // ===== 普通用户登录状态（需求 §12）=====
 // 与管理员 store（stores/auth.ts）相互独立：
-//   - 令牌不落地：使用服务端 HttpOnly Cookie（mc_user_session）；
+//   - 令牌不落地：使用服务端 HttpOnly 统一会话 Cookie（SESSION_COOKIE_NAME）；
 //   - 前端仅在内存保存用户信息与（会话绑定的）CSRF token；
 //   - CSRF token 由 api/user-http.ts 统一附加到写请求。
 import { defineStore } from 'pinia'

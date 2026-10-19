@@ -158,10 +158,10 @@ watch(slug, loadDetail)
       <!-- 来源与校验信息（TODO §9：校验资料来源与版本适用范围） -->
       <section class="card mb-6 p-4 text-sm" aria-labelledby="dev-source-title">
         <h2 id="dev-source-title" class="mb-3 text-sm font-semibold text-text-primary">资料来源与校验</h2>
-        <dl class="grid gap-2 sm:grid-cols-2">
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">官方文档</dt>
-            <dd>
+        <dl class="space-y-1.5 text-text-secondary">
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">官方文档</dt>
+            <dd class="min-w-0 break-all">
               <a
                 :href="externalUrl(detail.doc.official_url)"
                 class="text-grass-300 hover:underline"
@@ -172,9 +172,9 @@ watch(slug, loadDetail)
               </a>
             </dd>
           </div>
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">可核验来源</dt>
-            <dd>
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">可核验来源</dt>
+            <dd class="min-w-0 break-all">
               <a
                 :href="externalUrl(detail.doc.source_url)"
                 class="text-grass-300 hover:underline"
@@ -185,21 +185,21 @@ watch(slug, loadDetail)
               </a>
             </dd>
           </div>
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">适用版本</dt>
-            <dd class="text-text-secondary">{{ formatVersionList(detail.doc.mc_versions, 8) }}</dd>
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">适用版本</dt>
+            <dd class="min-w-0">{{ formatVersionList(detail.doc.mc_versions, 8) }}</dd>
           </div>
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">数据版本</dt>
-            <dd class="text-text-secondary">{{ detail.doc.data_version || '—' }}</dd>
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">数据版本</dt>
+            <dd class="min-w-0">{{ detail.doc.data_version || '—' }}</dd>
           </div>
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">最近校验</dt>
-            <dd class="text-text-secondary">{{ formatDate(detail.doc.last_verified_at) }}</dd>
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">最近校验</dt>
+            <dd class="min-w-0">{{ formatDate(detail.doc.last_verified_at) }}</dd>
           </div>
-          <div class="flex flex-wrap items-baseline gap-2">
-            <dt class="text-text-muted">兼容平台</dt>
-            <dd class="text-text-secondary">
+          <div class="flex items-baseline gap-x-2">
+            <dt class="shrink-0 text-text-muted">兼容平台</dt>
+            <dd class="min-w-0">
               {{ detail.doc.loaders.map(devLoaderLabel).join('、') || devLoaderLabel(detail.doc.loader) }}
             </dd>
           </div>

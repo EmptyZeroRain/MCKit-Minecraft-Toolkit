@@ -50,6 +50,11 @@ func SetCookieName(name string) {
 	}
 }
 
+// SessionCookieName 返回当前会话 Cookie 名。
+// 登录 / 登出处理器用它种 Cookie，保证与鉴权中间件读取的名字一致
+// （统一账号后管理员与普通用户共用这一个 Cookie）。
+func SessionCookieName() string { return cookieName }
+
 // AuthService 认证服务接口（供中间件依赖注入，避免具体类型耦合）。
 type AuthService interface {
 	GetSession(ctx context.Context, sessionID string) (*auth.Session, error)
