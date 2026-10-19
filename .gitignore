@@ -36,8 +36,9 @@ go.work.sum
 .env
 .env.*
 !.env.example
-# MC 源码浏览器（mcsrc）下载缓存：jar 体积可达数百 MB 且属可重建派生物，禁止入库
-backend/cache/mcsrc/
+# 后端缓存目录：jar / 版本清单 / 物品索引等均为可重建派生物，禁止入库
+# （item.json 由 backend/data/物品id.md 启动时重新解析生成；manifest/versions 由 Mojang API 缓存）
+backend/cache/
 backend/bin/
 backend/coverage.out
 backend/wikicrawl
@@ -59,8 +60,6 @@ Thumbs.db
 /backup/
 # 上游 mcsrc 参考源码（仅本地对照）
 /mcsrc-main/
-# MC 版本清单缓存（可由上游重新拉取，属可重建派生物）
-backend/cache/versions/
 # 私有开发文档（仅本地保留，不对外发布）
 /todo.md
 /PROJECT.md
