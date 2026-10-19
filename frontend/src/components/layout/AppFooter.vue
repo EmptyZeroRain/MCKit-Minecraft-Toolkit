@@ -4,6 +4,10 @@ import { RouterLink } from 'vue-router'
 import { BUILTIN_TOOLS } from '@/utils/builtin-tools'
 
 const year = new Date().getFullYear()
+
+// 页脚只列最常用的前几个工具，完整清单走「工具中心」，避免页脚被 19 项撑得过长。
+const FOOTER_TOOL_COUNT = 4
+const footerTools = BUILTIN_TOOLS.slice(0, FOOTER_TOOL_COUNT)
 </script>
 
 <template>
@@ -32,11 +36,14 @@ const year = new Date().getFullYear()
 
       <div>
         <h2 class="mb-3 text-sm font-semibold text-text-primary">常用工具</h2>
-        <ul class="space-y-2 text-sm text-text-secondary">
-          <li v-for="tool in BUILTIN_TOOLS" :key="tool.slug">
+        <ul class="space-y-2 text-sm text-text-secondary" data-test="footer-tools">
+          <li v-for="tool in footerTools" :key="tool.slug">
             <RouterLink :to="tool.route" class="hover:text-grass-300">{{ tool.name }}</RouterLink>
           </li>
         </ul>
+        <RouterLink to="/tools" class="mt-3 inline-block text-sm text-grass-300 hover:underline">
+          查看全部工具 →
+        </RouterLink>
       </div>
     </div>
 
