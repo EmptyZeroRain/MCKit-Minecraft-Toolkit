@@ -49,3 +49,19 @@ frontend/.vite/
 Thumbs.db
 .idea/
 *.log
+
+# --- 本地临时 / 私有文件（不随仓库分发） ---
+# 根目录遗留脚本与备份
+/1.py
+/go.mod.root.bak
+# 本地备份目录（文档归档、旧版本快照）
+/bak/
+/backup/
+# 上游 mcsrc 参考源码（仅本地对照）
+/mcsrc-main/
+# MC 版本清单缓存（可由上游重新拉取，属可重建派生物）
+backend/cache/versions/
+# 私有开发文档（仅本地保留，不对外发布）
+/todo.md
+/PROJECT.md
+/Function.md
