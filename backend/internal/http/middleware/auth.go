@@ -79,6 +79,33 @@ func RequireAuth(svc AuthService) func(http.Handler) http.Handler {
 	}
 }
 
+// OptionalAuth 尽力解析会话：Cookie 有效则写入 context，缺失 / 失效则按匿名继续。
+//
+// 用于「匿名可用、登录后能力更强」的接口，例如 mcsrc 的自动准备：
+// 任何访客都能触发下载，但具备 ops.mcsrc 的管理员不受自动准备额度限制。
+// 与 RequireAuth 的差别是**绝不**返回 401。
+func OptionalAuth(svc AuthService) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if svc == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			cookie, err := r.Cookie(cookieName)
+			if err != nil || cookie.Value == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			session, err := svc.GetSession(r.Context(), cookie.Value)
+			if err != nil || session == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), session)))
+		})
+	}
+}
+
 // RequireRole 校验当前会话角色在允许集合内。
 // 必须放在 RequireAuth 之后。
 func RequireRole(allowed ...string) func(http.Handler) http.Handler {

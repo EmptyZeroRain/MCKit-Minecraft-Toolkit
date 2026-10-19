@@ -90,6 +90,9 @@ func integrationSetup(t *testing.T) (*gorm.DB, http.Handler) {
 			MCSRCCacheDir:        filepath.Join(os.TempDir(), "mckit-mcsrc-it"),
 			MCSRCJarMaxMB:        64,
 			MCSRCIndexMaxClasses: 1000,
+			// 关闭自动准备：匿名 / 普通用户的 /prepare 一律 429，
+			// 既验证额度边界，也确保集成测试绝不访问 Mojang 上游。
+			MCSRCAutoPrepareMax: 0,
 		}
 		middleware.SetCookieName(cfgInstance.SessionCookieName)
 
@@ -896,7 +899,11 @@ func TestRoleManagement(t *testing.T) {
 }
 
 // TestMcsrcRoutesAuthGating 覆盖「MC 源码库」路由的鉴权边界：
-// 只读接口公开（且非法入参不触发上游请求），触发下载 / 建索引为管理员专属。
+// 只读接口公开（且非法入参不触发上游请求）；触发下载 / 建索引对**所有访客**开放
+// （前端选中版本即自动调用），仅由「自动准备额度」约束。
+//
+// 集成配置里 MCSRCAutoPrepareMax=0（关闭自动准备），因此匿名 / 普通用户一律
+// 429 AUTO_PREPARE_DISABLED —— 既验证了额度边界，也保证测试不会真的请求 Mojang 上游。
 func TestMcsrcRoutesAuthGating(t *testing.T) {
 	_, router := integrationSetup(t)
 
@@ -945,17 +952,28 @@ func TestMcsrcRoutesAuthGating(t *testing.T) {
 		t.Fatalf("缺 class 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 触发下载：匿名 → 401。
-	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"1.21.4"}`, nil, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("匿名触发下载期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	// 自动准备：匿名不再 401（OptionalAuth 只识别登录者，绝不拦截）。
+	// 额度为 0（关闭自动准备）→ 429 AUTO_PREPARE_DISABLED，且不会发起上游请求。
+	// 用绝不会被缓存的版本号，避免共享临时缓存目录里的历史 jar 影响判定。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"0.0.0-absent"}`, nil, "")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("匿名自动准备期望 429，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "AUTO_PREPARE_DISABLED") {
+		t.Fatalf("错误码期望 AUTO_PREPARE_DISABLED，实际 %s", rec.Body.String())
 	}
 
-	// 触发下载：editor 无 ops.mcsrc → 403。
+	// 已登录的非管理员（editor，无 ops.mcsrc）同样按额度约束，而非 403。
 	editorCookie, editorCSRF := loginAs(t, router, itEditorUser)
-	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"1.21.4"}`, editorCookie, editorCSRF)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("editor 触发下载期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{"version":"0.0.0-absent"}`, editorCookie, editorCSRF)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("editor 自动准备期望 429，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 入参校验先于额度判定：缺 version → 422。
+	rec = do(t, router, http.MethodPost, "/api/v1/mcsrc/prepare", `{}`, nil, "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺 version 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 }
 

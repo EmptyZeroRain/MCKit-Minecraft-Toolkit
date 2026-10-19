@@ -25,6 +25,14 @@ export interface McsrcStatus {
   /** 索引是否因超出上限被截断 */
   truncated: boolean
   index_built_at?: string
+  /** 是否正在准备（下载 jar / 建索引），用于渲染进度条 */
+  preparing?: boolean
+  /** 准备阶段：downloading（可算百分比）/ indexing（不确定进度） */
+  phase?: 'downloading' | 'indexing' | ''
+  /** 已下载字节数 */
+  downloaded?: number
+  /** 预期 jar 字节数（0 表示未知） */
+  total?: number
 }
 
 /** 类索引条目 */

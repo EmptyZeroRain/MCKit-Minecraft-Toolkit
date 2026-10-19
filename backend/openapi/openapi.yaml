@@ -2239,6 +2239,9 @@ paths:
       description: |
         返回该版本（侧别）是否已缓存官方 jar、是否已建立类索引，以及体积 / 类数量 / 时间。
         jar 由服务端统一下载缓存，避免每个访客各自下载数百 MB。
+        若该版本正在准备（下载 jar / 建索引），还会返回进行中的进度：
+        `preparing` / `phase`（`downloading` | `indexing`）/ `downloaded` / `total`，
+        前端据此渲染进度条（`total` 为 0 表示进度未知，按不确定进度展示）。
       requestBody:
         content:
           application/json:
@@ -2371,13 +2374,26 @@ paths:
 
   /mcsrc/prepare:
     post:
-      tags: [admin]
-      summary: 下载 jar 并建立类索引（需 ops.mcsrc 权限）
+      tags: [mcsrc]
+      summary: 下载 jar 并建立类索引（公开，受自动准备额度限制）
       description: |
         触发服务端下载官方 jar（校验官方 sha1）并建立类索引，幂等：已缓存且摘要一致时直接返回。
-        单次可达数百 MB，因此限管理员触发，并叠加限流与并发上限（同一时刻只允许一个准备任务）。
-      security: [{ cookieAuth: [] }]
-      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+        前端在用户**选中版本时自动调用**（与上游 mcsrc 一致，无需手动「准备」按钮）。
+
+        为避免任意访客逐个版本把磁盘与带宽吃满，匿名 / 普通访客受自动准备额度约束
+        （`MCSRC_AUTO_PREPARE_MAX`，默认 12 个 version+side）：
+
+        - 额度用尽 → 429 `AUTO_PREPARE_LIMIT`；
+        - 额度为 0（关闭自动准备）→ 429 `AUTO_PREPARE_DISABLED`；
+        - 已缓存 jar（仅缺索引）不消耗额度（只是重建索引，不产生新的磁盘占用）；
+        - 具备 `ops.mcsrc` 权限的管理员不受额度限制。
+
+        单次可达数百 MB，因此仍叠加限流与并发上限（同一时刻只允许一个准备任务，
+        并发冲突时返回 429 `RATE_LIMITED`，前端会退避重试）。
+        进度可通过 `/mcsrc/status` 轮询（`preparing` / `phase` / `downloaded` / `total`）。
+      security:
+        - cookieAuth: []
+        - {}
       requestBody:
         content:
           application/json:
@@ -2392,6 +2408,8 @@ paths:
         "404": { description: "版本不存在，或该版本缺少对应侧别的下载地址（`NO_DOWNLOAD`）" }
         "413": { description: "jar 体积超过上限（`JAR_TOO_LARGE`）" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "429":
+          description: "自动准备额度用尽 / 已关闭（`AUTO_PREPARE_LIMIT` / `AUTO_PREPARE_DISABLED`），或并发上限冲突（`RATE_LIMITED`）"
         "502": { description: "上游下载失败或 sha1 校验不符（`JAR_CHECKSUM_MISMATCH`）" }
 
 components:

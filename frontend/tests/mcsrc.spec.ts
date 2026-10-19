@@ -1,8 +1,10 @@
 // MC 源码浏览器（mcsrc）页面测试：
-//   1) 未就绪 + 管理员 -> 显示「准备该版本」，点击后触发 prepare 并刷新为类列表；
-//   2) 未就绪 + 未登录 -> 不显示准备按钮，改为提示联系管理员；
-//   3) 已就绪 -> 渲染类索引表格（含内部类标记）；
+//   1) 选中版本（含首次进入的默认版本）即**自动准备**，无需手动点击；
+//      未就绪时展示准备进度条（下载阶段给百分比、建索引阶段为不确定进度）；
+//   2) 自动准备被拒（额度用尽 / 关闭）-> 展示提示与「重试准备」；
+//   3) 已就绪 -> 渲染类列表（含内部类标记）；
 //   4) 后端返回 NEED_PREPARE -> 展示「尚未建立类索引」空态而非报错。
+// 布局为 VS Code 式：左侧栏类列表 + 右侧标签页（源码 / 结构），两者并存。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -10,7 +12,6 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 
 const mcsrcApi = vi.hoisted(() => ({
   getStatus: vi.fn(),
-  listPrepared: vi.fn(),
   prepare: vi.fn(),
   listClasses: vi.fn(),
   getClassDetail: vi.fn(),
@@ -18,11 +19,13 @@ const mcsrcApi = vi.hoisted(() => ({
 }))
 vi.mock('@/api/mcsrc', () => mcsrcApi)
 
+// 打开源码标签会走浏览器内反编译（Worker + WASM）：本文件只覆盖状态流转与结构视图，
+// 用桩函数避免在 jsdom 里创建 Worker。
+const decompiler = vi.hoisted(() => ({ decompileClass: vi.fn() }))
+vi.mock('@/mcsrc/decompiler', () => decompiler)
+
 const versionsApi = vi.hoisted(() => ({ listVersions: vi.fn() }))
 vi.mock('@/api/versions', () => versionsApi)
-
-const authApi = vi.hoisted(() => ({ me: vi.fn() }))
-vi.mock('@/api/admin-auth', () => authApi)
 
 import McsrcView from '@/views/McsrcView.vue'
 import { ApiError } from '@/types/api'
@@ -32,16 +35,6 @@ import type {
   McsrcHierarchy,
   McsrcStatus,
 } from '@/types/mcsrc'
-
-const ADMIN = {
-  id: 'a1',
-  username: 'admin',
-  role: 'admin',
-  permissions: ['ops.mcsrc'],
-  is_active: true,
-  last_login_at: null,
-  created_at: '2026-10-01T00:00:00Z',
-}
 
 /** 未准备的版本状态 */
 function pendingStatus(): McsrcStatus {
@@ -148,6 +141,14 @@ async function mountView() {
   return wrapper
 }
 
+/** 类列表中某一行内的按钮 */
+function rowButton(wrapper: ReturnType<typeof mount>, rowIndex: number, text: string) {
+  return wrapper
+    .findAll('[data-test="mcsrc-class-row"]')
+    [rowIndex].findAll('button')
+    .find((b) => b.text() === text)
+}
+
 describe('MC 源码浏览器', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -159,55 +160,117 @@ describe('MC 源码浏览器', () => {
         { id: '1.20.1', type: 'release', url: '', time: '', releaseTime: '' },
       ],
     })
-    mcsrcApi.listPrepared.mockResolvedValue([])
     mcsrcApi.getStatus.mockResolvedValue(pendingStatus())
     mcsrcApi.listClasses.mockResolvedValue({ items: CLASSES, total: 2, page: 1, page_size: 30 })
     mcsrcApi.getClassDetail.mockResolvedValue(structureOf())
     mcsrcApi.getClassHierarchy.mockResolvedValue(hierarchyOf())
-    authApi.me.mockRejectedValue(new Error('未登录'))
+    decompiler.decompileClass.mockResolvedValue({
+      className: '',
+      source: '',
+      language: 'java',
+      tokens: [],
+    })
   })
 
-  it('管理员在未就绪版本上可触发「准备该版本」，并刷新出类列表', async () => {
-    authApi.me.mockResolvedValue(ADMIN)
+  it('选中版本即自动准备（无需点击），完成后渲染类列表', async () => {
     mcsrcApi.prepare.mockResolvedValue(readyStatus())
     const wrapper = await mountView()
 
     // 默认选中最新正式版，并已查询状态。
     expect(mcsrcApi.getStatus).toHaveBeenCalledWith('1.21.4', 'client')
-    expect(wrapper.text()).toContain('尚未准备')
-
-    const btn = wrapper.findAll('button').find((b) => b.text().includes('准备该版本'))
-    expect(btn).toBeTruthy()
-    await btn!.trigger('click')
-    await flushPromises()
-
+    // 未就绪 → 自动触发 prepare，全程无需点击任何按钮。
     expect(mcsrcApi.prepare).toHaveBeenCalledWith('1.21.4', 'client')
-    // 准备完成后重新拉取缓存列表与类索引。
-    expect(mcsrcApi.listPrepared).toHaveBeenCalled()
+    // 准备完成后拉取类索引。
     expect(mcsrcApi.listClasses).toHaveBeenCalledWith(
       expect.objectContaining({ version: '1.21.4', side: 'client', page: 1, page_size: 30 }),
     )
     expect(wrapper.text()).toContain('索引就绪')
-    expect(wrapper.text()).toContain('net.minecraft.server.MinecraftServer')
+    expect(wrapper.text()).toContain('MinecraftServer')
   })
 
-  it('未登录访客不显示准备按钮，改为提示联系管理员', async () => {
+  it('下载阶段展示带百分比的进度条', async () => {
+    let finishPrepare: (st: McsrcStatus) => void = () => {}
+    mcsrcApi.prepare.mockImplementation(
+      () =>
+        new Promise<McsrcStatus>((resolve) => {
+          finishPrepare = resolve
+        }),
+    )
+    // 状态接口已带上进行中的下载进度（服务端边下边报）。
+    mcsrcApi.getStatus.mockResolvedValue({
+      ...pendingStatus(),
+      preparing: true,
+      phase: 'downloading',
+      downloaded: 5_242_880,
+      total: 10_485_760,
+    })
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('button').some((b) => b.text().includes('准备该版本'))).toBe(false)
-    expect(wrapper.text()).toContain('请联系管理员')
+    const bar = wrapper.find('[data-test="mcsrc-prepare-progress"]')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('正在下载官方 jar')
+    expect(bar.text()).toContain('50%')
+    expect(bar.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('50')
+
+    // 收尾：让 prepare 结束，避免残留轮询定时器。
+    finishPrepare(readyStatus())
+    await flushPromises()
+  })
+
+  it('建索引阶段展示不确定进度条', async () => {
+    mcsrcApi.prepare.mockImplementation(() => new Promise<McsrcStatus>(() => {}))
+    mcsrcApi.getStatus.mockResolvedValue({
+      ...pendingStatus(),
+      cached: true,
+      preparing: true,
+      phase: 'indexing',
+    })
+    const wrapper = await mountView()
+
+    const bar = wrapper.find('[data-test="mcsrc-prepare-progress"]')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('正在建立类索引')
+    // 不确定进度：不给出百分比。
+    expect(bar.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined()
+  })
+
+  it('自动准备被拒（额度用尽）时展示提示与「重试准备」', async () => {
+    mcsrcApi.prepare.mockRejectedValue(
+      new ApiError('自动准备额度已用尽（最多自动缓存 12 个版本），请联系管理员准备该版本', 'AUTO_PREPARE_LIMIT'),
+    )
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="mcsrc-prepare-error"]').text()).toContain('自动准备额度已用尽')
+    expect(wrapper.findAll('button').some((b) => b.text().includes('重试准备'))).toBe(true)
     // 未就绪时不请求类索引，避免无意义的后端 409。
     expect(mcsrcApi.listClasses).not.toHaveBeenCalled()
   })
 
-  it('已就绪版本渲染类索引表格，并标记内部类', async () => {
+  it('点击「重试准备」可重新触发自动准备', async () => {
+    mcsrcApi.prepare
+      .mockRejectedValueOnce(new ApiError('自动准备额度已用尽', 'AUTO_PREPARE_LIMIT'))
+      .mockResolvedValue(readyStatus())
+    const wrapper = await mountView()
+    expect(wrapper.text()).toContain('自动准备额度已用尽')
+
+    const retry = wrapper.findAll('button').find((b) => b.text().includes('重试准备'))
+    expect(retry).toBeTruthy()
+    await retry!.trigger('click')
+    await flushPromises()
+
+    expect(mcsrcApi.prepare).toHaveBeenCalledTimes(2)
+    expect(mcsrcApi.listClasses).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('索引就绪')
+  })
+
+  it('已就绪版本渲染类列表，并标记内部类', async () => {
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     mcsrcApi.listClasses.mockResolvedValue({ items: CLASSES, total: 2, page: 1, page_size: 30 })
     const wrapper = await mountView()
 
-    const rows = wrapper.findAll('tbody tr')
+    const rows = wrapper.findAll('[data-test="mcsrc-class-row"]')
     expect(rows.length).toBe(2)
-    expect(rows[0].text()).toContain('net.minecraft.server.MinecraftServer')
+    expect(rows[0].text()).toContain('MinecraftServer')
     expect(rows[0].text()).toContain('net.minecraft.server')
     expect(rows[0].text()).not.toContain('内部类')
     expect(rows[1].text()).toContain('MinecraftServer$1')
@@ -230,11 +293,11 @@ describe('MC 源码浏览器', () => {
     expect(wrapper.text()).toContain('服务不可用')
   })
 
-  it('点击类名打开详情：渲染结构视图、继承关系，并默认折叠合成方法', async () => {
+  it('点击「查看结构」打开结构标签：渲染结构视图、继承关系，并默认折叠合成方法', async () => {
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     const wrapper = await mountView()
 
-    const link = wrapper.findAll('button').find((b) => b.text() === 'net.minecraft.server.MinecraftServer')
+    const link = rowButton(wrapper, 0, '查看结构')
     expect(link).toBeTruthy()
     await link!.trigger('click')
     await flushPromises()
@@ -262,14 +325,15 @@ describe('MC 源码浏览器', () => {
     expect(hier.text()).toContain('java.lang.Object')
     expect(hier.text()).toContain('祖先链延伸至 jar 外')
     expect(hier.text()).toContain('无直接子类')
-    // 打开详情后类列表被详情面板替换。
-    expect(wrapper.findAll('button').some((b) => b.text() === 'net.minecraft.server.MinecraftServer$1')).toBe(false)
+    // VS Code 式布局：打开结构标签后，左侧类列表仍在（标签栏在右侧主区）。
+    expect(wrapper.findAll('[data-test="mcsrc-class-row"]').length).toBe(2)
+    expect(wrapper.find('[data-test="mcsrc-tab-close"]').exists()).toBe(true)
   })
 
   it('勾选后可显示合成方法，点击祖先类可继续下钻', async () => {
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     const wrapper = await mountView()
-    await wrapper.findAll('button').find((b) => b.text() === 'net.minecraft.server.MinecraftServer')!.trigger('click')
+    await rowButton(wrapper, 0, '查看结构')!.trigger('click')
     await flushPromises()
 
     // 勾选「显示编译器生成成员」。
@@ -290,7 +354,7 @@ describe('MC 源码浏览器', () => {
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     mcsrcApi.getClassHierarchy.mockRejectedValue(new ApiError('继承关系不可用', 'CLASS_NOT_FOUND'))
     const wrapper = await mountView()
-    await wrapper.findAll('button').find((b) => b.text() === 'net.minecraft.server.MinecraftServer')!.trigger('click')
+    await rowButton(wrapper, 0, '查看结构')!.trigger('click')
     await flushPromises()
 
     const detail = wrapper.find('[data-test="class-detail"]')
@@ -299,20 +363,20 @@ describe('MC 源码浏览器', () => {
     expect(wrapper.find('[data-test="class-hierarchy"]').exists()).toBe(false)
   })
 
-  it('结构视图加载失败时展示错误，并可返回类列表', async () => {
+  it('结构视图加载失败时展示错误，并可关闭标签回到列表', async () => {
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     mcsrcApi.getClassDetail.mockRejectedValue(new ApiError('类不存在', 'CLASS_NOT_FOUND'))
     const wrapper = await mountView()
-    await wrapper.findAll('button').find((b) => b.text() === 'net.minecraft.server.MinecraftServer')!.trigger('click')
+    await rowButton(wrapper, 0, '查看结构')!.trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-test="class-detail"]').text()).toContain('类不存在')
 
-    const back = wrapper.findAll('button').find((b) => b.text() === '返回列表')
-    expect(back).toBeTruthy()
-    await back!.trigger('click')
+    const close = wrapper.find('[data-test="mcsrc-tab-close"]')
+    expect(close.exists()).toBe(true)
+    await close.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="class-detail"]').exists()).toBe(false)
-    expect(wrapper.findAll('tbody tr').length).toBe(2)
+    expect(wrapper.findAll('[data-test="mcsrc-class-row"]').length).toBe(2)
   })
 })

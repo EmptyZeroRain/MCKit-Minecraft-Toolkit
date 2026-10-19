@@ -264,10 +264,12 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	// 角色权限存 roles 表，路由用 RequirePermission 校验，替换原硬编码 RequireRole(admin)。
 	roleHandler := handler.NewRoleHandler(roleSvc, auditSvc)
 
-	// MC 源码库（mcsrc）：公开只读状态与类检索；触发下载 / 建索引为管理员专属，
-	// 并叠加限流与并发上限（单次可达数百 MB，禁止并发叠加）。
+	// MC 源码库（mcsrc）：公开只读状态与类检索；/prepare 任何访客可用
+	// （前端在用户选中版本时自动触发下载 + 建索引），并叠加限流与并发上限
+	// （单次可达数百 MB，禁止并发叠加）。
 	if mcsrcStore != nil {
-		mcsrcHandler := handler.NewMcsrcHandler(mcsrcStore, mcMetaClient)
+		mcsrcHandler := handler.NewMcsrcHandler(mcsrcStore, mcMetaClient).
+			WithAutoPrepare(roleSvc, cfgInstance.MCSRCAutoPrepareMax)
 		mcsrcHeavy := middleware.RateLimit(cfgInstance.MCHeavyRPS, cfgInstance.MCHeavyBurst)
 		mcsrcConc := middleware.ConcurrencyLimit(1)
 		r.Route("/mcsrc", func(mr chi.Router) {
@@ -281,10 +283,11 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			// jar 下载：公开只读，供前端在浏览器内做反编译（Vineflower WASM）。
 			// 唯一的 GET 接口，需要 Range / ETag 语义（见 handler 注释）。
 			mr.Get("/jar", mcsrcHandler.Jar)
+			// 自动准备：匿名可用，但受 MCSRC_AUTO_PREPARE_MAX 额度限制
+			// （默认 12 个 version+side）；具备 ops.mcsrc 的管理员不受限。
+			// OptionalAuth 只用于识别管理员，绝不返回 401。
 			mr.Group(func(wr chi.Router) {
-				wr.Use(middleware.RequireAuth(authSvc))
-				wr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsMCsrc))
-				wr.Use(middleware.CSRF)
+				wr.Use(middleware.OptionalAuth(authSvc))
 				wr.Use(mcsrcHeavy)
 				wr.Use(mcsrcConc)
 				wr.Post("/prepare", mcsrcHandler.Prepare)

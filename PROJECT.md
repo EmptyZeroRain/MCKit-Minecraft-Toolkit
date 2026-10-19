@@ -3,7 +3,7 @@
 > 本文档由 `开发需求.md`、`PROGRESS.md`、`BACKEND_TODO.md`、`todo.md` 四份文件**整合**而成。
 > 原始文件已归档至 `bak/`，本文件为**项目总览与需求规格**的事实来源；**功能与验收状态以 `Function.md` 为准，待办与进度勾选以 `todo.md` 为准**。
 > 整合日期：2026-10-14 ｜ **最近同步：2026-10-19**
-> 本次同步补齐：§9-B 村民交易、§9-C 生物资料、§13–§23 全部交付与验收、迁移 `0012`–`0022`、内置工具 19 项、管理端内容审核页面（红石 / Mod）、开发文档接入全站搜索（`type=devdoc`）、后台角色与权限底座（`roles` + 17 个权限点）、统一账号体系（迁移 `0022`）、MC 源码浏览器切片 1 + 2 + 3-D1 + 3-D2（含浏览器内 Vineflower WASM 反编译与源码内跳转）。
+> 本次同步补齐：§9-B 村民交易、§9-C 生物资料、§13–§23 全部交付与验收、迁移 `0012`–`0022`、内置工具 19 项、管理端内容审核页面（红石 / Mod）、开发文档接入全站搜索（`type=devdoc`）、后台角色与权限底座（`roles` + 17 个权限点）、统一账号体系（迁移 `0022`）、MC 源码浏览器切片 1 + 2 + 3-D1 + 3-D2（含浏览器内 Vineflower WASM 反编译与源码内跳转）、自动加载（选中版本即自动准备 + 进度条）、**VS Code 式工作区界面（左侧栏 + 标签页 + 面包屑 + 状态栏）**。
 > 需求版本：1.0 ｜ 技术栈：Go 1.27 + Chi + GORM + PostgreSQL 16 · Vue 3 + TypeScript + Vite
 
 ## 阅读指引
@@ -233,7 +233,7 @@ mc-tool-site/
 | `/potions`、`/potions/:slug` | 药水与酿造 | 效果与时长（普通/延长/增强）、酿造步骤链、通用规则、来源核验 |
 | `/dev`、`/dev/:slug` | 开发文档 | 开发知识库检索（名称/平台/主题/版本）、要点正文、关键接口速查、官方文档与可核验来源、同平台相关条目；已接入全站搜索（`type=devdoc`） |
 | `/mappings` | 版本映射查询 | 类/方法/字段的 obf / mid / named 三列名字对照，数据集选择与成员明细；未导入数据集时展示导入指引 |
-| `/mcsrc` | MC 源码浏览器 | 按版本浏览官方 jar 的类索引：版本与侧别（客户端/服务端）选择、缓存状态、类名/包名检索、类结构与继承关系、**浏览器内反编译源码**（Vineflower WASM，无需服务端 JVM）、**源码内跳转**（Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类）；jar 由服务端统一下载缓存（管理员触发「准备该版本」） |
+| `/mcsrc` | MC 源码浏览器 | 按版本浏览官方 jar 的类索引：**VS Code 式工作区**（左侧栏版本 / 侧别 / 类检索 + 右侧标签页 / 面包屑 / 状态栏）、类结构与继承关系、**浏览器内反编译源码**（Vineflower WASM，无需服务端 JVM）、**源码内跳转**（Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类）；jar 由服务端统一下载缓存，**选中版本即自动准备并展示进度条**（无需手动触发） |
 | `/coordinate` | 坐标换算 | 主世界/下界坐标换算 |
 | `/wiki/:slug` | 百科详情 | 文章、目录、来源、更新时间 |
 | `/about` | 关于本站 | 非官方声明、项目介绍 |
@@ -1364,6 +1364,35 @@ STATS_RETENTION_DAYS=180
 |---|---|---|
 | **页脚「常用工具」** | `AppFooter.vue` 原先 `v-for` 渲染全部内置工具（19 项，页脚被撑得过长），改为只列 `BUILTIN_TOOLS.slice(0, 4)`（合成配方 / 坐标换算 / 物品 ID / 药水与酿造）；完整清单走工具中心 | 新增 `tests/app-footer.spec.ts` 2 例：常用工具恰好 4 项且与清单前 4 项一致、第 5 项起不出现在页脚；另断言站点信息 4 项与非官方声明未被破坏 |
 
+### 4.0.12 本轮已完成与验证（2026-10-19，mcsrc 自动加载 + 进度条）
+
+目标：对齐上游 mcsrc 的交互——**选中版本即自动下载并建索引**，去掉「准备该版本」这一步；准备过程展示**进度条**。
+
+| 批次 | 交付内容 | 验收要点 |
+|---|---|---|
+| **后端：进度上报** | `internal/mcsrc/store.go`：新增内存进度表（`prog map[string]progress`，键为 `version-side`）+ `setProgress` / `clearProgress` / `progressOf` / `progressWriter`；`download` 的 `io.Copy` 通过 `io.MultiWriter` 挂上 `progressWriter`（32KB 分块累加已下载字节）；`Prepare` 全程登记阶段（`PhaseDownloading` → `PhaseIndexing`），完成即清除；`Status` 合并进度字段（`preparing` / `phase` / `downloaded` / `total`），**未在准备时为零值** | `TestProgressWriterAccumulates`（只对已跟踪目标计数、未跟踪不产生条目、清除后不再上报）+ `TestPrepareReportsProgress`（慢速上游：下载期间 `Status` 观察到 `phase=downloading` 且 `downloaded>0`、`total` 等于 jar 体积；结束后 `preparing=false` 且已建索引） |
+| **后端：/prepare 公开 + 额度** | `middleware.OptionalAuth`：**尽力解析会话、绝不 401**（未登录 / 会话失效 / 会话服务异常 / 未注入服务一律按匿名放行）；`handler.McsrcHandler.WithAutoPrepare(perms, max)` + `allowPrepare`：具备 `ops.mcsrc` 的管理员豁免，已缓存 jar 不消耗额度，额度 `<=0` → 429 `AUTO_PREPARE_DISABLED`，已缓存条目数达到额度 → 429 `AUTO_PREPARE_LIMIT`；**额度判定在入参校验（422）之后、上游请求之前**；`config.MCSRCAutoPrepareMax`（`MCSRC_AUTO_PREPARE_MAX`，默认 12，不夹取 0 值以保留「关闭」语义）；`main.go` 把 `/prepare` 移出 auth 组，改为 `OptionalAuth → RateLimit(MC_HEAVY_*) → ConcurrencyLimit(1)`（**不再需要 CSRF**：无副作用的状态查询接口语义） | `middleware/optional_auth_test.go` 3 例（有效会话注入 / 未知会话匿名 / 无 Cookie 匿名 / 会话服务异常与未注入服务均放行）；`handler/mcsrc_test.go`：额度内 200 + 已缓存不消耗额度 + 超额 429 `AUTO_PREPARE_LIMIT` + 额度 0 → 429 `AUTO_PREPARE_DISABLED` + `ops.mcsrc` 管理员豁免而 editor 受限 + 非法版本号仍 422；集成 `TestMcsrcRoutesAuthGating` 改为匿名 / editor 均 429 `AUTO_PREPARE_DISABLED`（集成配置额度 0，**绝不访问 Mojang 上游**）+ 缺 version 422 |
+| **前端：自动加载 + 进度条** | `api/mcsrc.ts`：`prepare` 超时放宽到 300s；`McsrcView.vue`：选中版本 / 切换侧别 / 首次进入默认版本即自动准备（`loadStatus` → `autoPrepare`），删除 `canPrepare` 与「请联系管理员」死路文案；进度条数据来自 `/mcsrc/status` 轮询（600ms）与请求「赛跑」（请求结束立即跳出，不白等一轮），下载阶段给百分比、建索引阶段为不确定进度条；服务端并发上限冲突（429 `RATE_LIMITED`）退避重试（4 次 × 4s），其他拒绝（额度用尽 / 关闭）展示原因 + 「重试准备」；状态徽章改为 索引就绪 / 正在准备… / 准备失败 / 仅已缓存 jar / 尚未准备；请求序号 `statusSeq` 丢弃切换版本后的过期结果；**修掉挂载阶段 `loadStatus` 被 watch 与 onMounted 重复触发的缺陷**（原会重复发起状态查询，现在会自动准备，等于重复请求） | `tests/mcsrc.spec.ts` 12 例（新增：选中版本即自动准备并渲染类列表、下载阶段进度条 50% 且 `aria-valuenow=50`、建索引阶段无百分比的不确定进度条、额度用尽展示提示与「重试准备」、点击重试重新触发；原「管理员点击准备」「未登录提示联系管理员」两例按新语义重写） |
+| **真实上游验证** | 运行中服务 `:8080`（真实 Mojang 上游）：匿名 `POST /mcsrc/status {"version":"1.20.1"}` → 未缓存；匿名 `POST /mcsrc/prepare` → **200**（无 401），下载 23,028,853 字节，轮询观察到 `phase=downloading` 且 `downloaded` 从 0 递增到 22.5 MB / 总 23.0 MB，随后 `phase=indexing`，最终 `cached+indexed`、**7436 个类**；另以 `MCSRC_AUTO_PREPARE_MAX=0` 重启验证：未缓存版本匿名准备 → **429 `AUTO_PREPARE_DISABLED`**（不发起上游请求），已缓存版本 → **200** | 配置 → 处理器接线、公开访问、额度判定、进度上报全部实测 |
+| **横向** | `.env.example`（`MCSRC_AUTO_PREPARE_MAX=12` + 说明）、`openapi.yaml`（`/mcsrc/prepare` 改为公开并补 429 错误码、`/mcsrc/status` 补进度字段说明）、`Function.md` §2.26（自动加载 / 自动准备额度行 + 权限与限流 / 前端页面 / 分期路线 / 中间件链 / API 一览 / 测试表 / 状态表）、`todo.md` §22、`PROJECT.md` §4.1 | `go vet ./...` 通过；`go test ./...`（含集成，`TEST_DATABASE_URL` 注入）全绿；`vue-tsc --noEmit` 通过；`vitest run` **57 文件 / 539 例**全绿；`vite build` 通过 |
+
+> **安全取舍**：`/prepare` 不再要求登录，因此**去掉 CSRF 校验**（该接口无副作用状态变更语义，仅触发服务端缓存），但保留重接口限流 + 并发上限 1 + 自动准备额度三重约束，避免任意访客把磁盘与带宽吃满；具备 `ops.mcsrc` 的管理员始终可准备。
+
+### 4.0.13 本轮已完成与验证（2026-10-19，mcsrc 工作区界面：VS Code 式布局 + 查看源码显示修复）
+
+目标：让 `/mcsrc` 的界面**对齐上游 mcsrc**（用户反馈「为啥不和 mc src 一样，类似 vscode 一样」），并修掉「查看源码不显示」的真实缺陷。
+
+| 批次 | 交付内容 | 验收要点 |
+|---|---|---|
+| **布局改造** | `McsrcView.vue` 重写为**定高工作区**（`h-[calc(100vh-10rem)] min-h-[560px]`，移动端纵向堆叠）：左侧栏（版本下拉浮层选择 + 侧别切换 + 状态徽章 / 进度 + 类名与包名检索 + 可滚动类列表 + 分页）+ 右侧主区（**标签页** + 文件路径面包屑 + 内容区 + 状态栏）；类列表与标签**并存**（不再互相替换），取代切片 1 的「版本列表 + 状态卡片 + 类检索表格」布局 | 真实浏览器实测（Chrome + CDP，1440×960）：工作区 800px、侧栏 288px、类列表 30 行；打开标签后类列表仍在（30 行） |
+| **标签页** | 每个类一个标签（`source` / `structure` 两种），标签可关闭（关闭后激活右邻，没有则左邻）；**每个类的源码 / 结构状态按类缓存**（切换标签不丢内容、不重复反编译）；**点击类名直接打开源码标签**（对齐上游「点文件即看代码」），行内「查看结构」/「查看源码」分别打开结构 / 源码标签；源码内跳转新开目标类标签，目标即当前类时只重新定位 | `tests/mcsrc-source.spec.ts` 断言：结构标签点「查看源码」后标签数 1 → 2 且结构标签保留；切换版本关闭全部标签；真实浏览器实测标签数 1 → 2 |
+| **移除「已缓存版本」面板** | 用户反馈不需要：侧栏顶部版本下拉已可直接切换版本；后端 `POST /mcsrc/prepared` 与前端 `api/mcsrc.ts#listPrepared` 保留（暂无页面入口），因此不再需要额外的缓存列表 | `tests/mcsrc.spec.ts` / `mcsrc-source.spec.ts` 移除 `listPrepared` mock 与断言；`vue-tsc` 无未使用导入告警 |
+| **修复「查看源码」不显示（关键）** | 根因：查看器根节点 `h-full` 与父级传入的 `h-[65vh]` 冲突，编译产物中 `.h-full{height:100%}` 排在 `.h-[65vh]{height:65vh}` 之后（实测 CSS 字节序 11740 / 11763）→ 高度取 `100%`，而父容器高度为 auto → **宿主塌陷为 7px、Monaco 只渲染 1 行**。改为「定高工作区 → 内容层 `min-h-0 flex-1 overflow-hidden` → 查看器 `h-full`」，并去掉传给查看器的高度类 | 真实浏览器实测：宿主 **640px**、Monaco 渲染 **23 行**、首行 `import org.joml.Quaternionf;`、**17 个可跳转 token**（修复前为 7px / 1 行） |
+| **状态同步与健壮性** | `ensureSourceState` / `ensureStructureState` 必须返回 `reactive` **代理**（此前返回新建的原始对象，赋值不触发重新渲染，表现为「一直反编译中」）；`openTab` 先激活再加载；`loadSource` / `loadStructure` 在版本 / 侧别切换后丢弃过期结果 | 单测覆盖「反编译中 → 渲染源码」「结构加载失败可重试并关闭标签」；`vitest run` **57 文件 / 539 例**全绿 |
+| **横向** | `Function.md` §2.26（前端页面行重写 + 新增「工作区高度约定（易错点）」行 + 分期路线 + 测试表 + 状态表）、`todo.md` §22（自动加载块 + 工作区界面块 + 勾选项）、`PROJECT.md` §4.0.13 / §4.1 / §9 验收表 / 内置工具表 | `vue-tsc --noEmit` 通过；`vitest run` 全绿；`vite build` 通过（`McsrcView` 37.19 kB / gzip 12.20 kB，`SourceViewer` 仍为懒加载分块） |
+
+> **经验**：Monaco 这类「自测量容器」的组件，宿主高度必须由**布局确定**（flex + `min-h-0`）而不是百分比推算；给组件根节点追加与自身冲突的工具类（`h-full` vs `h-[65vh]`）在 Tailwind 下由产物顺序决定胜负，属不可依赖的写法。另：headless 浏览器里 `document.visibilityState=hidden` 时 `requestAnimationFrame` 不触发，Monaco 的延迟渲染不会执行——用 CDP 验证时需 `Page.bringToFront` + `Emulation.setFocusEmulationEnabled(true)`，否则会误判为「不渲染」。
+
 ## 4.1 结论速览（按优先级）
 
 | 级别 | 事项 | 归属 | 依据 |
@@ -1374,7 +1403,7 @@ STATS_RETENTION_DAYS=180
 | **P1** | 无 CI 流水线；后端集成测试默认跳过，未纳入自动化（集成测试已可手动注入 `TEST_DATABASE_URL` 实跑） | 工程 | §13.2 / §14 |
 | **P1** | ✅ 开发文档已接入全站搜索（`type=devdoc`）：迁移 `0020` 建 `dev_docs.search_vector` + GIN，`internal/search` 命中标题 / 摘要 / 正文 / 标签，仅返回已发布 | 后端 | §5.1 / §21 |
 | **P1** | ✅ 迁移（干净库 22 个 / 43 表）与备份恢复（14 表行数一致）**已实测**；Docker Compose 全链路未在真机验收 | 部署 | §15 / §20 |
-| **P2** | ✅ MC 源码浏览器已实现切片 1 + 2 + 3-D1 + **3-D2**（版本选择 + jar 缓存 + 类索引 / 检索 + 类结构 / 继承关系 + 源码浏览：`GET /mcsrc/jar` 下发缓存 jar、浏览器内 Vineflower WASM 反编译、Monaco 展示 + **token 着色与点击跳转**：Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类，**无需部署侧 JVM**）；切片 3 余项（查找引用 / 字节码指令 / 映射重命名 / Javadoc）待办 | 后端 + 前端 | §22 / §4.0.6–§4.0.10 |
+| **P2** | ✅ MC 源码浏览器已实现切片 1 + 2 + 3-D1 + 3-D2 + **自动加载** + **VS Code 式工作区界面**（版本选择 + jar 缓存 + 类索引 / 检索 + 类结构 / 继承关系 + 源码浏览：`GET /mcsrc/jar` 下发缓存 jar、浏览器内 Vineflower WASM 反编译、Monaco 展示 + **token 着色与点击跳转**：Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类 + **选中版本即自动准备并展示进度条**：`/prepare` 公开、匿名受 `MCSRC_AUTO_PREPARE_MAX` 额度约束、管理员豁免 + **左侧栏 / 标签页 / 面包屑 / 状态栏布局**：类列表与标签并存、点击类名即看源码，**无需部署侧 JVM**）；切片 3 余项（查找引用 / 字节码指令 / 映射重命名 / Javadoc）待办 | 后端 + 前端 | §22 / §4.0.6–§4.0.13 |
 | **P2** | ✅ 统一账号体系（合并 `admins` / `users` 为 `accounts` + `role` 外键引用 `roles.name` + 8 个外键重指 + 删旧表 + 单一会话 Cookie）**已验收**（迁移 0022） | 后端 | §23 / §4.0.7 |
 | **P2** | 标签仅存 JSONB，未建 `resource_tags/tool_tags/wiki_tags` 关联表 | 后端 | §7.8 |
 | **P2** | 迁移无回滚命令（仅注释给出反向 SQL） | 后端 | §7 |
@@ -1692,8 +1721,11 @@ STATS_RETENTION_DAYS=180
 | §23 后台账号与权限（角色底座 / 角色管理页 / 普通用户管理） | 2026-10-19 | ✅ 已验收（§4.0.6） |
 | §22 MC 源码浏览器切片 1（版本选择 / jar 缓存 / 类索引与检索） | 2026-10-19 | ✅ 已验收（§4.0.6） |
 | §22 MC 源码浏览器切片 2（类结构视图 / 继承关系，纯 Go 无 JVM） | 2026-10-19 | ✅ 已验收（§4.0.8；切片 3 待办） |
+| §22 MC 源码浏览器切片 3-D1 / 3-D2（浏览器内 Vineflower WASM 源码浏览 / token 着色与点击跳转） | 2026-10-19 | ✅ 已验收（§4.0.9 / §4.0.10） |
+| §22 MC 源码浏览器自动加载（选中版本即自动准备 + 进度条 + 额度约束） | 2026-10-19 | ✅ 已验收（§4.0.12） |
+| §22 MC 源码浏览器工作区界面（VS Code 式布局 + 查看源码显示修复） | 2026-10-19 | ✅ 已验收（§4.0.13） |
 
-**仅剩待办**：移动端真机走查（`todo.md` §7 第 132 行、§20 第 391 行）；MC 源码浏览器切片 3（反编译源码浏览需部署侧提供 Java 运行时；引用查找 / 重命名映射 / 字节码指令 / Javadoc）；根目录遗留文件清理（`1.py` / `go.mod.root.bak`）；CI 流水线（可选增强）。
+**仅剩待办**：移动端真机走查（`todo.md` §7 第 132 行、§20 第 391 行）；MC 源码浏览器切片 3 余项（查找引用 / 重命名映射 / 字节码指令视图 / Javadoc 备注）；根目录遗留文件清理（`1.py` / `go.mod.root.bak`）；CI 流水线（可选增强）。
 
 ---
 

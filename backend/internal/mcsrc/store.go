@@ -95,6 +95,28 @@ type Status struct {
 	ClassCount   int        `json:"class_count"`
 	Truncated    bool       `json:"truncated"`
 	IndexBuiltAt *time.Time `json:"index_built_at,omitempty"`
+
+	// 进行中的准备进度（仅内存，未在准备时为零值）。
+	// 前端据此渲染进度条：downloading 阶段有 total 时为确定进度，否则为不确定进度。
+	Preparing  bool   `json:"preparing"`
+	Phase      string `json:"phase,omitempty"`
+	Downloaded int64  `json:"downloaded"`
+	Total      int64  `json:"total"`
+}
+
+// 准备阶段（供前端区分「下载中（可算百分比）」与「建索引中（不确定进度）」）。
+const (
+	// PhaseDownloading 正在下载 jar。
+	PhaseDownloading = "downloading"
+	// PhaseIndexing 正在建立类索引。
+	PhaseIndexing = "indexing"
+)
+
+// progress 单个目标的准备进度。
+type progress struct {
+	phase      string
+	downloaded int64
+	total      int64
 }
 
 // Store jar 与索引的磁盘缓存。
@@ -109,6 +131,11 @@ type Store struct {
 	// 构建需全量扫描 jar 内所有 class，故只缓存最近若干个版本（见 relationsFor）。
 	relMu sync.Mutex
 	rel   map[string]relCache
+
+	// progMu / prog 进行中的准备进度（key = version-side）。
+	// 只服务于进度展示，不落盘；进程重启后由下一次 Prepare 重新填充。
+	progMu sync.Mutex
+	prog   map[string]progress
 }
 
 // NewStore 创建缓存。maxBytes 为单个 jar 体积上限，maxClasses 为建索引的类数量上限。
@@ -124,6 +151,7 @@ func NewStore(dir string, maxBytes int64, maxClasses int) *Store {
 		maxBytes:   maxBytes,
 		maxClasses: maxClasses,
 		http:       &http.Client{Timeout: defaultDownloadTimeout},
+		prog:       map[string]progress{},
 	}
 }
 
@@ -139,6 +167,48 @@ func (s *Store) WithHTTP(h *http.Client) *Store {
 func (s *Store) lockFor(key string) *sync.Mutex {
 	v, _ := s.locks.LoadOrStore(key, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+// progKey 进度 / 单飞锁的键（与 lockFor 的键保持一致）。
+func progKey(version, side string) string { return version + "-" + side }
+
+// setProgress 记录某目标的准备进度。
+func (s *Store) setProgress(key string, p progress) {
+	s.progMu.Lock()
+	s.prog[key] = p
+	s.progMu.Unlock()
+}
+
+// clearProgress 结束某目标的进度跟踪。
+func (s *Store) clearProgress(key string) {
+	s.progMu.Lock()
+	delete(s.prog, key)
+	s.progMu.Unlock()
+}
+
+// progressOf 读取某目标的准备进度。
+func (s *Store) progressOf(key string) (progress, bool) {
+	s.progMu.Lock()
+	p, ok := s.prog[key]
+	s.progMu.Unlock()
+	return p, ok
+}
+
+// progressWriter 把已写入的字节数累加到进度表。
+// io.Copy 以 32KB 分块调用 Write，对进度条而言足够平滑，无需额外节流。
+type progressWriter struct {
+	store *Store
+	key   string
+}
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	w.store.progMu.Lock()
+	if cur, ok := w.store.prog[w.key]; ok {
+		cur.downloaded += int64(len(p))
+		w.store.prog[w.key] = cur
+	}
+	w.store.progMu.Unlock()
+	return len(p), nil
 }
 
 func (s *Store) jarPath(version, side string) string {
@@ -247,6 +317,10 @@ func (s *Store) Prepare(ctx context.Context, version, side string, dl mcversion.
 	lock.Lock()
 	defer lock.Unlock()
 
+	// 进度跟踪：整个准备过程（下载 + 建索引）内可见，供前端渲染进度条。
+	key := progKey(v, sd)
+	defer s.clearProgress(key)
+
 	st := s.statusLocked(v, sd)
 	// 已缓存且摘要与官方清单一致 → 无需重新下载。
 	if st.Cached && (dl.SHA1 == "" || strings.EqualFold(st.SHA1, dl.SHA1)) {
@@ -254,14 +328,18 @@ func (s *Store) Prepare(ctx context.Context, version, side string, dl mcversion.
 			return st, nil
 		}
 	} else {
+		s.setProgress(key, progress{phase: PhaseDownloading, total: dl.Size})
 		if err := s.download(ctx, v, sd, dl); err != nil {
 			return Status{}, err
 		}
 	}
 
+	s.setProgress(key, progress{phase: PhaseIndexing, downloaded: dl.Size, total: dl.Size})
 	if err := s.buildIndexLocked(ctx, v, sd); err != nil {
 		return Status{}, err
 	}
+	// 完成即清除进度：否则响应体里会残留 preparing=true（前端据此渲染进度条）。
+	s.clearProgress(key)
 	return s.statusLocked(v, sd), nil
 }
 
@@ -294,7 +372,11 @@ func (s *Store) download(ctx context.Context, version, side string, dl mcversion
 
 	hasher := sha1.New()
 	// LimitReader 多读 1 字节：既能发现超限，也不会无限写入磁盘。
-	written, err := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(resp.Body, s.maxBytes+1))
+	// 第三个 writer 只累计已下载字节数，用于前端进度条。
+	written, err := io.Copy(
+		io.MultiWriter(tmp, hasher, progressWriter{store: s, key: progKey(version, side)}),
+		io.LimitReader(resp.Body, s.maxBytes+1),
+	)
 	if err != nil {
 		_ = tmp.Close()
 		return err
@@ -398,13 +480,22 @@ func (s *Store) Search(version, side string, q SearchQuery) (SearchResult, error
 	return idx.Search(q), nil
 }
 
-// statusLocked 由元数据文件推导状态（不读取索引正文）。
+// statusLocked 由元数据文件推导状态（不读取索引正文），并合并进行中的准备进度。
 func (s *Store) statusLocked(version, side string) Status {
 	meta, err := s.readMeta(s.metaPath(version, side))
+	var st Status
 	if err != nil || meta == nil {
-		return Status{Version: version, Side: side}
+		st = Status{Version: version, Side: side}
+	} else {
+		st = meta.toStatus()
 	}
-	return meta.toStatus()
+	if p, ok := s.progressOf(progKey(version, side)); ok {
+		st.Preparing = true
+		st.Phase = p.phase
+		st.Downloaded = p.downloaded
+		st.Total = p.total
+	}
+	return st
 }
 
 func (m *entryMeta) toStatus() Status {

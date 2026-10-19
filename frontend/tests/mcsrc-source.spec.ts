@@ -1,8 +1,8 @@
 // MC 源码浏览器 —— 「查看源码」（浏览器内 Vineflower 反编译）页面测试：
-//   1) 从类列表点击「查看源码」-> 调用反编译并渲染源码；
-//   2) 从类详情面板点击「查看源码」-> 源码面板替换详情面板；
-//   3) 反编译失败 -> 展示错误并可返回列表；
-//   4) 切换版本 -> 关闭源码面板。
+//   1) 从类列表点击「查看源码」-> 调用反编译并在源码标签内渲染源码；
+//   2) 从结构标签点击「查看源码」-> 新增并激活源码标签；
+//   3) 反编译失败 -> 展示错误并可关闭标签回到列表；
+//   4) 切换版本 -> 关闭全部标签。
 //
 // Monaco 查看器被 mock 成轻量占位组件：jsdom 无法运行 monaco，也不应在单测中加载它。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,7 +33,6 @@ vi.mock('@/mcsrc/decompiler', () => decompiler)
 
 const mcsrcApi = vi.hoisted(() => ({
   getStatus: vi.fn(),
-  listPrepared: vi.fn(),
   prepare: vi.fn(),
   listClasses: vi.fn(),
   getClassDetail: vi.fn(),
@@ -140,7 +139,10 @@ async function mountView() {
 
 /** 类列表中某一行内的按钮 */
 function rowButton(wrapper: ReturnType<typeof mount>, rowIndex: number, text: string) {
-  return wrapper.findAll('tbody tr')[rowIndex].findAll('button').find((b) => b.text() === text)
+  return wrapper
+    .findAll('[data-test="mcsrc-class-row"]')
+    [rowIndex].findAll('button')
+    .find((b) => b.text() === text)
 }
 
 describe('MC 源码浏览器 - 查看源码', () => {
@@ -156,7 +158,6 @@ describe('MC 源码浏览器 - 查看源码', () => {
         { id: '1.20.1', type: 'release', url: '', time: '', releaseTime: '' },
       ],
     })
-    mcsrcApi.listPrepared.mockResolvedValue([])
     mcsrcApi.getStatus.mockResolvedValue(readyStatus())
     mcsrcApi.listClasses.mockResolvedValue({ items: CLASSES, total: 2, page: 1, page_size: 30 })
     mcsrcApi.getClassDetail.mockResolvedValue(structureOf())
@@ -183,8 +184,8 @@ describe('MC 源码浏览器 - 查看源码', () => {
     // token 透传给查看器，且展示跳转提示。
     expect(wrapper.find('[data-test="stub-token-count"]').text()).toBe(String(TOKENS.length))
     expect(wrapper.find('[data-test="mcsrc-source-hint"]').text()).toContain('点击')
-    // 源码面板替换了类列表。
-    expect(wrapper.findAll('tbody tr').length).toBe(0)
+    // VS Code 式布局：源码标签在右侧，左侧类列表依然可见。
+    expect(wrapper.findAll('[data-test="mcsrc-class-row"]').length).toBe(2)
   })
 
   it('反编译进行中展示加载提示', async () => {
@@ -201,7 +202,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
     expect(wrapper.find('[data-test="class-source"]').text()).not.toContain('反编译中')
   })
 
-  it('反编译失败时展示错误，并可返回类列表', async () => {
+  it('反编译失败时展示错误，并可关闭标签回到类列表', async () => {
     decompiler.decompileClass.mockRejectedValue(new ApiError('反编译引擎不可用', 'INTERNAL_ERROR'))
     const wrapper = await mountView()
     await rowButton(wrapper, 0, '查看源码')!.trigger('click')
@@ -210,16 +211,15 @@ describe('MC 源码浏览器 - 查看源码', () => {
     const panel = wrapper.find('[data-test="class-source"]')
     expect(panel.text()).toContain('反编译引擎不可用')
 
-    const back = panel.findAll('button').find((b) => b.text() === '返回列表')
-    await back!.trigger('click')
+    await wrapper.find('[data-test="mcsrc-tab-close"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(false)
-    expect(wrapper.findAll('tbody tr').length).toBe(2)
+    expect(wrapper.findAll('[data-test="mcsrc-class-row"]').length).toBe(2)
   })
 
-  it('从类详情面板点击「查看源码」时，源码面板替换详情面板', async () => {
+  it('从结构标签点击「查看源码」时，新增并激活源码标签', async () => {
     const wrapper = await mountView()
-    await wrapper.findAll('button').find((b) => b.text() === CLASS_NAME)!.trigger('click')
+    await rowButton(wrapper, 0, '查看结构')!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="class-detail"]').exists()).toBe(true)
 
@@ -231,22 +231,27 @@ describe('MC 源码浏览器 - 查看源码', () => {
     await flushPromises()
 
     expect(decompiler.decompileClass).toHaveBeenCalledWith('1.21.4', 'client', CLASS_NAME)
-    expect(wrapper.find('[data-test="class-detail"]').exists()).toBe(false)
+    // 结构标签保留在标签栏，只是不再是激活标签。
+    expect(wrapper.findAll('[data-test="mcsrc-tab-close"]').length).toBe(2)
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="class-detail"]').exists()).toBe(false)
   })
 
-  it('切换版本会关闭源码面板', async () => {
+  it('切换版本会关闭全部标签', async () => {
     const wrapper = await mountView()
     await rowButton(wrapper, 0, '查看源码')!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(true)
 
-    // 点击左侧版本列表中的另一个版本（按钮文本含类型徽标，故用包含匹配）。
+    // 版本列表收在侧栏顶部的下拉浮层里：先展开再选另一个版本。
+    await wrapper.find('[data-test="mcsrc-version-picker"]').trigger('click')
     const otherVersion = wrapper.findAll('button').find((b) => b.text().includes('1.20.1'))
+    expect(otherVersion).toBeTruthy()
     await otherVersion!.trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="mcsrc-tab-close"]').length).toBe(0)
   })
 
   it('源码内跳转：类 token 打开目标类源码', async () => {

@@ -417,14 +417,16 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | 收藏与统计 | 收藏类型白名单新增 `mod` / `modpack`，Mod / 整合包详情页可收藏并进入个人工作台；使用统计与其余内置工具同口径（页面访问 `visit`、复制 `use`、请求失败 `fail`） |
 | 已知取舍 | 只呈现已记录关系，不做自动冲突分析；下载入口只指向官方 / 授权分发，不镜像分发文件；种子数据仅收录已充分核验的 Mod 与整合包 |
 
-### 2.26 MC 源码浏览器（mcsrc 整合 · 切片 1 + 2 + 3-D1 + 3-D2）
+### 2.26 MC 源码浏览器（mcsrc 整合 · 切片 1 + 2 + 3-D1 + 3-D2 + 自动加载）
 
 目标：把 `mcsrc-main`（浏览器内 MC 反编译源码浏览器）的能力**整合到 mckit 后端**，由服务端统一下载并缓存官方 jar，避免每个访客各自从 Mojang 下载数百 MB。
 
 | 能力 | 说明 |
 |---|---|
 | 版本选择 | 复用既有 `POST /api/v1/versions`（Mojang 清单），页面左侧按版本号搜索 + 类型（正式版 / 快照 / 旧测试版 / 旧内测版）过滤 |
-| jar 获取与缓存 | `POST /api/v1/mcsrc/prepare`（**需 `ops.mcsrc` 权限**）：按版本取官方下载地址，下载 jar 并**校验官方 sha1**，落盘为 `<version>-<side>.jar`；幂等（摘要一致时直接返回，不重复下载） |
+| jar 获取与缓存 | `POST /api/v1/mcsrc/prepare`（**公开，受自动准备额度限制**）：按版本取官方下载地址，下载 jar 并**校验官方 sha1**，落盘为 `<version>-<side>.jar`；幂等（摘要一致时直接返回，不重复下载） |
+| 自动加载（本轮） | 前端**选中版本 / 切换侧别即自动调用** `/prepare`（与上游 mcsrc 一致，无需手动「准备该版本」按钮），首次进入默认版本同样自动加载；进度条数据由 `POST /mcsrc/status` 轮询驱动（`preparing` / `phase` / `downloaded` / `total`）——下载阶段给百分比（`downloaded / total`），建索引阶段为不确定进度；服务端并发上限冲突（429 `RATE_LIMITED`）时前端退避重试（4 次，间隔 4s） |
+| 自动准备额度 | 匿名 / 普通访客受 `MCSRC_AUTO_PREPARE_MAX`（默认 12 个 `version+side`）约束：额度用尽 → 429 `AUTO_PREPARE_LIMIT`，额度为 0（关闭自动准备）→ 429 `AUTO_PREPARE_DISABLED`；**已缓存 jar（仅缺索引）不消耗额度**；具备 `ops.mcsrc` 的管理员不受限。额度判定在入参校验（422）之后、上游请求之前 |
 | 下载安全 | 版本号白名单正则校验（防路径穿越）、单 jar 体积上限（`MCSRC_JAR_MAX_MB`，默认 512）、临时文件 + 校验通过后原子改名（不产生半成品缓存）、同一 `version+side` **单飞锁**（并发准备只下载一次） |
 | 类索引 | 只读取 zip 中央目录（不解析 class 字节码），因此数百 MB 的 jar 也能秒级建索引；索引落盘为 `<version>-<side>.index.json`，类数量上限 `MCSRC_INDEX_MAX_CLASSES`（默认 60000，超出截断并标记 `truncated`） |
 | 类检索 | `POST /api/v1/mcsrc/classes/list`：关键词（大小写不敏感）、包名前缀过滤、是否含内部类、分页；相关度排序为「简单名相等 > 简单名前缀 > 简单名包含 > 全限定名包含」，同档按全限定名升序（稳定可复现） |
@@ -436,10 +438,11 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | 源码 token 与着色（切片 3-D2） | 反编译时向引擎传 `tokenCollector`，把类 / 字段 / 方法 / 参数 / 局部变量的**字符区间**随源码一并返回（实测 1.8.9 客户端 jar 的 `MinecraftServer` 产出 1493 个 token）；Monaco 按类型着色（类 / 方法 / 字段 / 变量分色，明暗双主题各一套配色），**jar 内**的引用 token 显示手型光标 + 点状下划线 |
 | 点击跳转（切片 3-D2） | 注册 Monaco 定义提供器 + 编辑器打开器：**Ctrl/⌘ + 点击**、**F12**、右键「转到定义」均可跳转。类 token → 打开该类源码；字段 / 方法 token → 先沿**继承链**定位真正的声明类（先查引用点所属类，未命中则按祖先链逐级向上；数据取**已建好的类索引**，不重新下载、不重新反编译），再打开该类并**选中成员声明**；目标即当前类时只重新定位、不重复反编译 |
 | 类名对齐（切片 3-D2） | 反编译源码里内部类写作 `Outer.Inner`（Java 语法），而 jar 条目与后端索引写作 `Outer$Inner`；Worker 用 jar 条目集合做候选探测（原名 → 最外层类 → 逐级把包分隔符换成 `$`）把 token 的类名对齐到后端约定，因此内部类引用同样可跳转 |
-| 权限与限流 | 只读接口公开（含 `status` / `prepared` / `classes/list` / `classes/detail` / `classes/hierarchy` / **`jar`**）；**触发下载 / 建索引为管理员专属**（`ops.mcsrc` 权限点 + CSRF），并叠加重接口限流（`MC_HEAVY_RPS` / `MC_HEAVY_BURST`）与并发上限 1（禁止并发叠加下载） |
-| 前端页面 | `/mcsrc`（工具中心内置工具「MC 源码浏览器」，`slug=mcsrc`）：版本列表 + 侧别（客户端 / 服务端）切换 + 状态卡片 + 类检索表格；点击任一类进入**类详情**（结构视图 + 继承关系，父类 / 接口 / 祖先 / 子类均可点击继续下钻，合成方法默认折叠）；类列表与详情面板均有「查看源码」进入**源码视图**（反编译中 / 失败 / 源码三态，切换版本 / 侧别 / 翻页自动关闭；面板顶部提示可跳转）；管理员可直接「准备该版本」，非管理员提示联系管理员 |
+| 权限与限流 | 只读接口公开（含 `status` / `prepared` / `classes/list` / `classes/detail` / `classes/hierarchy` / **`jar`**）；**触发下载 / 建索引对任何访客开放**（`OptionalAuth` 只用于识别管理员，**绝不返回 401**），匿名 / 普通访客按自动准备额度约束、具备 `ops.mcsrc` 的管理员豁免；`/prepare` 叠加重接口限流（`MC_HEAVY_RPS` / `MC_HEAVY_BURST`）与并发上限 1（禁止并发叠加下载，冲突返回 429 `RATE_LIMITED`） |
+| 前端页面 | `/mcsrc`（工具中心内置工具「MC 源码浏览器」，`slug=mcsrc`）：**VS Code 式定高工作区**（对齐上游 mcsrc）——左侧栏（版本下拉选择 + 侧别（客户端 / 服务端）切换 + 状态徽章与进度 + 类名 / 包名检索 + 可滚动类列表 + 分页）+ 右侧主区（**标签页** + 文件路径面包屑 + 内容区 + 状态栏）；**选中版本即自动准备并展示进度条**（下载百分比 / 建索引不确定进度），失败时给出原因与「重试准备」；**点击类名直接打开源码标签**（点文件即看代码，与上游一致），行内「查看结构」打开**结构标签**（结构视图 + 继承关系，父类 / 接口 / 祖先 / 子类均可点击继续下钻，合成方法默认折叠）、「查看源码」打开源码标签；标签可关闭、切换不丢内容，类列表与标签**并存**（不再互相替换）；源码标签内为反编译三态（反编译中 / 失败 / 源码），源码内 Ctrl/⌘ 点击 / F12 跳转会**新开目标类标签**（目标即当前类时只重新定位） |
+| 工作区高度约定（易错点） | 编辑器所在层必须是 `min-h-0 flex-1`，查看器根节点用 `h-full` 填满父级；**不要**给查看器传与根节点冲突的高度类（如 `h-[65vh]`）——`h-full` 会覆盖它并把 Monaco 压成几像素（历史缺陷：宿主 7px、只渲染 1 行） |
 | 版权与取舍 | **jar 不纳入仓库 / 数据库**：仅在服务端缓存目录按版本落盘，且只向浏览器下发**已缓存**的官方 jar 原件（不改造、不打包分发）；反编译在访客浏览器内完成，服务端不产出、不存储源码正文 |
-| 分期路线 | 切片 1（已实现）：版本选择 + jar 获取 + 类索引 / 搜索；切片 2（已实现）：类结构视图 + 继承关系（纯 Go 解析 class 字节码，**无需 JVM**）；切片 3-D1（已实现）：源码浏览（浏览器内 Vineflower WASM 反编译 + Monaco 展示）；**切片 3-D2（已实现）：token 着色 + 点击跳转（跳转定义，沿继承链定位声明类）**；切片 3 余项：查找引用、字节码指令视图、映射重命名展示、Javadoc 备注 |
+| 分期路线 | 切片 1（已实现）：版本选择 + jar 获取 + 类索引 / 搜索；切片 2（已实现）：类结构视图 + 继承关系（纯 Go 解析 class 字节码，**无需 JVM**）；切片 3-D1（已实现）：源码浏览（浏览器内 Vineflower WASM 反编译 + Monaco 展示）；切片 3-D2（已实现）：token 着色 + 点击跳转（跳转定义，沿继承链定位声明类）；**自动加载（已实现）：选中版本即自动准备 + 进度条 + 额度约束**；**工作区界面（已实现）：VS Code 式布局（左侧栏 + 标签页 + 面包屑 + 状态栏）**；切片 3 余项：查找引用、字节码指令视图、映射重命名展示、Javadoc 备注 |
 
 > 与 `mcsrc-main` 的差异：原项目自行在浏览器内下载 jar、用 IndexedDB 缓存反编译结果；mckit 侧改为**后端统一下载与缓存 jar**（访客不各自从 Mojang 拉取，且只下发已缓存的官方原件），但**反编译引擎与调用形态与上游一致**——同样使用 `@run-slicer/vf`（Vineflower 的 WASM/JS 移植）在 Web Worker 内完成，因此**不需要部署侧 JVM**。
 >
@@ -651,7 +654,7 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | 会话失效 | 改密、停用、改角色、重置密码、删除账号均使对应账号全部会话立即失效 |
 | 统一错误 | 错误响应不泄漏内部信息（goroutine/SQL/堆栈等），带 `request_id` |
 
-**中间件链**：`RequestID → Recover → AccessLog → Metrics → SecurityHeaders → CORS → RateLimit`；管理路由叠加 `RequireAuth → RequirePermission（权限点）→ CSRF`；`/mcsrc/prepare` 额外叠加 `RateLimit(MC_HEAVY_*) → ConcurrencyLimit(1)`。
+**中间件链**：`RequestID → Recover → AccessLog → Metrics → SecurityHeaders → CORS → RateLimit`；管理路由叠加 `RequireAuth → RequirePermission（权限点）→ CSRF`；`/mcsrc/prepare` 公开但叠加 `OptionalAuth（仅识别管理员）→ RateLimit(MC_HEAVY_*) → ConcurrencyLimit(1)`。
 
 ---
 
@@ -681,8 +684,9 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | POST | `/categories` | 分类列表 |
 | POST | `/feedback` | 提交反馈 |
 | POST | `/versions`、`/versions/detail`、`/block-ids` | MC 版本元数据 / 物品对照表 |
-| POST | `/mcsrc/status`、`/mcsrc/prepared`、`/mcsrc/classes/list`、`/mcsrc/classes/detail`、`/mcsrc/classes/hierarchy` | MC 源码浏览器只读接口（jar 缓存与索引状态 / 已缓存版本 / 类索引检索 / 类结构视图 / 继承关系） |
+| POST | `/mcsrc/status`、`/mcsrc/prepared`、`/mcsrc/classes/list`、`/mcsrc/classes/detail`、`/mcsrc/classes/hierarchy` | MC 源码浏览器只读接口（jar 缓存与索引状态**含进行中的准备进度** / 已缓存版本 / 类索引检索 / 类结构视图 / 继承关系） |
 | GET | `/mcsrc/jar?version=&side=` | 下发已缓存的官方 jar（支持 `Range` / `ETag`），供浏览器内 Vineflower 反编译；未缓存 → 404 |
+| POST | `/mcsrc/prepare` | 触发下载 jar + 建索引（**公开**：前端选中版本即自动调用；匿名 / 普通访客受自动准备额度约束，`ops.mcsrc` 管理员豁免；叠加限流 + 并发上限 1） |
 | POST | `/seed/analyze` | 种子分析 |
 | POST | `/mc/structures` `/mc/structures/types` `/mc/capabilities` `/mc/biome` `/mc/strongholds` `/mc/slime-chunks` `/mc/seeds/{generate,find,parse}` | 种子与结构工具 |
 | POST | `/mc/region/inspect` `/mc/region/chunk` | 区域文件解析（区块清单 + 统计 + 只读诊断） |
@@ -717,7 +721,8 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | POST | `/admin/search-terms/list` | `ops.searchstats` |
 | POST | `/admin/analytics/{overview,tools,resources,api,trend}` | `ops.analytics` |
 | POST | `/admin/link-health/{run,list,confirm}`（含 `/{id}/confirm`） | `ops.linkhealth` |
-| POST | `/mcsrc/prepare` | `ops.mcsrc`（另叠加限流 + 并发上限 1） |
+
+> `/mcsrc/prepare` 已移至公开 API（见 6.1）：任何访客可触发自动准备，仅由自动准备额度约束；具备 `ops.mcsrc` 的管理员豁免额度。
 
 ### 6.3 普通用户 API（`/api/v1/user/*`）
 
@@ -797,7 +802,7 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | 使用统计与运营看板 | `internal/service/metrics`：**内存聚合与批量 UPSERT 累加、分桶近似 P95（含溢出桶）、`PruneBefore` 保留期清理**（假仓储）；`middleware`：路由归一（chi 模板参数如 `/tools/{slug}` 折叠为模板，未匹配归并 `<unmatched>`）；`handler`：`/stats/event` 白名单校验与 **422**、看板时间范围解析（`days` 上限 366 / 显式 `from`-`to` 优先）；前端 `tests/tool-stats.spec.ts`：路径→slug 反查、测试环境静默、`visit`/`use`/`fail` 上报与 `CopyButton` 复制产出计数；`tests/analytics-chart.spec.ts`：**真实 ECharts（SSR + SVG）渲染图表配置**（node 环境，规避 jsdom 无 canvas） |
 | 前端 | `vue-tsc -b --noEmit` 类型检查；`vitest` 单元测试；`vite build` 构建校验 |
 | 角色与权限底座 | `cmd/api` 集成测试 `TestRoleManagement`：editor 调用 `/admin/roles/list` **403**、内置角色与全量权限点、权限点目录、新建自定义角色、**非法权限点 422**、**删内置角色 422**、**admin 削权 422**、**自定义角色账号权限真实生效**、**被引用角色删除 409**、删号后可删 204；前端 `tests/admin-roles.spec.ts`：列表渲染、权限点分组勾选、内置角色保护、删除确认 |
-| MC 源码浏览器 | `internal/mcsrc`：合成 jar 的索引构建（过滤 `META-INF` / `module-info`、内部类标记、包名拆分、按全限定名排序、**超上限截断**）、检索**相关度排序与分页边界**（简单名相等 > 前缀 > 包含 > 全限定名包含，非法分页参数回落默认值）、**版本号白名单拒绝路径穿越**、Prepare 全流程（sha1 校验、体积上限、临时文件原子改名、**单飞：5 并发只下载一次**、校验失败不留半成品、上下文取消）、**状态 JSON 省略零值时间**；**切片 2**：`classfile.go` 手写 class 文件解析（常量池全 tag 含 Long / Double 双槽位、修饰符 / 父类 / 接口 / 字段 / 方法，属性按长度跳过；**任意截断 / 伪造 tag / 越界属性长度均报错不 panic**）、`descriptor.go` 描述符渲染（基础类型 / 数组 / 泛型内部类名、`void` 仅可作返回类型、方法签名拆分）、`structure.go` 结构视图与继承关系（点分 / 斜杠类名等价、`in_jar_super` 只查 zip 中央目录、**关系索引按 jar 摘要缓存 + 变更失效 + 单飞**、**子类上限截断仍报准确计数**、损坏 class 条目跳过不中断）；真实上游用例 `TestLivePrepareRealJar`（`MCSRC_LIVE_TEST=1` 时启用，实测 1.8.9 客户端 jar：sha1 校验通过、2507 个类、检索到 `net.minecraft.server.MinecraftServer`、二次准备不重复下载、`MinecraftServer` 解析出 53 字段 / 129 方法 / class 版本 50、继承关系实测 `aye extends axu extends avp extends java.lang.Object`、**反向验证父类子类列表包含该子类**、jar 外类返回 `CLASS_NOT_FOUND`）；`handler`：状态 / 校验 422、未建索引 409 `NEED_PREPARE`、准备 → 检索全链路、未知版本 404、缺下载 404、未配置 503、**类详情 / 继承关系 200 + 缺参 422 + 类不存在 404 `CLASS_NOT_FOUND`**；集成测试 `TestMcsrcRoutesAuthGating`：公开只读 200、非法版本 422、匿名准备 401、editor 准备 403、**新增两个只读接口未准备版本 404 / 缺 class 422**；前端 `tests/mcsrc.spec.ts`：管理员可准备并刷新类列表、未登录不显示准备按钮、类表格与内部类标记、`NEED_PREPARE` 空态、状态查询失败提示、**点击类名打开详情（结构 + 继承关系 + 合成方法默认折叠）、勾选显示合成方法、点击祖先下钻、继承关系失败不阻塞结构展示、结构失败可返回列表**；**切片 3-D1**：`handler` 单测新增 `Jar`（未准备 404 / 缺 version 422 / 非法版本 422 / 200 且字节与缓存 sha1 一致 + `Content-Type` + `ETag` / Range 206）、集成测试新增 `GET /mcsrc/jar` 未缓存 404 与缺 version 422；前端 `tests/mcsrc-source.spec.ts`（5 例：列表与详情入口触发反编译并渲染源码、反编译中加载态、失败态可返回列表、源码面板替换详情面板、切换版本关闭面板）与 `tests/mcsrc-decompiler.spec.ts`（5 例：jar 只下载一次、按侧别分别缓存、失败不缓存可重试、并发只去重下载一次、缓存键与类名格式转换）；**切片 3-D2**：前端 `tests/mcsrc-tokens.spec.ts`（6 例：偏移命中与越界、行列 ⇄ 偏移换算、成员跳转片段编解码、声明定位含重载区分）+ `tests/mcsrc-navigation.spec.ts`（6 例：类 token 直通不查索引、成员在引用点所属类命中、沿祖先链定位、字段按名匹配、全部未命中回退、索引缺失不抛异常且成员集合命中缓存）+ `tests/mcsrc-decompiler.spec.ts` 扩展（结果缓存命中、`clearJarCache` 同时清空两类缓存、类名探测序列对齐 `Outer$Inner`）+ `tests/mcsrc-source.spec.ts` 扩展（token 透传与跳转提示、类 token 打开目标类、方法引用沿继承链定位到父类声明、同类内跳转不重复反编译） |
+| MC 源码浏览器 | `internal/mcsrc`：合成 jar 的索引构建（过滤 `META-INF` / `module-info`、内部类标记、包名拆分、按全限定名排序、**超上限截断**）、检索**相关度排序与分页边界**（简单名相等 > 前缀 > 包含 > 全限定名包含，非法分页参数回落默认值）、**版本号白名单拒绝路径穿越**、Prepare 全流程（sha1 校验、体积上限、临时文件原子改名、**单飞：5 并发只下载一次**、校验失败不留半成品、上下文取消）、**状态 JSON 省略零值时间**、**准备进度上报**（`progressWriter` 只对已跟踪目标计数；下载期间 `Status` 暴露 `preparing` / `phase` / `downloaded` / `total`，结束后清除）；**切片 2**：`classfile.go` 手写 class 文件解析（常量池全 tag 含 Long / Double 双槽位、修饰符 / 父类 / 接口 / 字段 / 方法，属性按长度跳过；**任意截断 / 伪造 tag / 越界属性长度均报错不 panic**）、`descriptor.go` 描述符渲染（基础类型 / 数组 / 泛型内部类名、`void` 仅可作返回类型、方法签名拆分）、`structure.go` 结构视图与继承关系（点分 / 斜杠类名等价、`in_jar_super` 只查 zip 中央目录、**关系索引按 jar 摘要缓存 + 变更失效 + 单飞**、**子类上限截断仍报准确计数**、损坏 class 条目跳过不中断）；真实上游用例 `TestLivePrepareRealJar`（`MCSRC_LIVE_TEST=1` 时启用，实测 1.8.9 客户端 jar：sha1 校验通过、2507 个类、检索到 `net.minecraft.server.MinecraftServer`、二次准备不重复下载、`MinecraftServer` 解析出 53 字段 / 129 方法 / class 版本 50、继承关系实测 `aye extends axu extends avp extends java.lang.Object`、**反向验证父类子类列表包含该子类**、jar 外类返回 `CLASS_NOT_FOUND`）；`handler`：状态 / 校验 422、未建索引 409 `NEED_PREPARE`、准备 → 检索全链路、未知版本 404、缺下载 404、未配置 503、**类详情 / 继承关系 200 + 缺参 422 + 类不存在 404 `CLASS_NOT_FOUND`**、**自动准备额度**（额度内 200 / 已缓存不消耗额度 / 超额 429 `AUTO_PREPARE_LIMIT` / 额度 0 → 429 `AUTO_PREPARE_DISABLED` / `ops.mcsrc` 管理员豁免而 editor 受限 / 非法版本号仍 422）；`middleware` `optional_auth_test.go`（**无 Cookie / 未知会话 / 会话服务异常 / 未注入服务一律按匿名放行，绝不 401**）；集成测试 `TestMcsrcRoutesAuthGating`：公开只读 200、非法版本 422、**匿名与 editor 自动准备均 429 `AUTO_PREPARE_DISABLED`（集成配置额度 0，绝不访问 Mojang 上游）、缺 version 422**、**新增两个只读接口未准备版本 404 / 缺 class 422**；前端 `tests/mcsrc.spec.ts`：**选中版本即自动准备（无需点击）并刷新类列表**、**下载阶段进度条带百分比（50%）/ 建索引阶段为不确定进度**、**额度用尽提示 + 「重试准备」可重新触发**、类列表与内部类标记（`[data-test="mcsrc-class-row"]`）、`NEED_PREPARE` 空态、状态查询失败提示、**点击「查看结构」打开结构标签（结构 + 继承关系 + 合成方法默认折叠）、勾选显示合成方法、点击祖先下钻、继承关系失败不阻塞结构展示、结构失败可关闭标签回到列表、类列表与标签并存**；**切片 3-D1**：`handler` 单测新增 `Jar`（未准备 404 / 缺 version 422 / 非法版本 422 / 200 且字节与缓存 sha1 一致 + `Content-Type` + `ETag` / Range 206）、集成测试新增 `GET /mcsrc/jar` 未缓存 404 与缺 version 422；前端 `tests/mcsrc-source.spec.ts`（8 例：列表入口触发反编译并在源码标签渲染源码、结构标签入口新增并激活源码标签、反编译中加载态、失败态可关闭标签回到列表、切换版本关闭全部标签、token 透传与跳转提示、类 token 打开目标类、方法引用沿继承链定位到父类声明、同类内跳转不重复反编译）与 `tests/mcsrc-decompiler.spec.ts`（5 例：jar 只下载一次、按侧别分别缓存、失败不缓存可重试、并发只去重下载一次、缓存键与类名格式转换）；**切片 3-D2**：前端 `tests/mcsrc-tokens.spec.ts`（6 例：偏移命中与越界、行列 ⇄ 偏移换算、成员跳转片段编解码、声明定位含重载区分）+ `tests/mcsrc-navigation.spec.ts`（6 例：类 token 直通不查索引、成员在引用点所属类命中、沿祖先链定位、字段按名匹配、全部未命中回退、索引缺失不抛异常且成员集合命中缓存）+ `tests/mcsrc-decompiler.spec.ts` 扩展（结果缓存命中、`clearJarCache` 同时清空两类缓存、类名探测序列对齐 `Outer$Inner`）+ `tests/mcsrc-source.spec.ts` 扩展（token 透传与跳转提示、类 token 打开目标类、方法引用沿继承链定位到父类声明、同类内跳转不重复反编译） |
 | 分享与易用性 | `tests/share.spec.ts`：**机密参数识别（token / csrf / session / cookie / password / authorization / api_key / signature…）、默认值省略、`buildShareUrl` 丢弃 path 自带查询与 hash、`sanitizeShareUrl` 清理查询与 hash 片段、路由参数类型回退**；`tests/seed-tools-query.spec.ts`：**默认状态 ⇔ 无参数、全子表单往返、非法版本与非法结构类型回退、0 值不当空值**；`tests/share-button.spec.ts`：**复制内容不含机密参数、失败提示、`aria-label` 同步**；`tests/share-url-sync.spec.ts`：**四类工具的 URL 还原 / 变化后回写 / 多字段互不覆盖 / 种子链接打开即分析 / 默认状态链接干净**；`tests/command-generator.spec.ts`：**数字输入（number 型 count / damage / duration / 坐标）回归** |
 | 安全回归 | 测试覆盖 CSRF、越权 403、SSRF、限流、错误信息不外泄、**分享链接秘密参数剥离** |
 
@@ -834,7 +839,10 @@ MC 工具站是面向 **Minecraft Java 版**玩家、整合包玩家、服务器
 | MC 源码浏览器（`/mcsrc` 切片 1：版本选择 + jar 获取与缓存 + 类索引 / 检索） | ✅ 已实现 |
 | MC 源码浏览器（`/mcsrc` 切片 2：类结构视图 + 继承关系，纯 Go 解析 class 字节码） | ✅ 已实现（本批） |
 | MC 源码浏览器（`/mcsrc` 切片 3-D1：源码浏览——`GET /mcsrc/jar` 下发缓存 jar + 浏览器内 Vineflower WASM 反编译 + Monaco 展示） | ✅ 已实现（**无需部署侧 JVM**） |
-| MC 源码浏览器（`/mcsrc` 切片 3-D2：token 着色 + 点击跳转——Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类） | ✅ 已实现（本批） |
+| MC 源码浏览器（`/mcsrc` 切片 3-D2：token 着色 + 点击跳转——Ctrl/⌘ 点击 / F12 跳转定义，字段与方法沿继承链定位声明类） | ✅ 已实现 |
+| MC 源码浏览器（`/mcsrc` 自动加载：选中版本即自动准备 + 进度条 + 自动准备额度约束） | ✅ 已实现（本批） |
+| MC 源码浏览器（`/mcsrc` 工作区界面：VS Code 式布局——左侧栏 + 标签页 + 面包屑 + 状态栏；类列表与标签并存；移除「已缓存版本」面板） | ✅ 已实现（本批） |
+| MC 源码浏览器（`/mcsrc` 源码查看器高度塌陷修复：`h-full` 覆盖 `h-[65vh]` 致宿主 7px / 只渲染 1 行 → 实测 640px / 23 行） | ✅ 已实现（本批） |
 | MC 源码浏览器切片 3 余项（查找引用 / 重命名映射展示 / 字节码指令视图 / Javadoc 备注） | ⏳ 待办（见 TODO §22） |
 | 统一账号体系（合并 `admins` / `users` 为 `accounts` + 8 个外键重指 + 删旧表 + 单一会话 Cookie） | ✅ 已实现（本批，迁移 0022） |
 | 改密/停用/删除会话失效 | ✅ 已实现 |

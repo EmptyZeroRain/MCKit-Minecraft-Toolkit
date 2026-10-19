@@ -4,10 +4,13 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"mckit/backend/internal/domain"
+	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/mcsrc"
 	"mckit/backend/internal/mcversion"
@@ -16,16 +19,30 @@ import (
 // McsrcHandler「MC 源码浏览器」后端接口。
 //
 // 契约与项目一致：查询接口统一 POST，参数放 JSON body。
-// 公开接口只读缓存状态与索引；触发下载 / 建索引的接口为管理员专属
-// （单次可达数百 MB，必须限制触发者），并由路由层叠加重接口限流。
+// 公开接口只读缓存状态与索引；触发下载 / 建索引的 /prepare 任何访客可用
+// （前端选中版本即自动调用），但匿名访客受「自动准备额度」限制，
+// 具备 ops.mcsrc 的管理员不受限；并由路由层叠加重接口限流与并发上限。
 type McsrcHandler struct {
 	store  *mcsrc.Store
 	client *mcversion.Client
+
+	// perms 用于识别具备 ops.mcsrc 的管理员（豁免自动准备额度）；可为 nil。
+	perms middleware.PermissionResolver
+	// autoPrepareMax 匿名访客自动准备的版本数上限；<=0 表示关闭自动准备。
+	autoPrepareMax int
 }
 
 // NewMcsrcHandler 创建处理器。store 或 client 为 nil 时接口返回 503。
 func NewMcsrcHandler(store *mcsrc.Store, client *mcversion.Client) *McsrcHandler {
 	return &McsrcHandler{store: store, client: client}
+}
+
+// WithAutoPrepare 配置自动准备策略：perms 用于识别管理员，max 为匿名额度
+// （<=0 表示关闭自动准备，此时 /prepare 仅对具备 ops.mcsrc 的管理员开放）。
+func (h *McsrcHandler) WithAutoPrepare(perms middleware.PermissionResolver, max int) *McsrcHandler {
+	h.perms = perms
+	h.autoPrepareMax = max
+	return h
 }
 
 // jarRequest 状态 / 准备请求体。
@@ -91,6 +108,16 @@ func (h *McsrcHandler) Prepare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 入参校验（版本号白名单）先于额度判定：非法版本号稳定返回 422 而非 429。
+	st, err := h.store.Status(req.Version, side)
+	if err != nil {
+		writeMcsrcError(w, r, err)
+		return
+	}
+	if !h.allowPrepare(w, r, st) {
+		return
+	}
+
 	d, err := h.client.FetchVersion(r.Context(), req.Version)
 	if err != nil {
 		// 版本不存在与网络故障区分开，方便前端提示。
@@ -107,12 +134,66 @@ func (h *McsrcHandler) Prepare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st, err := h.store.Prepare(r.Context(), req.Version, side, dl)
+	st, err = h.store.Prepare(r.Context(), req.Version, side, dl)
 	if err != nil {
 		writeMcsrcError(w, r, err)
 		return
 	}
 	response.OK(w, st)
+}
+
+// allowPrepare 判定本次 /prepare 是否放行。
+//
+// 具备 ops.mcsrc 的管理员（显式准备）始终放行；其余访客按「自动准备额度」约束，
+// 避免任意访客逐个版本把磁盘与带宽吃满：
+//   - 已缓存 jar（仅缺索引）不消耗额度：只是重建索引，不产生新的磁盘占用；
+//   - 额度 <= 0 表示关闭自动准备（仅管理员可准备）；
+//   - 已缓存条目数达到额度即拒绝（429）。
+func (h *McsrcHandler) allowPrepare(w http.ResponseWriter, r *http.Request, st mcsrc.Status) bool {
+	if h.hasMcsrcPermission(r) {
+		return true
+	}
+	if st.Cached {
+		return true
+	}
+	if h.autoPrepareMax <= 0 {
+		response.Error(w, r, http.StatusTooManyRequests, "AUTO_PREPARE_DISABLED",
+			"该版本尚未缓存，服务端已关闭自动准备，请联系管理员准备", nil)
+		return false
+	}
+	list, err := h.store.ListPrepared()
+	if err != nil {
+		response.HandleError(w, r, err)
+		return false
+	}
+	if len(list) >= h.autoPrepareMax {
+		response.Error(w, r, http.StatusTooManyRequests, "AUTO_PREPARE_LIMIT",
+			fmt.Sprintf("自动准备额度已用尽（最多自动缓存 %d 个版本），请联系管理员准备该版本", h.autoPrepareMax), nil)
+		return false
+	}
+	return true
+}
+
+// hasMcsrcPermission 判断当前会话是否具备 ops.mcsrc。
+// 未登录、未配置权限解析器、解析失败一律按「无权限」处理（退化为受额度约束的自动准备）。
+func (h *McsrcHandler) hasMcsrcPermission(r *http.Request) bool {
+	if h.perms == nil {
+		return false
+	}
+	session := middleware.SessionFrom(r.Context())
+	if session == nil {
+		return false
+	}
+	perms, err := h.perms.PermissionsForRole(r.Context(), session.Role)
+	if err != nil {
+		return false
+	}
+	for _, p := range perms {
+		if p == domain.PermOpsMCsrc {
+			return true
+		}
+	}
+	return false
 }
 
 // Jar GET /api/v1/mcsrc/jar?version=&side=

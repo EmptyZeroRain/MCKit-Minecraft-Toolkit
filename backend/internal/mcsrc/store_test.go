@@ -227,6 +227,107 @@ func TestPrepareDownloadsIndexesAndCaches(t *testing.T) {
 	}
 }
 
+// TestProgressWriterAccumulates 覆盖进度累加器：只对已跟踪的目标计数，
+// 避免为未在准备的版本凭空造出进度条目。
+func TestProgressWriterAccumulates(t *testing.T) {
+	store := NewStore(t.TempDir(), 1<<20, 100)
+	key := progKey("1.21.4", SideClient)
+	store.setProgress(key, progress{phase: PhaseDownloading, total: 10})
+
+	w := progressWriter{store: store, key: key}
+	if n, err := w.Write([]byte("12345")); n != 5 || err != nil {
+		t.Fatalf("Write 应原样返回长度，实际 n=%d err=%v", n, err)
+	}
+	if _, err := w.Write([]byte("678")); err != nil {
+		t.Fatalf("Write 失败: %v", err)
+	}
+	if p, _ := store.progressOf(key); p.downloaded != 8 {
+		t.Fatalf("已下载字节数期望 8，实际 %d", p.downloaded)
+	}
+
+	// 未跟踪的目标不产生进度条目。
+	other := progressWriter{store: store, key: progKey("1.20.1", SideClient)}
+	if _, err := other.Write([]byte("x")); err != nil {
+		t.Fatalf("Write 失败: %v", err)
+	}
+	if _, ok := store.progressOf(progKey("1.20.1", SideClient)); ok {
+		t.Fatal("未跟踪的目标不应产生进度条目")
+	}
+
+	// 清除后不再上报。
+	store.clearProgress(key)
+	if _, ok := store.progressOf(key); ok {
+		t.Fatal("clearProgress 后不应再读到进度")
+	}
+}
+
+// TestPrepareReportsProgress 覆盖准备进度上报：下载期间 Status 暴露
+// preparing / phase / downloaded / total（前端进度条的数据来源），
+// 准备结束后进度被清除。
+func TestPrepareReportsProgress(t *testing.T) {
+	jar := makeJar(t, "net/minecraft/server/MinecraftServer.class")
+	// 分两段下发并插入延迟，制造可观测的下载窗口。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		half := len(jar) / 2
+		_, _ = w.Write(jar[:half])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(80 * time.Millisecond)
+		_, _ = w.Write(jar[half:])
+	}))
+	defer srv.Close()
+
+	store := NewStore(t.TempDir(), 1<<20, 100).WithHTTP(srv.Client())
+	dl := mcversion.DownloadInfo{URL: srv.URL + "/client.jar", SHA1: sha1Hex(jar), Size: int64(len(jar))}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := store.Prepare(context.Background(), "1.21.4", SideClient, dl); err != nil {
+			t.Errorf("Prepare 失败: %v", err)
+		}
+	}()
+
+	// 轮询直到观察到已下载字节数（最多 2 秒，避免偶发调度延迟导致假失败）。
+	seen := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !seen {
+		st, err := store.Status("1.21.4", SideClient)
+		if err != nil {
+			t.Fatalf("Status 失败: %v", err)
+		}
+		if st.Preparing {
+			if st.Phase != PhaseDownloading && st.Phase != PhaseIndexing {
+				t.Fatalf("未知准备阶段：%q", st.Phase)
+			}
+			if st.Total != int64(len(jar)) {
+				t.Fatalf("进度总量期望 %d，实际 %d", len(jar), st.Total)
+			}
+			if st.Downloaded > 0 {
+				seen = true
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	<-done
+	if !seen {
+		t.Fatal("下载期间未观察到进度上报")
+	}
+
+	// 结束后不再上报进度，且已完成建索引。
+	st, err := store.Status("1.21.4", SideClient)
+	if err != nil {
+		t.Fatalf("Status 失败: %v", err)
+	}
+	if st.Preparing || st.Phase != "" || st.Downloaded != 0 || st.Total != 0 {
+		t.Fatalf("准备结束后应清除进度：%+v", st)
+	}
+	if !st.Indexed {
+		t.Fatalf("准备应完成建索引：%+v", st)
+	}
+}
+
 func TestPrepareIsSingleFlight(t *testing.T) {
 	jar := makeJar(t, "net/minecraft/server/MinecraftServer.class")
 	var hits atomic.Int32

@@ -73,6 +73,11 @@ type Config struct {
 	MCSRCJarMaxMB int
 	// MCSRCIndexMaxClasses 单个 jar 建索引的类数量上限（默认 60000），防止异常膨胀。
 	MCSRCIndexMaxClasses int
+	// MCSRCAutoPrepareMax 匿名访客可自动准备的版本数上限（默认 12）。
+	// 前端在用户选中版本时会自动触发下载 + 建索引；该额度约束匿名触发者，
+	// 避免任意访客逐个版本把磁盘与带宽吃满（0 表示关闭自动准备，仅管理员可准备）。
+	// 具备 ops.mcsrc 的管理员不受此额度限制。
+	MCSRCAutoPrepareMax int
 
 	// 使用统计与运营看板（TODO §13）。
 	// StatsEnabled 是否启用使用统计采集（默认 true）。
@@ -127,6 +132,7 @@ func Load() (*Config, error) {
 		MCSRCCacheDir:        os.Getenv("MCSRC_CACHE_DIR"),
 		MCSRCJarMaxMB:        parseInt(os.Getenv("MCSRC_JAR_MAX_MB"), 512),
 		MCSRCIndexMaxClasses: parseInt(os.Getenv("MCSRC_INDEX_MAX_CLASSES"), 60000),
+		MCSRCAutoPrepareMax:  parseInt(os.Getenv("MCSRC_AUTO_PREPARE_MAX"), 12),
 
 		StatsEnabled:       parseBool(os.Getenv("STATS_ENABLED"), true),
 		StatsFlushSeconds:  parseInt(os.Getenv("STATS_FLUSH_SECONDS"), 60),

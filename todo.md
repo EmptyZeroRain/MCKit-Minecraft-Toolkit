@@ -405,12 +405,29 @@
 > - **验收记录**：`vue-tsc --noEmit` 通过；`vitest run` **56 文件 / 534 例**全绿（新增 `tests/mcsrc-tokens.spec.ts` 6 例 + `tests/mcsrc-navigation.spec.ts` 6 例，扩展 `mcsrc-decompiler.spec.ts` +2、`mcsrc-source.spec.ts` +3）；`vite build` 通过；
 >   **真实上游验证**（Node 24 + 真实 1.8.9 客户端 jar + 真实 Vineflower 纯 JS 运行时，逐段复刻 Worker 逻辑）：反编译 `net.minecraft.server.MinecraftServer`（31,093 字符）产出 **1493 个 token**（引擎 1457 + import 36：class 309 / method 450 / field 311 / parameter 156 / local 267），抽样 8 类 token 的字符区间与源码文本一致、**越界 0 个**、`inJar` 标注与 jar 条目完全一致（1231 个可跳转）、类名**无残留斜杠**且 `inJar=true` 的类名均能在 jar 中命中、方法 / 字段描述符格式全部合法、内部类引用（`adp.a` → `adp$a`、`MinecraftServer$1`）已正确对齐 `$` 形式。
 > - **未做（切片 3 余项）**：查找引用（需新增引用索引）、字节码指令视图、映射重命名展示、Javadoc 备注。
+> **已落地并验收（自动加载：选中版本即自动准备 + 进度条）**：
+> - 交互对齐上游 mcsrc：**去掉「准备该版本」这一步**——选中版本 / 切换侧别 / 首次进入默认版本即自动触发准备（下载 jar + 建索引），失败才给出原因与「重试准备」。
+> - 后端 `POST /mcsrc/prepare` **改为公开可触发**（`middleware.OptionalAuth` 尽力解析会话，未登录 / 会话失效 / 会话服务异常一律按匿名放行，**绝不 401**）；匿名 / 普通访客受自动准备额度 `MCSRC_AUTO_PREPARE_MAX`（默认 12 个 `version+side`）约束——额度用尽 → 429 `AUTO_PREPARE_LIMIT`，额度为 0（关闭）→ 429 `AUTO_PREPARE_DISABLED`；**已缓存 jar（仅缺索引）不消耗额度**；具备 `ops.mcsrc` 的管理员豁免；额度判定在入参校验（422）之后、上游请求之前；仍叠加 `RateLimit(MC_HEAVY_*)` + `ConcurrencyLimit(1)`（并发冲突 429 `RATE_LIMITED`，前端退避重试 4 次 × 4s）；因无副作用语义**不再要求 CSRF**。
+> - 进度上报：`Store` 内存进度表（`prog map[string]progress`，键 `version-side`）+ `progressWriter` 挂在 `io.Copy` 的 `io.MultiWriter` 上累加已下载字节；`Prepare` 全程登记 `PhaseDownloading` → `PhaseIndexing`，完成即清除；`Status` 合并 `preparing` / `phase` / `downloaded` / `total`（未准备时为零值，响应体不残留 `preparing=true`）。
+> - 前端进度条数据来自 `/mcsrc/status` 轮询（600ms）与 `prepare` 请求「赛跑」（请求结束立即跳出，不白等一轮）：**下载阶段给百分比**（`downloaded / total`）、**建索引阶段为不确定进度条**；状态徽章 索引就绪 / 正在准备… / 准备失败 / 仅已缓存 jar / 尚未准备；`statusSeq` 请求序号丢弃切换版本后的过期结果。
+> - 验收记录：`middleware/optional_auth_test.go` 3 例；`handler/mcsrc_test.go` 自动准备额度 6 例（额度内 200 / 已缓存不消耗额度 / 超额 429 / 关闭 429 / 管理员豁免而 editor 受限 / 非法版本仍 422）；`internal/mcsrc/store_test.go` 进度上报 2 例；集成 `TestMcsrcRoutesAuthGating` 改为匿名与 editor 均 429 `AUTO_PREPARE_DISABLED`（集成配置额度 0，**绝不访问 Mojang 上游**）；前端 `tests/mcsrc.spec.ts` 12 例；`go vet` / `go test ./...`（含集成）/ `vue-tsc` / `vitest run` 57 文件 539 例全绿；
+>   **真实上游实测**：运行中服务（`:8080`）匿名 `POST /mcsrc/prepare {"version":"1.20.1"}` → **200**（无 401），下载 23,028,853 字节，轮询观察到 `phase=downloading` 且 `downloaded` 递增 → `phase=indexing` → `cached+indexed`（**7436 个类**）；以 `MCSRC_AUTO_PREPARE_MAX=0` 重启后：未缓存版本匿名准备 → 429 `AUTO_PREPARE_DISABLED`（不发起上游请求），已缓存版本 → 200 且响应 `preparing:false`。
+> **已落地并验收（工作区界面：对齐上游 mcsrc 的 VS Code 式布局）**：
+> - **布局改造**：`/mcsrc` 由「版本列表 + 状态卡片 + 类检索表格 + 详情面板替换列表」改为**定高工作区**——左侧栏（版本下拉选择 + 侧别切换 + 状态与进度 + 类检索 + 可滚动类列表 + 分页）+ 右侧主区（**标签页** + 面包屑 + 内容区 + 状态栏）；类列表与打开的标签**并存**（不再互相替换）。
+> - **标签页**：每个类一个标签（源码 / 结构两种），标签可关闭（关闭后激活右邻或左邻）、切换标签不丢内容（每个类的源码 / 结构状态按类缓存）；**点击类名直接打开源码标签**（与上游一致：点文件即看代码），行内「查看结构」「查看源码」按钮分别打开结构 / 源码标签；源码内跳转（Ctrl/⌘ 点击 / F12）打开目标类的新标签，目标即当前类时只重新定位。
+> - **移除「已缓存版本」面板**（用户反馈不需要）：侧栏顶部的版本下拉已能直接切换版本；后端 `POST /mcsrc/prepared` 接口保留（前端 API 封装保留，暂无页面入口）。
+> - **修复「查看源码」不显示（关键缺陷）**：Monaco 宿主 `div` 的 `h-full` 与父级传入的 `h-[65vh]` 冲突，编译产物中 `.h-full`（`height:100%`）覆盖 `.h-[65vh]`，而父容器高度为 auto → 编辑器被压成 **7px**（实测 `getBoundingClientRect().height = 7`，Monaco 只渲染 1 行）。改为「定高工作区 + `min-h-0 flex-1` 内容层 + 查看器 `h-full`」，实测宿主高度 **640px、渲染 23 行、17 个可跳转 token**。
+> - 验收记录：`vue-tsc --noEmit` 通过；`vitest run` **57 文件 / 539 例**全绿（`tests/mcsrc.spec.ts` 12 例与 `tests/mcsrc-source.spec.ts` 8 例按新布局重写选择器：`[data-test="mcsrc-class-row"]` / `[data-test="mcsrc-tab-close"]` / `[data-test="mcsrc-version-picker"]`）；`vite build` 通过；
+>   **真实浏览器实测**（Chrome + CDP，真实 1.20.1 客户端 jar / 7436 类）：工作区高度 800px（1440×960 视口）、侧栏 288px、**查看器宿主 640px、Monaco 渲染 23 行且首行 `import org.joml.Quaternionf;`**、17 个可跳转 token；点「查看结构」后标签数 1 → 2 且类列表仍为 30 行；状态栏显示 `1.20.1 · 客户端 · 7436 类`。
 
 - [x] 切片 1：版本选择（复用 `POST /api/v1/versions`）+ jar 获取与缓存（官方 sha1 校验 + 单飞 + 体积上限）。
 - [x] 切片 1：类索引与检索（zip 中央目录建索引 + 相关度排序 + 包过滤 + 分页）。
 - [x] 切片 2：类结构视图（修饰符 / 种类 / 父类 / 接口 / 字段 / 方法，纯 Go 解析 class 字节码）+ 继承关系（祖先链 + 直接子类）。
 - [x] 切片 3-D1：源码浏览（浏览器内 Vineflower WASM 反编译 + Monaco 展示）——`GET /mcsrc/jar` 下发缓存 jar，反编译在访客浏览器内完成，**无需部署侧 JVM**。
 - [x] 切片 3-D2：token 着色 + 点击跳转（Ctrl/⌘ 点击 / F12 跳转定义；类跳类，字段与方法沿继承链定位声明类并选中声明处）。
+- [x] 自动加载：选中版本 / 切换侧别即自动准备（`/mcsrc/prepare` 公开 + `MCSRC_AUTO_PREPARE_MAX` 额度约束 + 管理员豁免）+ 进度条（下载百分比 / 建索引不确定进度）。
+- [x] 工作区界面：对齐上游 mcsrc 的 VS Code 式布局（左侧栏 + 标签页 + 面包屑 + 状态栏，类列表与标签并存）；移除「已缓存版本」面板。
+- [x] 修复「查看源码」不显示：Monaco 宿主高度塌陷（`h-full` 覆盖 `h-[65vh]` 致 7px）→ 改为定高工作区 + `min-h-0 flex-1` 内容层。
 - [ ] 切片 3 余项：查找引用、字节码指令视图、映射重命名展示、Javadoc 备注。
 
 ### 23. 后台账号与权限体系
@@ -440,9 +457,9 @@
 - [x] 新增接口同步更新 `backend/openapi/openapi.yaml`。（§17 投稿、§15 红石、§16 Mod 兼容性均已同步，`js-yaml` 校验通过）
 - [x] 为新增数据库变更编写迁移脚本。（`0017_feedback_submissions` / `0018_redstone` / `0019_mods`，含回滚说明）
 - [x] 为新增功能补充后端单元测试与必要的集成测试。（`content_test.go` 投稿校验；`redstone_test.go` / `mods_test.go` 导入器；`linkhealth` 集成测试实跑通过）
-- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 9 例；`mcsrc-source.spec.ts` 8 例、`mcsrc-decompiler.spec.ts` 7 例、`mcsrc-tokens.spec.ts` 6 例、`mcsrc-navigation.spec.ts` 6 例、`app-footer.spec.ts` 2 例；当前合计 57 文件 / 536 用例）
+- [x] 为前端交互补充 Vitest 测试。（`feedback-submissions.spec.ts` 7 例、`redstone.spec.ts` 11 例、`mods.spec.ts` 15 例；`admin-roles.spec.ts` 7 例、`mcsrc.spec.ts` 12 例；`mcsrc-source.spec.ts` 8 例、`mcsrc-decompiler.spec.ts` 7 例、`mcsrc-tokens.spec.ts` 6 例、`mcsrc-navigation.spec.ts` 6 例、`app-footer.spec.ts` 2 例；当前合计 57 文件 / 539 用例）
 - [x] 执行 `go vet ./...` 和 `go test ./...`。（全绿；并顺带修掉两处预存在的测试隔离缺陷：`cmd/api` 统计采集器缓冲跨用例累积、`linkhealth` 集成测试与 `cmd/api` 争用同一测试库 `public` schema——改为专用 schema；`go test ./...` 并行连续 2 次全绿）
-- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 57 文件 / 536 用例全绿；`vite build` 成功）
+- [x] 执行 `vue-tsc -b --noEmit`、前端测试和 `vite build`。（`vue-tsc` 无错误；`vitest run` 57 文件 / 539 用例全绿；`vite build` 成功）
 - [x] 为关键算法准备固定输入与预期输出的回归用例。（种子地图 / 结构、区块文件解析、附魔铁砧花费、指令生成均已有固定用例）
 - [x] 更新 `Function.md`，只将实际完成并验收的功能标记为已实现。
 - [x] 更新部署、备份恢复和数据导入说明。（`README.md` 补齐 `potions`/`villagers`/`mobs`/`devdocs`/`redstone`/`mods` 导入命令与 `--type all` 依赖顺序；部署与备份恢复章节经实测核对）
@@ -487,6 +504,6 @@
 11. [ ] 按实际用户需求扩展红石资料、Mod 兼容性与投稿体系。
 12. [x] 新增「我的世界开发栏目」（§21）：开发文档知识库（NeoForge / Forge / Fabric / 原版数据）+ 版本映射与类 / 方法查询（映射数据由 `cmd/import-mappings` 按官方来源导入，不预置）。
 13. [x] 补齐后台账号与权限体系（§23）：角色与权限底座 + 角色管理页 + 普通用户管理。
-14. [ ] 整合 MC 源码浏览器（§22）：切片 1（版本选择 + jar 缓存 + 类索引 / 检索）、切片 2（类结构视图 + 继承关系，纯 Go 无 JVM）、切片 3-D1（浏览器内 Vineflower WASM 反编译 + Monaco 源码浏览）、切片 3-D2（token 着色 + 点击跳转）已交付；切片 3 余项（查找引用 / 字节码指令视图 / 映射重命名 / Javadoc 备注）待办。
+14. [ ] 整合 MC 源码浏览器（§22）：切片 1（版本选择 + jar 缓存 + 类索引 / 检索）、切片 2（类结构视图 + 继承关系，纯 Go 无 JVM）、切片 3-D1（浏览器内 Vineflower WASM 反编译 + Monaco 源码浏览）、切片 3-D2（token 着色 + 点击跳转）、自动加载（选中版本即自动准备 + 进度条）、VS Code 式工作区界面（左侧栏 + 标签页 + 面包屑 + 状态栏）已交付；切片 3 余项（查找引用 / 字节码指令视图 / 映射重命名 / Javadoc 备注）待办。
 
 > **执行原则：** 一次优先完成一个可验收的垂直功能；先保证数据准确、版本明确和安全边界，再扩展功能数量。没有完成测试和验收的事项，不要在 `Function.md` 中标记为“已实现”。

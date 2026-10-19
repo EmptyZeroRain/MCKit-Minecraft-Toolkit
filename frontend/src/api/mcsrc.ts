@@ -24,9 +24,18 @@ export async function listPrepared(): Promise<McsrcStatus[]> {
   return data.data ?? []
 }
 
-/** 准备版本：服务端下载 jar（校验 sha1）并建立类索引（幂等） */
+/**
+ * 触发准备：服务端下载 jar（校验 sha1）并建立类索引（幂等）。
+ * 任何访客都可调用（前端选中版本即自动触发）；匿名访客受服务端
+ * `MCSRC_AUTO_PREPARE_MAX` 额度限制，超出返回 429 `AUTO_PREPARE_LIMIT`。
+ * 首次准备需下载数十 MB 并建索引，故超时放宽到 5 分钟。
+ */
 export async function prepare(version: string, side: McsrcSide = 'client'): Promise<McsrcStatus> {
-  const { data } = await http.post<ApiResponse<McsrcStatus>>('/mcsrc/prepare', { version, side })
+  const { data } = await http.post<ApiResponse<McsrcStatus>>(
+    '/mcsrc/prepare',
+    { version, side },
+    { timeout: 300_000 },
+  )
   return data.data
 }
 

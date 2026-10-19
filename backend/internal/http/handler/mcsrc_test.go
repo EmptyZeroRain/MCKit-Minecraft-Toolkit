@@ -3,6 +3,7 @@ package handler
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -13,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"mckit/backend/internal/auth"
+	"mckit/backend/internal/domain"
+	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/mcsrc"
 	"mckit/backend/internal/mcversion"
 )
@@ -99,37 +103,50 @@ func fakeClassBytes(name, super string) []byte {
 }
 
 // newMcsrcTestHandler 搭建「假 Mojang 上游 + 真实 mcversion/mcsrc 实现」的处理器。
+//
+// 上游清单提供两个版本（1.21.4 / 1.21.3），且**只有 client 侧**下载信息
+// （用于覆盖「该版本缺少 server 下载」的错误分支）。
+// 处理器默认开启自动准备（额度 12，无权限解析器），即按匿名访客语义测试。
 func newMcsrcTestHandler(t *testing.T) *McsrcHandler {
 	t.Helper()
 	jar := testJar(t)
 	sum := sha1.Sum(jar)
+	known := map[string]bool{"1.21.4": true, "1.21.3": true}
 
 	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"latest": map[string]string{"release": "1.21.4", "snapshot": "24w45a"},
-			"versions": []map[string]any{{
-				"id":   "1.21.4",
-				"type": "release",
-				"url":  srv.URL + "/versions/1.21.4.json",
-			}},
+			"versions": []map[string]any{
+				{"id": "1.21.4", "type": "release", "url": srv.URL + "/versions/1.21.4.json"},
+				{"id": "1.21.3", "type": "release", "url": srv.URL + "/versions/1.21.3.json"},
+			},
 		})
 	})
-	mux.HandleFunc("/versions/1.21.4.json", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/versions/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/versions/"), ".json")
+		if !known[id] {
+			http.NotFound(w, r)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":   "1.21.4",
+			"id":   id,
 			"type": "release",
 			"downloads": map[string]any{
 				"client": map[string]any{
-					"url":  srv.URL + "/1.21.4-client.jar",
+					"url":  srv.URL + "/" + id + "-client.jar",
 					"sha1": hex.EncodeToString(sum[:]),
 					"size": len(jar),
 				},
 			},
 		})
 	})
-	mux.HandleFunc("/1.21.4-client.jar", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "-client.jar") {
+			http.NotFound(w, r)
+			return
+		}
 		_, _ = w.Write(jar)
 	})
 	srv = httptest.NewServer(mux)
@@ -137,7 +154,7 @@ func newMcsrcTestHandler(t *testing.T) *McsrcHandler {
 
 	client := mcversion.New(t.TempDir(), time.Hour).WithHTTP(srv.Client()).WithManifestURL(srv.URL + "/manifest.json")
 	store := mcsrc.NewStore(t.TempDir(), 1<<20, 100).WithHTTP(srv.Client())
-	return NewMcsrcHandler(store, client)
+	return NewMcsrcHandler(store, client).WithAutoPrepare(nil, 12)
 }
 
 // doMcsrc 发起 POST 并返回响应。
@@ -402,6 +419,110 @@ func TestMcsrcClassDetailAndHierarchy(t *testing.T) {
 	if hier.DescendantCount != 1 || len(hier.Descendants) != 1 ||
 		hier.Descendants[0].Name != "net.minecraft.server.MinecraftServer" {
 		t.Fatalf("子类异常：%+v", hier)
+	}
+}
+
+// errCodeOf 取出错误响应里的 error.code。
+func errCodeOf(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("解析错误体失败: %v（body=%s）", err, rec.Body.String())
+	}
+	return body.Error.Code
+}
+
+// fakePerms 按角色返回权限点，用于验证管理员豁免自动准备额度。
+type fakePerms map[string][]string
+
+func (f fakePerms) PermissionsForRole(_ context.Context, role string) ([]string, error) {
+	return f[role], nil
+}
+
+// doMcsrcAs 以指定角色发起 POST（模拟 OptionalAuth 已注入会话）。
+func doMcsrcAs(t *testing.T, h *McsrcHandler, fn http.HandlerFunc, role, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcsrc/prepare", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(middleware.WithSession(req.Context(), &auth.Session{AccountID: "a1", Role: role}))
+	rec := httptest.NewRecorder()
+	fn(rec, req)
+	return rec
+}
+
+// TestMcsrcPrepareAutoQuota 覆盖匿名访客的「自动准备额度」：
+// 额度内的版本可自动下载，超出后拒绝（429），但已缓存的版本不消耗额度。
+func TestMcsrcPrepareAutoQuota(t *testing.T) {
+	// 额度 1：只允许自动缓存 1 个版本。
+	h := newMcsrcTestHandler(t).WithAutoPrepare(nil, 1)
+
+	rec := doMcsrc(h, h.Prepare, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("额度内 prepare 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 已缓存（重复请求）不消耗额度：额度已满仍放行。
+	rec = doMcsrc(h, h.Prepare, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("已缓存版本重复 prepare 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 新版本超出额度 → 429 AUTO_PREPARE_LIMIT。
+	rec = doMcsrc(h, h.Prepare, `{"version":"1.21.3"}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("超额 prepare 期望 429，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if code := errCodeOf(t, rec); code != "AUTO_PREPARE_LIMIT" {
+		t.Fatalf("错误码期望 AUTO_PREPARE_LIMIT，实际 %s", code)
+	}
+
+	// 额度判定在入参校验之后：非法版本号仍返回 422 而非 429。
+	rec = doMcsrc(h, h.Prepare, `{"version":"../etc/passwd"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("非法版本号期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMcsrcPrepareAutoDisabled 覆盖额度 <= 0（关闭自动准备）：匿名访客一律 429。
+func TestMcsrcPrepareAutoDisabled(t *testing.T) {
+	h := newMcsrcTestHandler(t).WithAutoPrepare(nil, 0)
+
+	rec := doMcsrc(h, h.Prepare, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("关闭自动准备时期望 429，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if code := errCodeOf(t, rec); code != "AUTO_PREPARE_DISABLED" {
+		t.Fatalf("错误码期望 AUTO_PREPARE_DISABLED，实际 %s", code)
+	}
+}
+
+// TestMcsrcPrepareAdminBypassQuota 覆盖管理员豁免：
+// 具备 ops.mcsrc 的角色不受额度限制，其他角色仍受限制。
+func TestMcsrcPrepareAdminBypassQuota(t *testing.T) {
+	perms := fakePerms{
+		"admin":  {domain.PermOpsMCsrc},
+		"editor": {domain.PermContentResources},
+	}
+
+	// 额度为 0（关闭自动准备）时，管理员仍可准备。
+	admin := newMcsrcTestHandler(t).WithAutoPrepare(perms, 0)
+	rec := doMcsrcAs(t, admin, admin.Prepare, "admin", `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("管理员 prepare 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 无 ops.mcsrc 的角色（editor）仍受额度限制。
+	editor := newMcsrcTestHandler(t).WithAutoPrepare(perms, 0)
+	rec = doMcsrcAs(t, editor, editor.Prepare, "editor", `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("editor prepare 期望 429，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if code := errCodeOf(t, rec); code != "AUTO_PREPARE_DISABLED" {
+		t.Fatalf("错误码期望 AUTO_PREPARE_DISABLED，实际 %s", code)
 	}
 }
 
