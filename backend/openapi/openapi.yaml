@@ -39,9 +39,10 @@ paths:
   /search:
     post:
       tags: [public]
-      summary: 全站搜索（工具/资源/百科/物品）
+      summary: 全站搜索（工具/资源/百科/物品/开发文档）
       description: |
         相关度权重：标题 > 命名空间 ID > 别名 > slug > 摘要（TODO §5）。
+        搜索范围含开发文档（TODO §21）：命中标题/英文标题/slug/摘要/正文/标签，仅返回已发布条目。
         关键词上限 80 字符，超长返回 422；查询超时 3 秒。
         无结果时 meta.suggestions 返回可尝试的关键词（基于已记录搜索词的字面关系）。
         搜索词以匿名聚合形式记录（关键词 + 次数，不含任何用户标识）。
@@ -2254,10 +2255,11 @@ components:
       description: 全站搜索结果条目（url 为前端详情页路径）
       type: object
       properties:
-        type: { type: string, enum: [tool, resource, wiki, item] }
+        type: { type: string, enum: [tool, resource, wiki, item, devdoc] }
         id: { type: string }
         slug: { type: string }
         item_id: { type: string, description: 仅物品结果返回 }
+        # 开发文档结果（type=devdoc）返回 slug 与 url=/dev/{slug}，item_id 为空。
         title: { type: string }
         summary: { type: string }
         url: { type: string, example: "/items/minecraft:stone" }
@@ -3250,7 +3252,7 @@ components:
             type: object
             properties:
               q: { type: string, maxLength: 80, description: 关键词（超长返回 422） }
-              type: { type: string, enum: [tool, resource, wiki, item] }
+              type: { type: string, enum: [tool, resource, wiki, item, devdoc], description: devdoc 为开发文档（TODO §21） }
               game_version:
                 type: string
                 description: |-

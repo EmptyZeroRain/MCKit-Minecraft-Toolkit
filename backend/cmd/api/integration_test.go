@@ -135,7 +135,7 @@ func seedAdmins(gdb *gorm.DB) error {
 func resetData(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	err := gdb.Exec(`TRUNCATE resources, tools, wiki_entries, items, recipes, commands,
-		feedback, categories, tags, audit_logs, data_import_jobs, search_terms,
+		feedback, categories, tags, audit_logs, data_import_jobs, search_terms, dev_docs,
 		tool_stats_daily, resource_stats_daily, api_stats_daily, search_stats_daily
 		RESTART IDENTITY CASCADE`).Error
 	if err != nil {
@@ -401,6 +401,89 @@ func TestSearchPagination(t *testing.T) {
 	for _, it := range resp2.Data {
 		if firstPageIDs[fmt.Sprint(it["id"])] {
 			t.Fatal("第 2 页不应与第 1 页重复")
+		}
+	}
+}
+
+// TestSearchDevDocs 覆盖 §21：开发文档已接入全站搜索。
+// 命中标题/英文标题/slug/摘要/正文/标签；仅返回已发布条目，且 url 指向 /dev/{slug}。
+func TestSearchDevDocs(t *testing.T) {
+	gdb, router := integrationSetup(t)
+	resetData(t, itDB)
+
+	gdb.Create(&domain.DevDoc{
+		Slug: "it-neoforge-events", TitleZh: "NeoForge 事件系统", TitleEn: "NeoForge Events",
+		Loader: "neoforge", Category: "events", Summary: "生命周期与事件总线",
+		BodyMd: "使用 EventBus 订阅 PlayerTickEvent。",
+		Tags:   types.JSONSlice{"入门"}, Status: domain.StatusPublished,
+	})
+	// 正文命中：关键词只出现在 body_md 中。
+	gdb.Create(&domain.DevDoc{
+		Slug: "it-fabric-mixins", TitleZh: "Fabric 注入", TitleEn: "Fabric Mixins",
+		Loader: "fabric", Category: "mapping", Summary: "字节码注入",
+		BodyMd: "通过 MixinTargetMarker 描述目标。",
+		Status: domain.StatusPublished,
+	})
+	// 草稿不应出现在搜索结果中。
+	gdb.Create(&domain.DevDoc{
+		Slug: "it-draft", TitleZh: "NeoForge 事件系统草稿", Loader: "neoforge",
+		Category: "events", Summary: "生命周期与事件总线", Status: domain.StatusDraft,
+	})
+
+	type searchResp struct {
+		Data []struct {
+			Type  string `json:"type"`
+			Slug  string `json:"slug"`
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"data"`
+		Meta struct {
+			Total int64 `json:"total"`
+		} `json:"meta"`
+	}
+
+	// 1) 显式 type=devdoc：中文标题命中，草稿被排除。
+	rec := do(t, router, http.MethodPost, "/api/v1/search", `{"q":"事件","type":"devdoc"}`, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("搜索期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var got searchResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析搜索响应失败: %v", err)
+	}
+	if got.Meta.Total != 1 || len(got.Data) != 1 {
+		t.Fatalf("期望命中 1 条已发布开发文档，实际 total=%d len=%d", got.Meta.Total, len(got.Data))
+	}
+	if got.Data[0].Type != "devdoc" || got.Data[0].URL != "/dev/it-neoforge-events" {
+		t.Fatalf("结果类型/URL 不符：type=%s url=%s", got.Data[0].Type, got.Data[0].URL)
+	}
+
+	// 2) 正文命中：关键词只存在于 body_md。
+	rec = do(t, router, http.MethodPost, "/api/v1/search", `{"q":"MixinTargetMarker","type":"devdoc"}`, nil, "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got.Data) != 1 || got.Data[0].Slug != "it-fabric-mixins" {
+		t.Fatalf("正文命中失败：%+v", got.Data)
+	}
+
+	// 3) 不传 type：开发文档应并入全站结果。
+	rec = do(t, router, http.MethodPost, "/api/v1/search", `{"q":"事件"}`, nil, "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	found := false
+	for _, it := range got.Data {
+		if it.Type == "devdoc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("全站搜索未包含开发文档：%+v", got.Data)
+	}
+
+	// 4) type=item：开发文档不应出现在物品结果中。
+	rec = do(t, router, http.MethodPost, "/api/v1/search", `{"q":"事件","type":"item"}`, nil, "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	for _, it := range got.Data {
+		if it.Type == "devdoc" {
+			t.Fatal("type=item 的结果不应包含开发文档")
 		}
 	}
 }

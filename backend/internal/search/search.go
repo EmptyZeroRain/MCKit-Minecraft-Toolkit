@@ -1,5 +1,5 @@
 // Package search 提供全站搜索（需求 §5.1）。
-// 搜索范围：工具、资源、百科、物品。标题优先，其次别名、摘要和正文。
+// 搜索范围：工具、资源、百科、物品、开发文档。标题优先，其次别名、摘要和正文。
 package search
 
 import (
@@ -28,7 +28,7 @@ func versionFilter(column, gameVersion string) (string, []any) {
 
 // ResultItem 单个搜索结果。
 type ResultItem struct {
-	Type    string `json:"type"` // tool | resource | wiki | item
+	Type    string `json:"type"` // tool | resource | wiki | item | devdoc
 	ID      string `json:"id"`
 	Slug    string `json:"slug,omitempty"`
 	Title   string `json:"title"`
@@ -55,7 +55,7 @@ func NewService(db *gorm.DB) *Service {
 // Filter 搜索筛选。
 type Filter struct {
 	Q           string
-	Type        string // 可选：tool | resource | wiki | item
+	Type        string // 可选：tool | resource | wiki | item | devdoc
 	GameVersion string
 	// Sort 排序方式："" / "relevance"（默认，相关度优先）或 "updated_desc"（最近更新优先）。
 	Sort     string
@@ -128,6 +128,14 @@ func (s *Service) Search(ctx context.Context, f Filter) (*Result, error) {
 	}
 	if f.Type == "" || f.Type == "item" {
 		items, n, err := s.searchItem(ctx, q, f.GameVersion, fetch)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, items...)
+		total += n
+	}
+	if f.Type == "" || f.Type == "devdoc" {
+		items, n, err := s.searchDevDoc(ctx, q, f.GameVersion, fetch)
 		if err != nil {
 			return nil, err
 		}
@@ -402,6 +410,50 @@ func (s *Service) searchItem(ctx context.Context, q, gameVersion string, limit i
 				Identifier: it.ItemID,
 				Aliases:    append([]string{it.NameEn}, it.Aliases...),
 				Summary:    it.Description,
+			}),
+		})
+	}
+	return out, total, nil
+}
+
+// searchDevDoc 检索开发文档（TODO §21）。
+// 命中范围：中文/英文标题、slug、摘要、正文（body_md）与标签；
+// 仅返回已发布（published）文档，正文命中用于「搜得到文档内容」这一诉求。
+func (s *Service) searchDevDoc(ctx context.Context, q, gameVersion string, limit int) ([]ResultItem, int64, error) {
+	kw := keywordPattern(q)
+	base := s.db.WithContext(ctx).Model(&domain.DevDoc{}).
+		Where("status = ?", domain.StatusPublished).
+		Where(fullTextMatch("title_zh ILIKE ? OR COALESCE(title_en,'') ILIKE ? OR slug ILIKE ? OR summary ILIKE ? OR body_md ILIKE ? OR tags::text ILIKE ?"),
+			q, kw, kw, kw, kw, kw, kw)
+	if gameVersion != "" {
+		cond, args := versionFilter("mc_versions", gameVersion)
+		base = base.Where(cond, args...)
+	}
+
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var items []domain.DevDoc
+	if err := base.Order("title_zh ASC").Limit(limit).Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	out := make([]ResultItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, ResultItem{
+			Type:      "devdoc",
+			ID:        it.ID.String(),
+			Slug:      it.Slug,
+			Title:     it.TitleZh,
+			Summary:   it.Summary,
+			URL:       "/dev/" + it.Slug,
+			UpdatedAt: it.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			score: relevance(q, rankInput{
+				Title:   it.TitleZh,
+				Slug:    it.Slug,
+				Aliases: append([]string{it.TitleEn}, it.Tags...),
+				Summary: it.Summary,
 			}),
 		})
 	}

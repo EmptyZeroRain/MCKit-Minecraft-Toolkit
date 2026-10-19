@@ -21,14 +21,14 @@ const router = useRouter()
 
 const filters = reactive<{
   q: string
-  type: '' | 'tool' | 'resource' | 'wiki' | 'item'
+  type: '' | 'tool' | 'resource' | 'wiki' | 'item' | 'devdoc'
   gameVersion: string
   sort: SearchSort
   page: number
   pageSize: number
 }>({
   q: (route.query.q as string) || '',
-  type: (route.query.type as '' | 'tool' | 'resource' | 'wiki' | 'item') || '',
+  type: (route.query.type as '' | 'tool' | 'resource' | 'wiki' | 'item' | 'devdoc') || '',
   gameVersion: (route.query.game_version as string) || '',
   sort: route.query.sort === 'updated_desc' ? 'updated_desc' : 'relevance',
   page: Number(route.query.page) || 1,
@@ -43,12 +43,13 @@ const totalPages = ref(1)
 const loading = ref(false)
 const error = ref('')
 
-const typeOptions: Array<{ label: string; value: '' | 'tool' | 'resource' | 'wiki' | 'item' }> = [
+const typeOptions: Array<{ label: string; value: '' | 'tool' | 'resource' | 'wiki' | 'item' | 'devdoc' }> = [
   { label: '全部', value: '' },
   { label: '工具', value: 'tool' },
   { label: '资源', value: 'resource' },
   { label: '百科', value: 'wiki' },
   { label: '物品', value: 'item' },
+  { label: '开发文档', value: 'devdoc' },
 ]
 
 const sortOptions: Array<{ label: string; value: SearchSort }> = [
@@ -83,7 +84,7 @@ async function loadResults() {
     totalPages.value = res.totalPages || Math.max(1, Math.ceil(res.total / filters.pageSize))
     applyPageMeta({
       title: `搜索结果：${filters.q}`,
-      description: 'Minecraft 工具、资源、百科、物品全站搜索结果。',
+      description: 'Minecraft 工具、资源、百科、物品与开发文档全站搜索结果。',
       robot: 'noindex,nofollow',
     })
   } catch (err) {
@@ -144,7 +145,7 @@ function onPageChange(p: number) {
 }
 
 function typeLabel(type: string): string {
-  const map: Record<string, string> = { tool: '工具', resource: '资源', wiki: '百科', item: '物品' }
+  const map: Record<string, string> = { tool: '工具', resource: '资源', wiki: '百科', item: '物品', devdoc: '开发文档' }
   return map[type] ?? type
 }
 

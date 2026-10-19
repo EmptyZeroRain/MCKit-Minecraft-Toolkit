@@ -31,3 +31,19 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- 本项目补充忽略规则 ---
+.env
+.env.*
+!.env.example
+backend/bin/
+backend/coverage.out
+backend/wikicrawl
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+.DS_Store
+Thumbs.db
+.idea/
+*.log

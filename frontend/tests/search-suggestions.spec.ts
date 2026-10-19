@@ -17,6 +17,7 @@ function makeRouter() {
       { path: '/', component: { template: '<div />' } },
       { path: '/search', name: 'search', component: { template: '<div />' } },
       { path: '/resources', component: { template: '<div />' } },
+      { path: '/dev/:slug', component: { template: '<div />' } },
     ],
   })
 }
@@ -130,5 +131,53 @@ describe('搜索结果页 · 版本筛选', () => {
   it('URL 中的 game_version 参数会被还原', async () => {
     await mountView({ items: [], total: 0 }, { q: '石头', game_version: '1.19' })
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ game_version: '1.19' }))
+  })
+})
+
+describe('搜索结果页 · 类型筛选（含开发文档，TODO §21）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('类型筛选项包含「开发文档」', async () => {
+    const { wrapper } = await mountView({ items: [], total: 0 })
+    const btn = wrapper.findAll('button').find((b) => b.text() === '开发文档')
+    expect(btn).toBeTruthy()
+  })
+
+  it('选择「开发文档」后按 type=devdoc 请求并写入 URL', async () => {
+    const { wrapper, router } = await mountView({ items: [], total: 0 })
+    const btn = wrapper.findAll('button').find((b) => b.text() === '开发文档')
+    await btn!.trigger('click')
+    await flushPromises()
+
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'devdoc', page: 1 }))
+    expect(router.currentRoute.value.query.type).toBe('devdoc')
+  })
+
+  it('URL 中的 type=devdoc 会被还原', async () => {
+    await mountView({ items: [], total: 0 }, { q: '事件', type: 'devdoc' })
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'devdoc' }))
+  })
+
+  it('开发文档结果渲染「开发文档」标签并链接到 /dev/{slug}', async () => {
+    const { wrapper } = await mountView({
+      items: [
+        {
+          type: 'devdoc',
+          id: 'd1',
+          slug: 'neoforge-events',
+          title: 'NeoForge 事件系统',
+          summary: '生命周期与事件总线',
+          url: '/dev/neoforge-events',
+        },
+      ],
+      total: 1,
+    })
+    const text = wrapper.text()
+    expect(text).toContain('开发文档')
+    expect(text).toContain('NeoForge 事件系统')
+    const link = wrapper.find('a[href="/dev/neoforge-events"]')
+    expect(link.exists()).toBe(true)
   })
 })

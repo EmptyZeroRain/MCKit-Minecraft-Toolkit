@@ -68,6 +68,7 @@ function typeLabel(type: string): string {
     resource: '资源',
     wiki: '百科',
     item: '物品',
+    devdoc: '开发文档',
   }
   return map[type] ?? type
 }
