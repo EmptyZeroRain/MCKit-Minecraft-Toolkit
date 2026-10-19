@@ -2,12 +2,17 @@
 // 红石机器设计内容审核（TODO §15，admin 专属）
 // 后台按审核状态 / 用途筛选机器设计；默认只看待审核，逐条「通过 / 驳回」并留备注。
 // 仅 admin 角色可见（侧边栏过滤 + 后端 403 兜底）。
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import ListShell from '@/components/admin/list-shell.vue'
 import StatusBadge from '@/components/common/StatusBadge.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useUiStore } from '@/stores/ui'
-import { listRedstoneDesignsAdmin, reviewRedstoneDesign } from '@/api/admin-redstone'
+import {
+  batchReviewRedstoneDesigns,
+  listRedstoneDesignsAdmin,
+  reviewRedstoneDesign,
+} from '@/api/admin-redstone'
+import { describeBatchResult, MAX_BATCH_REVIEW } from '@/types/batch'
 import { ApiError } from '@/types/api'
 import {
   REDSTONE_DESIGN_PURPOSES,
@@ -70,6 +75,11 @@ async function load() {
     items.value = res.items
     total.value = res.total
     totalPages.value = res.totalPages || Math.max(1, Math.ceil(res.total / filters.pageSize))
+    // 刷新后只保留仍在待审核列表中的选择。
+    const stillPending = new Set(
+      res.items.filter((i) => i.review_status === 'pending').map((i) => i.id),
+    )
+    selected.value = new Set([...selected.value].filter((id) => stillPending.has(id)))
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '加载失败'
   } finally {
@@ -88,6 +98,61 @@ async function review(item: RedstoneDesign, status: RedstoneReviewStatus) {
     ui.error(err instanceof ApiError ? err.message : '审核失败')
   } finally {
     reviewingId.value = ''
+  }
+}
+
+// ===== 批量审核 =====
+// 只允许勾选待审核记录：已审核项提交必然失败，提前禁用减少噪音。
+const selected = ref<Set<string>>(new Set())
+const batchNote = ref('')
+const batchBusy = ref(false)
+
+const pendingRows = computed(() =>
+  items.value
+    .filter((i) => i.review_status === 'pending')
+    .map((i) => ({ id: i.id, name: i.name_zh || i.slug })),
+)
+const allSelected = computed(
+  () => pendingRows.value.length > 0 && pendingRows.value.every((r) => selected.value.has(r.id)),
+)
+
+function toggleOne(id: string) {
+  const next = new Set(selected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selected.value = next
+}
+
+function toggleAll() {
+  selected.value = allSelected.value ? new Set() : new Set(pendingRows.value.map((r) => r.id))
+}
+
+async function batchReview(status: RedstoneReviewStatus) {
+  if (batchBusy.value) return
+  const ids = [...selected.value]
+  if (!ids.length) {
+    ui.warning('请先勾选要审核的设计')
+    return
+  }
+  if (ids.length > MAX_BATCH_REVIEW) {
+    ui.error(`单次最多 ${MAX_BATCH_REVIEW} 条，请分批提交`)
+    return
+  }
+  if (status === 'rejected' && !window.confirm(`将驳回 ${ids.length} 条设计，确认继续？`)) return
+
+  batchBusy.value = true
+  try {
+    const result = await batchReviewRedstoneDesigns(ids, status, batchNote.value.trim())
+    const action = status === 'published' ? '批量通过' : '批量驳回'
+    if (result.failed > 0) ui.warning(describeBatchResult(result, action))
+    else ui.success(describeBatchResult(result, action))
+    selected.value = new Set()
+    batchNote.value = ''
+    await load()
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '批量审核失败')
+  } finally {
+    batchBusy.value = false
   }
 }
 
@@ -139,12 +204,52 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="pendingRows.length" class="card flex flex-wrap items-center gap-3 p-3 text-sm">
+      <label class="flex items-center gap-2 text-text-secondary">
+        <input
+          type="checkbox"
+          :checked="allSelected"
+          class="h-4 w-4 accent-grass-500"
+          @change="toggleAll"
+        />
+        全选本页待审核（{{ pendingRows.length }}）
+      </label>
+      <input
+        v-model="batchNote"
+        type="text"
+        placeholder="批量审核备注（可选，会写入每一条）"
+        class="h-8 w-64 rounded-md border border-border-dark bg-ink-800 px-2 text-xs text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none"
+      />
+      <button
+        type="button"
+        class="rounded border border-grass-500/50 bg-grass-500/10 px-3 py-1.5 text-xs text-grass-300 transition hover:bg-grass-500/20 disabled:opacity-40"
+        :disabled="batchBusy || selected.size === 0"
+        @click="batchReview('published')"
+      >
+        批量通过
+      </button>
+      <button
+        type="button"
+        class="rounded border border-danger-mc/50 bg-danger-mc/10 px-3 py-1.5 text-xs text-danger-mc transition hover:bg-danger-mc/20 disabled:opacity-40"
+        :disabled="batchBusy || selected.size === 0"
+        @click="batchReview('rejected')"
+      >
+        批量驳回
+      </button>
+      <span class="text-xs text-text-muted">
+        已选 {{ selected.size }} 条{{ batchBusy ? ' · 处理中…' : '' }}
+      </span>
+    </div>
+
     <ListShell title="设计审核列表" :loading="loading" :error="error" @retry="load">
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
           <table class="w-full text-left text-sm">
             <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
               <tr>
+                <th scope="col" class="w-10 px-4 py-3 font-medium">
+                  <span class="sr-only">选择</span>
+                </th>
                 <th scope="col" class="px-4 py-3 font-medium">设计</th>
                 <th scope="col" class="px-4 py-3 font-medium">用途 / 难度</th>
                 <th scope="col" class="px-4 py-3 font-medium">作者 / 许可</th>
@@ -156,6 +261,16 @@ onMounted(load)
             </thead>
             <tbody class="divide-y divide-border-dark">
               <tr v-for="item in items" :key="item.id" class="align-top hover:bg-ink-800/60">
+                <td class="px-4 py-3">
+                  <input
+                    v-if="item.review_status === 'pending'"
+                    type="checkbox"
+                    :checked="selected.has(item.id)"
+                    class="mt-1 h-4 w-4 accent-grass-500"
+                    :aria-label="`选择设计 ${item.name_zh || item.slug}`"
+                    @change="toggleOne(item.id)"
+                  />
+                </td>
                 <td class="px-4 py-3">
                   <div class="font-medium text-text-primary">{{ item.name_zh || '（未命名）' }}</div>
                   <div class="mt-0.5 font-mono text-xs text-text-muted">{{ item.slug }}</div>

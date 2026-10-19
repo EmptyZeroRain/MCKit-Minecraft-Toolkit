@@ -1,0 +1,5 @@
+-- 0020_dev_docs_search_vector 反向迁移（整理自正向迁移文件中的「回滚策略」注释）。
+-- 反向迁移可能丢弃数据，执行前请确认或先备份。
+
+DROP INDEX IF EXISTS idx_dev_docs_search_vector;
+ALTER TABLE dev_docs DROP COLUMN IF EXISTS search_vector;

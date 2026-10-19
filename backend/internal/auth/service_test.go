@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -42,6 +43,14 @@ func (r *fakeAdminRepo) UpdateLastLogin(adminID string) error {
 func (r *fakeAdminRepo) ChangePassword(adminID, newHash string) error {
 	if a, ok := r.byID[adminID]; ok {
 		a.PasswordHash = newHash
+	}
+	return nil
+}
+
+func (r *fakeAdminRepo) UpdateProfile(adminID, nickname, avatarURL string) error {
+	if a, ok := r.byID[adminID]; ok {
+		a.Nickname = nickname
+		a.AvatarURL = avatarURL
 	}
 	return nil
 }
@@ -232,5 +241,205 @@ func TestDeleteSessionsForAdmin(t *testing.T) {
 	}
 	if sess, _ := svc.GetSession(ctx, e1.SessionID); sess == nil {
 		t.Fatal("其他管理员会话不应被清理")
+	}
+}
+
+// tinyPNGDataURI 1x1 PNG 的合法头像 data URI（内容嗅探为 image/png）。
+const tinyPNGDataURI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+// TestUpdateProfile 覆盖「用户信息」自助维护：昵称 / 头像（仅图片）写入与校验。
+func TestUpdateProfile(t *testing.T) {
+	admin := newAdmin(t, "admin", "correct", domain.RoleAdmin)
+	repo := newFakeRepo(admin)
+	svc := NewService(repo, NewMemorySessionStore(), 5, 900)
+	ctx := context.Background()
+
+	// 正常写入（昵称含首尾空白应被裁剪）。
+	updated, err := svc.UpdateProfile(ctx, admin.ID.String(), "  小明  ", tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("更新资料失败: %v", err)
+	}
+	if updated.Nickname != "小明" {
+		t.Fatalf("昵称应被裁剪为「小明」，实际 %q", updated.Nickname)
+	}
+	if updated.AvatarURL != tinyPNGDataURI {
+		t.Fatalf("头像 data URI 写入错误: %q", updated.AvatarURL)
+	}
+	// 回源读取应反映最新资料。
+	got, err := svc.Profile(ctx, admin.ID.String())
+	if err != nil || got == nil || got.Nickname != "小明" {
+		t.Fatalf("Profile 应返回最新昵称，实际 %+v err=%v", got, err)
+	}
+
+	// 空昵称 / 空头像合法（表示清空，前端回退到 username）。
+	if _, err := svc.UpdateProfile(ctx, admin.ID.String(), "", ""); err != nil {
+		t.Fatalf("清空资料应被接受: %v", err)
+	}
+
+	// 昵称超长（按 Unicode 字符计）。
+	long := strings.Repeat("字", MaxNicknameLength+1)
+	if _, err := svc.UpdateProfile(ctx, admin.ID.String(), long, ""); !errors.Is(err, ErrInvalidNickname) {
+		t.Fatalf("超长昵称应返回 ErrInvalidNickname，实际 %v", err)
+	}
+	// 头像只能上传图片：外链 URL、非图片 data URI、坏 base64 均应被拒绝。
+	badAvatars := []string{
+		"https://cdn.example.com/a.png",
+		"javascript:alert(1)",
+		"data:text/plain;base64,aGVsbG8=",
+		"data:image/png;base64,bm90LWJhc2U2NA==",
+		"data:image/png,notbase64",
+	}
+	for _, bad := range badAvatars {
+		if _, err := svc.UpdateProfile(ctx, admin.ID.String(), "n", bad); !errors.Is(err, ErrInvalidAvatar) {
+			t.Fatalf("非法头像 %q 应返回 ErrInvalidAvatar，实际 %v", bad, err)
+		}
+	}
+}
+
+// ===== 双因子认证（MFA）登录流程 =====
+
+// fakeMFA 内存版 MFAProvider：票据 -> 账号，验证码固定为 123456。
+type fakeMFA struct {
+	enabled    bool
+	configured bool
+	tickets    map[string]uuid.UUID
+	used       map[string]bool
+	attempts   map[string]int
+	code       string
+}
+
+func newFakeMFA(enabled bool) *fakeMFA {
+	return &fakeMFA{
+		enabled:    enabled,
+		configured: true,
+		tickets:    map[string]uuid.UUID{},
+		used:       map[string]bool{},
+		attempts:   map[string]int{},
+		code:       "123456",
+	}
+}
+
+func (f *fakeMFA) Configured() bool { return f.configured }
+
+func (f *fakeMFA) IsEnabled(_ context.Context, _ uuid.UUID) (bool, error) {
+	return f.enabled, nil
+}
+
+func (f *fakeMFA) CreateTicket(_ context.Context, accountID uuid.UUID) (string, error) {
+	token := "ticket-" + accountID.String()[:8]
+	f.tickets[token] = accountID
+	return token, nil
+}
+
+func (f *fakeMFA) RedeemTicket(_ context.Context, token, code string) (uuid.UUID, error) {
+	id, ok := f.tickets[token]
+	if !ok || f.used[token] || f.attempts[token] >= 5 {
+		return uuid.Nil, errTicketInvalidForTest
+	}
+	if code != f.code {
+		f.attempts[token]++
+		return uuid.Nil, errInvalidCodeForTest
+	}
+	f.used[token] = true
+	return id, nil
+}
+
+// Verify 供解绑等自助操作复用（本测试不涉及）。
+func (f *fakeMFA) Verify(_ context.Context, _ uuid.UUID, code string) error {
+	if code != f.code {
+		return errInvalidCodeForTest
+	}
+	return nil
+}
+
+var (
+	errInvalidCodeForTest   = errors.New("验证码错误")
+	errTicketInvalidForTest = errors.New("票据无效")
+)
+
+func TestLoginRequiresMFAWhenEnabled(t *testing.T) {
+	admin := newAdmin(t, "admin", "correct-horse-battery", domain.RoleAdmin)
+	repo := newFakeRepo(admin)
+	store := NewMemorySessionStore()
+	mfa := newFakeMFA(true)
+	svc := NewService(repo, store, 5, 900).WithMFA(mfa)
+
+	res, err := svc.Login(context.Background(), "admin", "correct-horse-battery", "203.0.113.1")
+	if err != nil {
+		t.Fatalf("密码正确时不应报错: %v", err)
+	}
+	if !res.MFARequired {
+		t.Fatal("启用 MFA 的账号应要求第二因子")
+	}
+	if res.MFATicket == "" {
+		t.Fatal("应返回第二因子票据")
+	}
+	if res.SessionID != "" {
+		t.Fatal("第二因子通过前不得签发会话")
+	}
+	// 未建立会话：不应记录最后登录时间。
+	if repo.lastLogin != "" {
+		t.Fatal("第二因子通过前不应记录最后登录")
+	}
+}
+
+func TestVerifyMFAIssuesSession(t *testing.T) {
+	admin := newAdmin(t, "admin", "correct-horse-battery", domain.RoleAdmin)
+	repo := newFakeRepo(admin)
+	store := NewMemorySessionStore()
+	mfa := newFakeMFA(true)
+	svc := NewService(repo, store, 5, 900).WithMFA(mfa)
+
+	first, err := svc.Login(context.Background(), "admin", "correct-horse-battery", "203.0.113.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 错误验证码不建立会话。
+	if _, err := svc.VerifyMFA(context.Background(), first.MFATicket, "000000"); err == nil {
+		t.Fatal("错误验证码应失败")
+	}
+
+	res, err := svc.VerifyMFA(context.Background(), first.MFATicket, "123456")
+	if err != nil {
+		t.Fatalf("正确验证码应成功: %v", err)
+	}
+	if res.SessionID == "" || res.CSRFToken == "" {
+		t.Fatal("应签发会话与 CSRF token")
+	}
+	sess, err := svc.GetSession(context.Background(), res.SessionID)
+	if err != nil || sess == nil {
+		t.Fatalf("会话应可读取: %v", err)
+	}
+	if sess.AccountID != admin.ID.String() {
+		t.Fatal("会话应归属该账号")
+	}
+}
+
+func TestVerifyMFARejectsDisabledAccount(t *testing.T) {
+	admin := newAdmin(t, "admin", "correct-horse-battery", domain.RoleAdmin)
+	repo := newFakeRepo(admin)
+	mfa := newFakeMFA(true)
+	svc := NewService(repo, NewMemorySessionStore(), 5, 900).WithMFA(mfa)
+
+	first, err := svc.Login(context.Background(), "admin", "correct-horse-battery", "203.0.113.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 票据有效期内账号被停用，必须拒绝发放会话。
+	admin.IsActive = false
+	if _, err := svc.VerifyMFA(context.Background(), first.MFATicket, "123456"); err == nil {
+		t.Fatal("停用账号不应通过第二因子登录")
+	}
+}
+
+func TestLoginRejectsMFAWhenServerNotConfigured(t *testing.T) {
+	admin := newAdmin(t, "admin", "correct-horse-battery", domain.RoleAdmin)
+	mfa := newFakeMFA(true)
+	mfa.configured = false
+	svc := NewService(newFakeRepo(admin), NewMemorySessionStore(), 5, 900).WithMFA(mfa)
+
+	if _, err := svc.Login(context.Background(), "admin", "correct-horse-battery", "203.0.113.1"); !errors.Is(err, ErrMFANotConfigured) {
+		t.Fatalf("未配置密钥时应拒绝登录（安全失败），实际 %v", err)
 	}
 }

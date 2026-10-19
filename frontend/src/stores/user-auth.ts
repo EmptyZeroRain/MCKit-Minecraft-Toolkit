@@ -4,7 +4,7 @@
 //   - 前端仅在内存保存用户信息与（会话绑定的）CSRF token；
 //   - CSRF token 由 api/user-http.ts 统一附加到写请求。
 import { defineStore } from 'pinia'
-import type { UserAccount } from '@/types/user'
+import type { RegisterPayload, UserAccount } from '@/types/user'
 import * as userApi from '@/api/user'
 import { useUserWorkspaceStore } from '@/stores/user-workspace'
 
@@ -16,7 +16,8 @@ export const useUserAuthStore = defineStore('user-auth', {
   }),
   getters: {
     isLoggedIn: (state) => state.user !== null,
-    displayName: (state) => state.user?.username ?? '',
+    /** 展示名优先用昵称，未设置时回退到用户名 */
+    displayName: (state) => state.user?.nickname || state.user?.username || '',
   },
   actions: {
     /** 应用启动 / 访问受限页时恢复会话 */
@@ -32,17 +33,22 @@ export const useUserAuthStore = defineStore('user-auth', {
         this.loaded = true
       }
     },
-    async login(username: string, password: string): Promise<UserAccount> {
-      const account = await userApi.login({ username, password })
+    async login(identifier: string, password: string): Promise<UserAccount> {
+      const account = await userApi.login({ identifier, password })
       this.user = account
       this.loaded = true
       this.initialized = true
       await useUserWorkspaceStore().loadFavorites()
       return account
     },
-    /** 注册（不自动登录） */
-    async register(username: string, password: string): Promise<UserAccount> {
-      return userApi.register({ username, password })
+    /** 注册（不自动登录）；需携带图形验证码 */
+    async register(payload: RegisterPayload): Promise<UserAccount> {
+      return userApi.register(payload)
+    },
+    /** 更新展示资料（昵称 / 头像），成功后同步本地用户信息 */
+    async updateProfile(nickname: string, avatarUrl: string): Promise<void> {
+      const account = await userApi.updateProfile({ nickname, avatar_url: avatarUrl })
+      this.user = { ...(this.user as UserAccount), ...account }
     },
     async logout(): Promise<void> {
       try {

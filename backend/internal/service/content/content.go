@@ -18,6 +18,8 @@ import (
 
 	"mckit/backend/internal/domain"
 	"mckit/backend/internal/repository/types"
+	"mckit/backend/internal/service/revision"
+	"mckit/backend/internal/service/tagging"
 )
 
 // 通用错误。
@@ -58,6 +60,13 @@ type ToolInput struct {
 	IsFeatured   bool
 	SortOrder    int
 	Status       string
+	// ActorID/ActorName 操作者信息（写入历史版本）。
+	ActorID   string
+	ActorName string
+	// Action 历史版本动作，为空按 update 处理；回滚时传 rollback。
+	Action string
+	// Note 历史版本备注。
+	Note string
 }
 
 // CreateTool 创建工具。
@@ -89,7 +98,24 @@ func (s *Service) CreateTool(ctx context.Context, in *ToolInput) (*domain.Tool, 
 		SortOrder:         in.SortOrder,
 		Status:            in.Status,
 	}
-	if err := s.db.WithContext(ctx).Create(tool).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(tool).Error; err != nil {
+			return err
+		}
+		if err := tagging.Sync(tx, tagging.ToolTarget, tool.ID.String(), in.Tags); err != nil {
+			return err
+		}
+		// 历史版本与内容同事务写入（§15 / §16.2）。
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentTool,
+			ContentID:   tool.ID,
+			Action:      domain.RevisionActionCreate,
+			Snapshot:    tool,
+			ActorID:     in.ActorID,
+			ActorName:   in.ActorName,
+		})
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return tool, nil
@@ -145,7 +171,30 @@ func (s *Service) UpdateTool(ctx context.Context, id string, in *ToolInput) (*do
 	if in.Status != "" {
 		tool.Status = in.Status
 	}
-	if err := s.db.WithContext(ctx).Save(tool).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(tool).Error; err != nil {
+			return err
+		}
+		if in.Tags != nil {
+			if err := tagging.Sync(tx, tagging.ToolTarget, tool.ID.String(), in.Tags); err != nil {
+				return err
+			}
+		}
+		action := in.Action
+		if action == "" {
+			action = domain.RevisionActionUpdate
+		}
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentTool,
+			ContentID:   tool.ID,
+			Action:      action,
+			Snapshot:    tool,
+			ActorID:     in.ActorID,
+			ActorName:   in.ActorName,
+			Note:        in.Note,
+		})
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return tool, nil
@@ -189,8 +238,10 @@ func (s *Service) GetToolBySlug(ctx context.Context, slug string, publishedOnly 
 
 // ToolFilter 工具列表筛选。
 type ToolFilter struct {
-	Category      string
-	Q             string
+	Category string
+	Q        string
+	// Tag 按标签精确筛选（走 tool_tags 关联表，可走索引）。
+	Tag           string
 	PublishedOnly bool
 	Page          int
 	PageSize      int
@@ -204,6 +255,10 @@ func (s *Service) ListTools(ctx context.Context, f ToolFilter) ([]domain.Tool, i
 	}
 	if f.Category != "" {
 		q = q.Where("category = ?", f.Category)
+	}
+	if f.Tag != "" {
+		clause, tag := tagging.ToolTarget.ExistsClause(f.Tag)
+		q = q.Where(clause, tag)
 	}
 	if f.Q != "" {
 		kw := "%" + f.Q + "%"
@@ -282,6 +337,12 @@ type WikiInput struct {
 	// SourceReferences 来源参考（前端为 {title,url} 对象数组，保持任意 JSON）。
 	SourceReferences json.RawMessage
 	Status           string
+	// ActorName 操作者用户名（写入历史版本）。
+	ActorName string
+	// Action 历史版本动作，为空按 update 处理；回滚时传 rollback。
+	Action string
+	// Note 历史版本备注。
+	Note string
 }
 
 // CreateWiki 创建百科条目。
@@ -319,7 +380,23 @@ func (s *Service) CreateWiki(ctx context.Context, in *WikiInput, actorID string)
 		now := time.Now()
 		entry.PublishedAt = &now
 	}
-	if err := s.db.WithContext(ctx).Create(entry).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(entry).Error; err != nil {
+			return err
+		}
+		if err := tagging.Sync(tx, tagging.WikiTarget, entry.ID.String(), in.Tags); err != nil {
+			return err
+		}
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentWiki,
+			ContentID:   entry.ID,
+			Action:      domain.RevisionActionCreate,
+			Snapshot:    entry,
+			ActorID:     actorID,
+			ActorName:   in.ActorName,
+		})
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return entry, nil
@@ -375,7 +452,30 @@ func (s *Service) UpdateWiki(ctx context.Context, id string, in *WikiInput, acto
 		}
 	}
 	entry.UpdatedBy = parseUUID(actorID)
-	if err := s.db.WithContext(ctx).Save(entry).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(entry).Error; err != nil {
+			return err
+		}
+		if in.Tags != nil {
+			if err := tagging.Sync(tx, tagging.WikiTarget, entry.ID.String(), in.Tags); err != nil {
+				return err
+			}
+		}
+		action := in.Action
+		if action == "" {
+			action = domain.RevisionActionUpdate
+		}
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentWiki,
+			ContentID:   entry.ID,
+			Action:      action,
+			Snapshot:    entry,
+			ActorID:     actorID,
+			ActorName:   in.ActorName,
+			Note:        in.Note,
+		})
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return entry, nil
@@ -430,6 +530,10 @@ func (s *Service) ListWiki(ctx context.Context, f ToolFilter) ([]domain.WikiEntr
 	if f.Q != "" {
 		kw := "%" + f.Q + "%"
 		q = q.Where("title ILIKE ? OR summary ILIKE ? OR slug ILIKE ?", kw, kw, kw)
+	}
+	if f.Tag != "" {
+		clause, tag := tagging.WikiTarget.ExistsClause(f.Tag)
+		q = q.Where(clause, tag)
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -593,6 +697,12 @@ func (s *Service) ListTags(ctx context.Context, q string) ([]domain.Tag, error) 
 		return nil, err
 	}
 	return items, nil
+}
+
+// TagUsage 标签使用统计（跨资源 / 工具 / 百科的关联表聚合，按使用次数降序）。
+// 数据来源是 tagging 关联表，因此只统计「实际被内容引用」的标签。
+func (s *Service) TagUsage(ctx context.Context, limit int) ([]tagging.UsageRow, error) {
+	return tagging.Usage(ctx, s.db, limit)
 }
 
 // UpdateTag 更新标签（白名单字段）。
@@ -867,6 +977,120 @@ func validateExternalLink(raw string) error {
 }
 
 // ---- 通用辅助 ----
+
+// RestoreRevision 实现 revision.Restorer：把历史快照还原为当前工具 / 百科（回滚）。
+//
+// 直接按快照写入内容字段并同步标签关联，保证历史数据不受当前校验规则变化影响；
+// 还原本身也会追加一条 action=rollback 的新版本，不覆盖历史（§16.2）。
+func (s *Service) RestoreRevision(ctx context.Context, contentType, contentID string, snapshot json.RawMessage, actorID, actorName, note string) error {
+	switch contentType {
+	case domain.RevisionContentTool:
+		var snap domain.Tool
+		if err := json.Unmarshal(snapshot, &snap); err != nil {
+			return fmt.Errorf("解析历史快照失败: %w", err)
+		}
+		return s.restoreTool(ctx, contentID, &snap, actorID, actorName, note)
+	case domain.RevisionContentWiki:
+		var snap domain.WikiEntry
+		if err := json.Unmarshal(snapshot, &snap); err != nil {
+			return fmt.Errorf("解析历史快照失败: %w", err)
+		}
+		return s.restoreWiki(ctx, contentID, &snap, actorID, actorName, note)
+	}
+	return revision.ErrUnsupported
+}
+
+func (s *Service) restoreTool(ctx context.Context, contentID string, snap *domain.Tool, actorID, actorName, note string) error {
+	if snap.Slug != "" {
+		if err := s.checkSlugFree(&domain.Tool{}, contentID, snap.Slug); err != nil {
+			return err
+		}
+	}
+	updates := map[string]any{
+		"slug":               snap.Slug,
+		"name":               snap.Name,
+		"summary":            snap.Summary,
+		"description":        snap.Description,
+		"category":           snap.Category,
+		"icon":               snap.Icon,
+		"tags":               snap.Tags,
+		"supported_versions": snap.SupportedVersions,
+		"input_schema":       snap.InputSchema,
+		"output_schema":      snap.OutputSchema,
+		"is_featured":        snap.IsFeatured,
+		"sort_order":         snap.SortOrder,
+		"status":             snap.Status,
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.Tool{}).Where("id = ?", contentID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tagging.Sync(tx, tagging.ToolTarget, contentID, []string(snap.Tags)); err != nil {
+			return err
+		}
+		var after domain.Tool
+		if err := tx.Where("id = ?", contentID).First(&after).Error; err != nil {
+			return err
+		}
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentTool,
+			ContentID:   after.ID,
+			Action:      domain.RevisionActionRollback,
+			Snapshot:    after,
+			ActorID:     actorID,
+			ActorName:   actorName,
+			Note:        note,
+		})
+		return err
+	})
+}
+
+func (s *Service) restoreWiki(ctx context.Context, contentID string, snap *domain.WikiEntry, actorID, actorName, note string) error {
+	if snap.Slug != "" {
+		if err := s.checkSlugFree(&domain.WikiEntry{}, contentID, snap.Slug); err != nil {
+			return err
+		}
+	}
+	updates := map[string]any{
+		"slug":              snap.Slug,
+		"title":             snap.Title,
+		"summary":           snap.Summary,
+		"content":           snap.Content,
+		"content_format":    snap.ContentFormat,
+		"content_type":      snap.ContentType,
+		"game_edition":      snap.GameEdition,
+		"game_versions":     snap.GameVersions,
+		"tags":              snap.Tags,
+		"source_references": snap.SourceReferences,
+		"status":            snap.Status,
+		"published_at":      snap.PublishedAt,
+	}
+	if actorID != "" {
+		updates["updated_by"] = parseUUID(actorID)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.WikiEntry{}).Where("id = ?", contentID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tagging.Sync(tx, tagging.WikiTarget, contentID, []string(snap.Tags)); err != nil {
+			return err
+		}
+		var after domain.WikiEntry
+		if err := tx.Where("id = ?", contentID).First(&after).Error; err != nil {
+			return err
+		}
+		_, err := revision.RecordTx(tx, revision.Input{
+			ContentType: domain.RevisionContentWiki,
+			ContentID:   after.ID,
+			Action:      domain.RevisionActionRollback,
+			Snapshot:    after,
+			ActorID:     actorID,
+			ActorName:   actorName,
+			Note:        note,
+		})
+		return err
+	})
+}
 
 // checkSlugFree 校验指定模型的 slug 唯一。
 func (s *Service) checkSlugFree(model any, exceptID, slug string) error {

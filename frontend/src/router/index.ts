@@ -287,6 +287,19 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/WorkspaceView.vue'),
         meta: { title: '我的工作台', requiresUser: true, noindex: true },
       },
+      {
+        // 成长中心（jingyan.md §11.1）：经验 / 等级 / 每日任务 / 成就展示。
+        path: 'growth',
+        name: 'growth',
+        component: () => import('@/views/GrowthCenterView.vue'),
+        meta: { title: '成长中心', requiresUser: true, noindex: true },
+      },
+      {
+        path: 'submit-resource',
+        name: 'submit-resource',
+        component: () => import('@/views/SubmitResourceView.vue'),
+        meta: { title: '资源投稿', requiresUser: true, noindex: true },
+      },
     ],
   },
   // ===== 管理后台 =====
@@ -362,17 +375,15 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '编辑百科', requiresAdmin: true, noindex: true },
       },
       {
-        path: 'categories',
-        name: 'admin-categories',
-        component: () => import('@/views/admin/AdminCategoriesView.vue'),
-        meta: { title: '分类管理', requiresAdmin: true, noindex: true },
+        // 分类与标签合并页（gj.md §2.2）：同一页面两个 Tab，权限点独立判断。
+        path: 'taxonomy',
+        name: 'admin-taxonomy',
+        component: () => import('@/views/admin/AdminTaxonomyView.vue'),
+        meta: { title: '分类与标签', requiresAdmin: true, noindex: true },
       },
-      {
-        path: 'tags',
-        name: 'admin-tags',
-        component: () => import('@/views/admin/AdminTagsView.vue'),
-        meta: { title: '标签管理', requiresAdmin: true, noindex: true },
-      },
+      // 兼容旧入口：重定向到合并页并定位到对应 Tab。
+      { path: 'categories', redirect: { name: 'admin-taxonomy', query: { tab: 'categories' } } },
+      { path: 'tags', redirect: { name: 'admin-taxonomy', query: { tab: 'tags' } } },
       {
         path: 'feedback',
         name: 'admin-feedback',
@@ -392,10 +403,40 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '数据质量监控', requiresAdmin: true, noindex: true },
       },
       {
-        path: 'search-terms',
-        name: 'admin-search-terms',
-        component: () => import('@/views/admin/AdminSearchTermsView.vue'),
-        meta: { title: '搜索词统计', requiresAdmin: true, noindex: true },
+        // 运营分析合并页（gj.md §2.2）：运营看板 + 搜索词统计，权限点独立。
+        path: 'insights',
+        name: 'admin-insights',
+        component: () => import('@/views/admin/AdminInsightsView.vue'),
+        meta: { title: '运营分析', requiresAdmin: true, noindex: true },
+      },
+      { path: 'search-terms', redirect: { name: 'admin-insights', query: { tab: 'search-terms' } } },
+      {
+        // 内容建设任务（gj.md §8.3 搜索词闭环）：搜索缺口 → 可指派/可跟踪的运营任务。
+        path: 'content-tasks',
+        name: 'admin-content-tasks',
+        component: () => import('@/views/admin/AdminContentTasksView.vue'),
+        meta: { title: '内容建设任务', requiresAdmin: true, noindex: true },
+      },
+      {
+        // 运营告警（gj.md 阶段三）：规则评估 + 确认 / 关闭 + 历史。
+        path: 'alerts',
+        name: 'admin-alerts',
+        component: () => import('@/views/admin/AdminAlertsView.vue'),
+        meta: { title: '运营告警', requiresAdmin: true, noindex: true },
+      },
+      {
+        // 后台操作手册（gj.md 阶段四）：按常见疑问组织，替代群内口头答疑。
+        path: 'help',
+        name: 'admin-help',
+        component: () => import('@/views/admin/AdminHelpView.vue'),
+        meta: { title: '后台操作手册', requiresAdmin: true, noindex: true },
+      },
+      {
+        // 后台运维任务（gj.md 阶段二）：异步执行 + 自动重试 + 失败详情。
+        path: 'jobs',
+        name: 'admin-jobs',
+        component: () => import('@/views/admin/AdminJobsView.vue'),
+        meta: { title: '后台任务', requiresAdmin: true, noindex: true },
       },
       {
         path: 'link-health',
@@ -404,38 +445,31 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '链接健康', requiresAdmin: true, noindex: true },
       },
       {
-        // 红石机器设计内容审核（TODO §15，admin 专属）。
-        path: 'redstone',
-        name: 'admin-redstone',
-        component: () => import('@/views/admin/AdminRedstoneView.vue'),
-        meta: { title: '红石设计审核', requiresAdmin: true, noindex: true },
+        // 投稿审核合并页（gj.md §2.2）：红石设计 + Mod/整合包，状态机各自独立。
+        path: 'review',
+        name: 'admin-review',
+        component: () => import('@/views/admin/AdminReviewView.vue'),
+        meta: { title: '投稿审核', requiresAdmin: true, noindex: true },
+      },
+      { path: 'redstone', redirect: { name: 'admin-review', query: { tab: 'redstone' } } },
+      { path: 'mods', redirect: { name: 'admin-review', query: { tab: 'mods' } } },
+      { path: 'analytics', redirect: { name: 'admin-insights', query: { tab: 'analytics' } } },
+      {
+        // MC 源码缓存运维（需 ops.mcsrc 权限；后端 403 兜底）。
+        path: 'mcsrc-cache',
+        name: 'admin-mcsrc-cache',
+        component: () => import('@/views/admin/AdminMcsrcView.vue'),
+        meta: { title: 'MC 源码缓存', requiresAdmin: true, noindex: true },
       },
       {
-        // Mod 与整合包内容审核（TODO §16，admin 专属）。
-        path: 'mods',
-        name: 'admin-mods',
-        component: () => import('@/views/admin/AdminModsView.vue'),
-        meta: { title: 'Mod 审核', requiresAdmin: true, noindex: true },
+        // 账号管理合并页（gj.md §2.2）：管理员 + 普通用户，权限点独立、后端按角色隔离。
+        path: 'accounts',
+        name: 'admin-accounts',
+        component: () => import('@/views/admin/AdminAccountsView.vue'),
+        meta: { title: '账号管理', requiresAdmin: true, noindex: true },
       },
-      {
-        path: 'analytics',
-        name: 'admin-analytics',
-        component: () => import('@/views/admin/AdminAnalyticsView.vue'),
-        meta: { title: '运营看板', requiresAdmin: true, noindex: true },
-      },
-      {
-        path: 'admins',
-        name: 'admin-admins',
-        component: () => import('@/views/admin/AdminAdminsView.vue'),
-        meta: { title: '管理员账号', requiresAdmin: true, noindex: true },
-      },
-      {
-        // 普通用户管理（admin 专属，只读列表 + 个人数据计数）。
-        path: 'users',
-        name: 'admin-users',
-        component: () => import('@/views/admin/AdminUsersView.vue'),
-        meta: { title: '普通用户', requiresAdmin: true, noindex: true },
-      },
+      { path: 'admins', redirect: { name: 'admin-accounts', query: { tab: 'admins' } } },
+      { path: 'users', redirect: { name: 'admin-accounts', query: { tab: 'users' } } },
       {
         // 角色管理（需 roles.manage 权限点；后端 403 兜底）。
         path: 'roles',
@@ -444,10 +478,17 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '角色管理', requiresAdmin: true, noindex: true },
       },
       {
+        // 用户成长（jingyan.md §10，需 ops.growth 权限点；后端 403 兜底）。
+        path: 'growth',
+        name: 'admin-growth',
+        component: () => import('@/views/admin/AdminGrowthView.vue'),
+        meta: { title: '用户成长', requiresAdmin: true, noindex: true },
+      },
+      {
         path: 'profile',
         name: 'admin-profile',
         component: () => import('@/views/admin/AdminProfileView.vue'),
-        meta: { title: '账号设置', requiresAdmin: true, noindex: true },
+        meta: { title: '用户信息', requiresAdmin: true, noindex: true },
       },
     ],
   },
@@ -487,6 +528,17 @@ router.beforeEach(async (to) => {
   // 已登录访问登录页 -> 管理首页
   if (to.name === 'admin-login' && auth.isLoggedIn) {
     return { path: '/admin' }
+  }
+
+  // 必须改密：除「用户信息」页（改密锚点）外，全部后台页面强制跳转。
+  // 后端对所有需要权限点的接口同样返回 403 PASSWORD_CHANGE_REQUIRED，前端跳转仅为体验优化。
+  if (
+    requiresAdmin &&
+    auth.isLoggedIn &&
+    auth.user?.must_change_password &&
+    to.path !== '/admin/profile'
+  ) {
+    return { path: '/admin/profile', hash: '#password' }
   }
 
   // 普通用户受限页（工作台）：同样是前端体验优化，后端仍按会话鉴权。

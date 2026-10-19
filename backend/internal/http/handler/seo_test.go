@@ -74,8 +74,8 @@ func TestSitemapIndex_DynamicEntries(t *testing.T) {
 		{Path: "/resources/jei", LastMod: updated},
 		{Path: "/wiki/交易"},
 		{Path: "/tools/my-tool"},
-		{Path: "/tools"},          // 与静态页重复，应去重
-		{Path: ""},                // 空路径忽略
+		{Path: "/tools"}, // 与静态页重复，应去重
+		{Path: ""},       // 空路径忽略
 	}}
 	h := NewSEOHandler("https://example.com", src)
 	rec := httptest.NewRecorder()

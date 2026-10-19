@@ -6,8 +6,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/domain"
@@ -36,14 +39,29 @@ const (
 // 服务级错误（处理层据此映射状态码）。
 var (
 	ErrUsernameTaken = errors.New("用户名已被占用")
+	ErrEmailTaken    = errors.New("该邮箱已被注册")
 	ErrBadUsername   = errors.New("用户名需为 3-40 位，以字母开头，仅含字母、数字、下划线或连字符")
-	ErrWeakPassword  = errors.New("密码长度需为 8-128 位")
-	ErrBadKind       = errors.New("不支持的对象类型")
-	ErrBadInput      = errors.New("输入不合法")
+	ErrBadEmail      = errors.New("邮箱格式不正确")
+	ErrBadNickname   = errors.New("昵称需为 1-60 个字符，且不能包含控制字符")
+	// ErrWeakPassword 密码不满足策略（统一实现见 auth.ValidatePassword）。
+	ErrWeakPassword = auth.ErrWeakPassword
+	ErrBadKind      = errors.New("不支持的对象类型")
+	ErrBadInput     = errors.New("输入不合法")
 )
+
+// MaxNicknameLength 昵称长度上限（按 Unicode 字符计，与 accounts.nickname 列宽、
+// 后台账号资料保持一致）。
+const MaxNicknameLength = auth.MaxNicknameLength
 
 // usernameRe 用户名规则：字母开头，3-40 位，字母/数字/下划线/连字符。
 var usernameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{2,39}$`)
+
+// emailRe 邮箱格式（宽松但要求本地部分 + 至少一段域名 + 顶级域）；
+// 长度另由 maxEmailLen 约束（对齐 RFC 5321 上限）。
+var emailRe = regexp.MustCompile(`^[A-Za-z0-9._%+\-]+@([A-Za-z0-9\-]+\.)+[A-Za-z]{2,}$`)
+
+// maxEmailLen 邮箱长度上限（对齐 accounts.email VARCHAR(254)）。
+const maxEmailLen = 254
 
 // validKinds 允许收藏 / 记录的对象类型。
 var validKinds = map[string]bool{"tool": true, "item": true, "resource": true, "wiki": true, "potion": true, "villager": true, "mob": true, "redstone_design": true, "mod": true, "modpack": true}
@@ -53,6 +71,8 @@ type Service struct {
 	repo     Repo
 	sessions auth.SessionStore
 	throttle *auth.LoginThrottle
+	// policy 普通用户密码策略（默认 DefaultUserPolicy，可由装配层按配置覆盖）。
+	policy auth.PasswordPolicy
 }
 
 // NewService 创建用户服务。maxLoginTries / loginWindowSeconds 控制登录限流。
@@ -67,7 +87,14 @@ func NewService(repo Repo, sessions auth.SessionStore, maxLoginTries, loginWindo
 		repo:     repo,
 		sessions: sessions,
 		throttle: auth.NewLoginThrottle(maxLoginTries, time.Duration(loginWindowSeconds)*time.Second),
+		policy:   auth.DefaultUserPolicy(),
 	}
+}
+
+// WithPasswordPolicy 覆盖普通用户密码策略（装配层从配置注入）。
+func (s *Service) WithPasswordPolicy(p auth.PasswordPolicy) *Service {
+	s.policy = p
+	return s
 }
 
 // LoginResult 登录成功返回的会话信息。
@@ -80,17 +107,31 @@ type LoginResult struct {
 	Locked    bool
 }
 
-// sessionTTL 用户会话有效期（与管理员一致：72 小时）。
-const sessionTTL = 72 * time.Hour
+// RegisterInput 注册入参。
+type RegisterInput struct {
+	Username string
+	Nickname string
+	Email    string
+	Password string
+}
 
 // Register 注册新普通用户（固定 role = 'user'，不授予任何后台权限）。
-func (s *Service) Register(ctx context.Context, username, password string) (*domain.User, error) {
-	username = strings.TrimSpace(username)
+// 用户名与邮箱均全局唯一；邮箱统一按小写存储，并作为可选的登录标识。
+func (s *Service) Register(ctx context.Context, in RegisterInput) (*domain.User, error) {
+	username := strings.TrimSpace(in.Username)
 	if !usernameRe.MatchString(username) {
 		return nil, ErrBadUsername
 	}
-	if len(password) < MinPasswordLength || len(password) > maxPasswordLength {
-		return nil, ErrWeakPassword
+	nickname, err := normalizeNickname(in.Nickname)
+	if err != nil {
+		return nil, err
+	}
+	email := normalizeEmail(in.Email)
+	if len(email) > maxEmailLen || !emailRe.MatchString(email) {
+		return nil, ErrBadEmail
+	}
+	if err := auth.ValidatePassword(in.Password, s.policy, username); err != nil {
+		return nil, err
 	}
 	existing, err := s.repo.FindByUsername(ctx, username)
 	if err != nil {
@@ -99,46 +140,58 @@ func (s *Service) Register(ctx context.Context, username, password string) (*dom
 	if existing != nil {
 		return nil, ErrUsernameTaken
 	}
-	hash, err := auth.HashPassword(password)
+	byEmail, err := s.repo.FindByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if byEmail != nil {
+		return nil, ErrEmailTaken
+	}
+	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return nil, err
 	}
 	u := &domain.User{
 		Username:     username,
+		Nickname:     nickname,
+		Email:        email,
 		PasswordHash: hash,
 		Role:         domain.RoleUser,
 		IsActive:     true,
 	}
 	if err := s.repo.Create(ctx, u); err != nil {
-		return nil, err
+		// 并发注册可能同时通过前置检查，最终由数据库唯一约束兜底；
+		// 此处把冲突映射为语义化错误，避免向用户暴露 500。
+		return nil, mapCreateError(err)
 	}
 	return u, nil
 }
 
-// Login 校验凭证并创建会话；错误统一返回 auth.ErrCredentials，不泄露具体原因。
-func (s *Service) Login(ctx context.Context, username, password, ip string) (*LoginResult, error) {
-	username = strings.TrimSpace(username)
-	if s.throttle.IsLocked(username, ip) {
-		return &LoginResult{Locked: true, Remaining: s.throttle.Remaining(username, ip)}, auth.ErrLocked
+// Login 校验凭证并创建会话；identifier 支持用户名或邮箱。
+// 错误统一返回 auth.ErrCredentials，不泄露具体原因（账号是否存在、是用户名还是邮箱）。
+func (s *Service) Login(ctx context.Context, identifier, password, ip string) (*LoginResult, error) {
+	identifier = strings.TrimSpace(identifier)
+	if s.throttle.IsLocked(identifier, ip) {
+		return &LoginResult{Locked: true, Remaining: s.throttle.Remaining(identifier, ip)}, auth.ErrLocked
 	}
 
-	u, err := s.repo.FindByUsername(ctx, username)
+	u, err := s.findAccount(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
 	if u == nil || !u.IsActive || u.PasswordHash == "" {
-		s.throttle.RecordFailure(username, ip)
-		return &LoginResult{Remaining: s.throttle.Remaining(username, ip)}, auth.ErrCredentials
+		s.throttle.RecordFailure(identifier, ip)
+		return &LoginResult{Remaining: s.throttle.Remaining(identifier, ip)}, auth.ErrCredentials
 	}
 	if err := auth.VerifyPassword(u.PasswordHash, password); err != nil {
-		s.throttle.RecordFailure(username, ip)
+		s.throttle.RecordFailure(identifier, ip)
 		if errors.Is(err, auth.ErrInvalidPassword) {
-			return &LoginResult{Remaining: s.throttle.Remaining(username, ip)}, auth.ErrCredentials
+			return &LoginResult{Remaining: s.throttle.Remaining(identifier, ip)}, auth.ErrCredentials
 		}
 		return nil, err
 	}
 
-	s.throttle.RecordSuccess(username, ip)
+	s.throttle.RecordSuccess(identifier, ip)
 
 	sessionID, err := auth.RandomToken(32)
 	if err != nil {
@@ -148,7 +201,8 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (*Lo
 	if err != nil {
 		return nil, err
 	}
-	expiresAt := time.Now().Add(sessionTTL)
+	// 有效期策略由会话存储提供（与后台账号共用同一存储与策略）。
+	expiresAt := time.Now().Add(s.sessions.TTL())
 	sess := auth.Session{
 		SessionID: sessionID,
 		AccountID: u.ID.String(),
@@ -168,6 +222,11 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (*Lo
 // GetSession 读取会话（供鉴权中间件使用）。
 func (s *Service) GetSession(ctx context.Context, sessionID string) (*auth.Session, error) {
 	return s.sessions.Get(ctx, sessionID)
+}
+
+// FindByID 读取账号（供展示资料回查，例如 /user/me 返回昵称与邮箱）。
+func (s *Service) FindByID(ctx context.Context, userID string) (*domain.User, error) {
+	return s.repo.FindByID(ctx, userID)
 }
 
 // Logout 注销会话。
@@ -190,8 +249,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 		}
 		return err
 	}
-	if len(newPassword) < MinPasswordLength || len(newPassword) > maxPasswordLength {
-		return ErrWeakPassword
+	if err := auth.ValidatePassword(newPassword, s.policy, u.Username); err != nil {
+		return err
 	}
 	hash, err := auth.HashPassword(newPassword)
 	if err != nil {
@@ -201,6 +260,32 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 		return err
 	}
 	return s.sessions.DeleteByAccountID(ctx, userID)
+}
+
+// UpdateProfile 更新当前用户的展示资料（昵称 / 头像），返回更新后的账号。
+// 昵称沿用注册口径（1-60 字符、不含控制字符）；头像只能上传图片（data URI，空串表示清除）。
+func (s *Service) UpdateProfile(ctx context.Context, userID, nickname, avatar string) (*domain.User, error) {
+	nick, err := normalizeNickname(nickname)
+	if err != nil {
+		return nil, err
+	}
+	// 头像只能上传图片：校验并归一化 data URI（空串表示清除）。
+	avatarURL, err := auth.NormalizeAvatar(avatar)
+	if err != nil {
+		return nil, err
+	}
+	u, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, auth.ErrCredentials
+	}
+	if err := s.repo.UpdateProfile(ctx, userID, nick, avatarURL); err != nil {
+		return nil, err
+	}
+	u.Nickname, u.AvatarURL = nick, avatarURL
+	return u, nil
 }
 
 // DeleteAccount 删除账号及其全部个人数据（需密码二次确认）。
@@ -367,6 +452,49 @@ func validateObject(kind, objectID, label, url string) error {
 		return ErrBadInput
 	}
 	return nil
+}
+
+// normalizeEmail 归一化邮箱：去空白 + 统一小写（与存储 / 唯一索引一致）。
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// normalizeNickname 归一化并校验昵称：去首尾空白，1-60 个字符，不含控制字符。
+func normalizeNickname(nickname string) (string, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" || utf8.RuneCountInString(nickname) > MaxNicknameLength {
+		return "", ErrBadNickname
+	}
+	for _, r := range nickname {
+		if unicode.IsControl(r) {
+			return "", ErrBadNickname
+		}
+	}
+	return nickname, nil
+}
+
+// findAccount 按登录标识查账号：含 "@" 视为邮箱，否则视为用户名。
+// 用户名规则不允许 "@"，因此该判别不存在歧义。
+func (s *Service) findAccount(ctx context.Context, identifier string) (*domain.User, error) {
+	if strings.Contains(identifier, "@") {
+		return s.repo.FindByEmail(ctx, normalizeEmail(identifier))
+	}
+	return s.repo.FindByUsername(ctx, identifier)
+}
+
+// mapCreateError 将并发注册下的唯一约束冲突映射为语义化错误。
+// 数据库是唯一性的最终权威：前置检查通过后仍可能并发撞车。
+func mapCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		switch {
+		case strings.Contains(pgErr.ConstraintName, "email"):
+			return ErrEmailTaken
+		case strings.Contains(pgErr.ConstraintName, "username"):
+			return ErrUsernameTaken
+		}
+	}
+	return err
 }
 
 // mustUUID 解析 UUID；非法值返回 uuid.Nil（上层已校验来源为会话，正常不会出现）。

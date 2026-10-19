@@ -19,6 +19,9 @@ export interface AuditLogQuery {
   action?: string
   object_type?: string
   result?: 'success' | 'failure' | ''
+  source_ip?: string
+  /** 只看账号安全事件（登录 / 改密 / MFA / 会话撤销） */
+  security?: boolean
   page?: number
   page_size?: number
 }

@@ -7,10 +7,10 @@ import (
 
 // LoginThrottle 按 (用户名, IP) 维度限制登录失败次数。
 type LoginThrottle struct {
-	mu        sync.Mutex
-	maxTries  int
-	window    time.Duration
-	attempts  map[string]*throttleEntry
+	mu       sync.Mutex
+	maxTries int
+	window   time.Duration
+	attempts map[string]*throttleEntry
 }
 
 type throttleEntry struct {

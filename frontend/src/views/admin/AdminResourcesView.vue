@@ -8,7 +8,12 @@ import StatusBadge from '@/components/common/StatusBadge.vue'
 import ResourceTypeBadge from '@/components/badges/ResourceTypeBadge.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useUiStore } from '@/stores/ui'
-import { listResources, deleteResource, checkResourceLink } from '@/api/admin-resources'
+import {
+  listResources,
+  deleteResource,
+  checkResourceLink,
+  exportResourcesCsv,
+} from '@/api/admin-resources'
 import type { Resource } from '@/types/resource'
 import {
   RESOURCE_TYPES,
@@ -40,6 +45,7 @@ const items = ref<Resource[]>([])
 const total = ref(0)
 const totalPages = ref(1)
 const loading = ref(false)
+const exporting = ref(false)
 const error = ref('')
 
 const toDelete = ref<Resource | null>(null)
@@ -105,6 +111,36 @@ async function handleCheckLink(item: Resource) {
   }
 }
 
+/** 按当前筛选导出 CSV（只读、后端最多 5000 条）。 */
+async function handleExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const { blob, truncated } = await exportResourcesCsv({
+      q: filters.q || undefined,
+      type: filters.type || undefined,
+      status: filters.status || undefined,
+    })
+    triggerDownload(blob)
+    ui.success(truncated ? '已导出（超出上限，仅含前 5000 条）' : '已导出 CSV')
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+function triggerDownload(blob: Blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `resources-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 onMounted(load)
 </script>
 
@@ -135,6 +171,14 @@ onMounted(load)
           <option value="">全部状态</option>
           <option v-for="s in RESOURCE_STATUSES" :key="s" :value="s">{{ s }}</option>
         </select>
+        <button
+          type="button"
+          class="h-9 rounded-md border border-border-dark px-3 text-sm text-text-secondary transition hover:bg-ink-700 disabled:opacity-50"
+          :disabled="exporting || loading"
+          @click="handleExport"
+        >
+          {{ exporting ? '导出中…' : '导出 CSV' }}
+        </button>
         <RouterLink
           to="/admin/resources/new"
           class="rounded-md bg-grass-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-grass-500"

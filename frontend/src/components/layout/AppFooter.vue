@@ -29,6 +29,7 @@ const footerTools = BUILTIN_TOOLS.slice(0, FOOTER_TOOL_COUNT)
         <ul class="space-y-2 text-sm text-text-secondary">
           <li><RouterLink to="/about" class="hover:text-grass-300">关于本站</RouterLink></li>
           <li><RouterLink to="/feedback" class="hover:text-grass-300">问题反馈</RouterLink></li>
+          <li><RouterLink to="/submit-resource" class="hover:text-grass-300">资源投稿</RouterLink></li>
           <li><RouterLink to="/privacy" class="hover:text-grass-300">隐私政策</RouterLink></li>
           <li><RouterLink to="/copyright" class="hover:text-grass-300">版权与侵权</RouterLink></li>
         </ul>

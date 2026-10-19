@@ -79,9 +79,16 @@ describe('数据质量展示辅助函数', () => {
 vi.mock('@/api/admin-data-quality', () => ({
   fetchDataQualityOverview: vi.fn(),
   listDataImportJobs: vi.fn(),
+  listQualityAssignees: vi.fn(),
+  updateQualityIssue: vi.fn(),
 }))
 
-import { fetchDataQualityOverview, listDataImportJobs } from '@/api/admin-data-quality'
+import {
+  fetchDataQualityOverview,
+  listDataImportJobs,
+  listQualityAssignees,
+  updateQualityIssue,
+} from '@/api/admin-data-quality'
 import AdminDataQualityView from '@/views/admin/AdminDataQualityView.vue'
 
 const OVERVIEW = {
@@ -123,6 +130,17 @@ async function mountView(overview = OVERVIEW, jobs = [JOB]) {
     pageSize: 15,
     totalPages: 1,
   })
+  ;(listQualityAssignees as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 'a1', name: '质量负责人' },
+  ])
+  ;(updateQualityIssue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    status: 'assigned',
+    assignee_id: 'a1',
+    assignee_name: '质量负责人',
+    note: '',
+    snapshot_count: 3,
+    updated_by: 'tester',
+  })
   const wrapper = mount(AdminDataQualityView, {
     global: { stubs: { Pagination: true, RouterLink: true } },
   })
@@ -163,5 +181,47 @@ describe('数据质量监控页', () => {
     const wrapper = await mountView({ generated_at: '2026-01-15T00:00:00Z', error_checks: 0, warning_checks: 0, checks: [check({ severity: 'info', count: 5 })] }, [])
     expect(wrapper.text()).toContain('未发现需要处理的数据质量问题')
     expect(wrapper.text()).toContain('暂无导入任务记录')
+  })
+
+  it('指派负责人时提交 check_key / 状态与实时快照条数', async () => {
+    const wrapper = await mountView()
+    const select = wrapper.find('select[aria-label="问题负责人"]')
+    expect(select.exists()).toBe(true)
+    await select.setValue('a1')
+    await flushPromises()
+
+    // 需要关注区按「严重在前」排序，第一个负责人下拉属于 recipes 检查项。
+    expect(updateQualityIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_key: 'recipes_orphan_result',
+        status: 'assigned',
+        assignee_id: 'a1',
+        snapshot_count: 1,
+      }),
+    )
+    // 保存后刷新概览
+    expect(fetchDataQualityOverview).toHaveBeenCalledTimes(2)
+  })
+
+  it('可标记已解决，已关闭项显示重新打开', async () => {
+    const wrapper = await mountView({
+      ...OVERVIEW,
+      checks: [
+        check({
+          key: 'items_missing_source',
+          issue: {
+            status: 'resolved',
+            assignee_name: '质量负责人',
+            note: '已补齐',
+            snapshot_count: 3,
+            updated_by: 'tester',
+            updated_at: '2026-01-15T01:00:00Z',
+          },
+        }),
+      ],
+    })
+    expect(wrapper.text()).toContain('已解决')
+    expect(wrapper.text()).toContain('重新打开')
+    expect(wrapper.findAll('button').some((b) => b.text() === '标记已解决')).toBe(false)
   })
 })

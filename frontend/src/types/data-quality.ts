@@ -6,6 +6,29 @@ export type CheckSeverity = 'error' | 'warning' | 'info'
 /** 检查项类别：对应资料库的不同数据域 */
 export type CheckCategory = 'items' | 'recipes' | 'commands' | 'import' | string
 
+/** 数据质量问题处理状态（工单） */
+export type QualityIssueStatus = 'open' | 'assigned' | 'resolved' | 'ignored'
+
+/** 检查项上叠加的人工处理状态 */
+export interface QualityIssueState {
+  status: QualityIssueStatus
+  assignee_id?: string
+  /** 负责人昵称快照（账号删除后仍可展示） */
+  assignee_name: string
+  note: string
+  /** 最后一次处理时的问题条数 */
+  snapshot_count: number
+  resolved_at?: string
+  updated_by: string
+  updated_at?: string
+}
+
+/** 可指派的数据质量负责人 */
+export interface QualityAssignee {
+  id: string
+  name: string
+}
+
 /** 单项数据质量检查结果 */
 export interface DataQualityCheck {
   key: string
@@ -17,6 +40,8 @@ export interface DataQualityCheck {
   /** 该数据域总条目数（info 类等于 count） */
   total: number
   hint: string
+  /** 人工处理状态（未建单时缺省） */
+  issue?: QualityIssueState
 }
 
 /** 数据质量概览 */

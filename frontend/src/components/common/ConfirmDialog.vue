@@ -18,20 +18,60 @@ const emit = defineEmits<{
 }>()
 
 const dialogEl = ref<HTMLDivElement | null>(null)
+/** 打开前的焦点元素：关闭后要还原，否则键盘用户会「丢位置」到页面顶部。 */
+let previousFocus: HTMLElement | null = null
 
 watch(
   () => props.open,
   (val) => {
     if (val) {
+      previousFocus = document.activeElement as HTMLElement | null
       // 聚焦确认按钮，保证键盘可用
       requestAnimationFrame(() => {
         dialogEl.value
           ?.querySelector<HTMLButtonElement>('button[data-confirm]')
           ?.focus()
       })
+      return
     }
+    previousFocus?.focus?.()
+    previousFocus = null
   },
 )
+
+// focusables 返回对话框内可聚焦元素（用于 Tab 循环）。
+function focusables(): HTMLElement[] {
+  const root = dialogEl.value
+  if (!root) return []
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  )
+}
+
+// onKeydown 把焦点限制在对话框内（WAI-ARIA Dialog 模式要求）：
+// 否则 Tab 会跑到背景页面，读屏软件仍能读到被遮挡的内容。
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.stopPropagation()
+    emit('cancel')
+    return
+  }
+  if (e.key !== 'Tab') return
+  const list = focusables()
+  if (list.length === 0) return
+  const first = list[0]
+  const last = list[list.length - 1]
+  const active = document.activeElement as HTMLElement | null
+  if (e.shiftKey && (active === first || !list.includes(active as HTMLElement))) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && (active === last || !list.includes(active as HTMLElement))) {
+    e.preventDefault()
+    first.focus()
+  }
+}
 </script>
 
 <template>
@@ -43,11 +83,11 @@ watch(
       aria-modal="true"
       :aria-label="title"
       @click.self="emit('cancel')"
+      @keydown="onKeydown"
     >
       <div
         ref="dialogEl"
         class="card w-full max-w-md p-6 shadow-2xl"
-        @keydown.esc="emit('cancel')"
       >
         <h2 class="mb-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
           <svg

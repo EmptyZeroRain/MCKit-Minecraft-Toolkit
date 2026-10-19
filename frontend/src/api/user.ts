@@ -1,21 +1,30 @@
 // ===== 普通用户账号与个人数据 API（需求 §12，全 POST）=====
 // 契约来源：backend/internal/http/handler/user.go
 import userHttp, { setUserCsrfToken } from './user-http'
-import type { ApiResponse } from '@/types/api'
+import type { ApiResponse, ListResult, PageQuery } from '@/types/api'
 import type {
+  CaptchaChallenge,
   LoginPayload,
   RecordRecentPayload,
   RegisterPayload,
   SaveSeedPayload,
   ToggleFavoritePayload,
+  UpdateProfilePayload,
   UserAccount,
   UserFavoriteItem,
   UserRecentItem,
   UserSeed,
 } from '@/types/user'
+import type { ResourceSubmission, SubmitResourcePayload } from '@/types/submission'
 
 /** 登录 / me 响应额外携带 CSRF token */
 type UserAuthResponse = UserAccount & { csrf_token?: string }
+
+/** 获取图形验证码（注册前调用；一次性，校验后即失效） */
+export async function fetchCaptcha(): Promise<CaptchaChallenge> {
+  const { data } = await userHttp.post<ApiResponse<CaptchaChallenge>>('/user/captcha', {})
+  return data.data
+}
 
 /** 注册（不自动登录，注册后需登录） */
 export async function register(payload: RegisterPayload): Promise<UserAccount> {
@@ -40,6 +49,12 @@ export async function logout(): Promise<void> {
 export async function me(): Promise<UserAccount> {
   const { data } = await userHttp.post<ApiResponse<UserAuthResponse>>('/user/me', {})
   if (data.data.csrf_token) setUserCsrfToken(data.data.csrf_token)
+  return data.data
+}
+
+/** 更新展示资料（昵称 / 头像），返回更新后的账号 */
+export async function updateProfile(payload: UpdateProfilePayload): Promise<UserAccount> {
+  const { data } = await userHttp.post<ApiResponse<UserAccount>>('/user/profile', payload)
   return data.data
 }
 
@@ -118,4 +133,31 @@ export async function saveSeed(payload: SaveSeedPayload): Promise<UserSeed> {
 /** 删除常用种子 */
 export async function deleteSeed(id: string): Promise<void> {
   await userHttp.post<ApiResponse<null>>('/user/seeds/delete', { id })
+}
+
+/** 提交资源投稿（结构化字段，进入待审核队列；审核通过后由管理员转为资源） */
+export async function submitResource(payload: SubmitResourcePayload): Promise<ResourceSubmission> {
+  const { data } = await userHttp.post<ApiResponse<ResourceSubmission>>(
+    '/user/submissions/submit',
+    payload,
+  )
+  return data.data
+}
+
+/** 我的投稿列表（分页，含审核状态与驳回原因） */
+export async function listMySubmissions(
+  params: PageQuery = {},
+): Promise<ListResult<ResourceSubmission>> {
+  const { data } = await userHttp.post<ApiResponse<ResourceSubmission[]>>(
+    '/user/submissions/list',
+    params,
+  )
+  const meta = data.meta
+  return {
+    items: data.data ?? [],
+    total: meta?.total ?? 0,
+    page: meta?.page ?? 1,
+    pageSize: meta?.page_size ?? 0,
+    totalPages: meta?.total_pages ?? 0,
+  }
 }

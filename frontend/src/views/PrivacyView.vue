@@ -33,8 +33,9 @@ applyPageMeta({
       <section>
         <h2 class="mb-2 font-semibold text-text-primary">3. 账号数据与保留期限</h2>
         <p>
-          若你注册账号，我们仅保存：用户名、密码哈希（Argon2id，不可逆，不保存明文密码），
-          以及你主动创建的收藏、最近使用与常用种子。我们不会额外采集手机号、邮箱、设备标识等不必要信息。
+          若你注册账号，我们仅保存：用户名、昵称、注册邮箱、密码哈希（Argon2id，不可逆，不保存明文密码），
+          以及你主动创建的收藏、最近使用与常用种子。
+          邮箱仅用于登录与账号找回，不会公开展示；我们不会额外采集手机号、设备标识等不必要信息。
         </p>
         <p class="mt-2">保留期限：</p>
         <ul class="mt-1 list-disc space-y-1 pl-5">
@@ -57,7 +58,21 @@ applyPageMeta({
       </section>
 
       <section>
-        <h2 class="mb-2 font-semibold text-text-primary">5. 日志与安全</h2>
+        <h2 class="mb-2 font-semibold text-text-primary">5. 资源投稿</h2>
+        <p>
+          当你提交资源投稿时，我们会收集你填写的资源信息（名称、简介、描述、类型、作者、
+          来源平台与来源链接、许可协议、游戏版本、适用版本与加载器、安装说明）、给审核者的说明，
+          以及投稿授权条款的版本与确认时间。投稿内容默认进入<strong>待审核</strong>状态，
+          审核通过后由本站整理为资源记录（默认草稿，核验后发布）。
+        </p>
+        <p class="mt-2">
+          投稿与你账号绑定：我们会记录提交者用户名快照；删除账号时你的投稿记录一并删除
+          （已生成的资源不随投稿删除，仅解除关联）。投稿仅用于内容整理与版权追溯，不用于其他用途。
+        </p>
+      </section>
+
+      <section>
+        <h2 class="mb-2 font-semibold text-text-primary">6. 日志与安全</h2>
         <p>
           为保障网站安全与排障，服务端会记录基础的访问日志（时间、路径、状态码、请求 ID、
           来源 IP）。日志不会记录密码、Cookie、Authorization 头或敏感请求内容。
@@ -65,7 +80,7 @@ applyPageMeta({
       </section>
 
       <section>
-        <h2 class="mb-2 font-semibold text-text-primary">6. 匿名使用统计</h2>
+        <h2 class="mb-2 font-semibold text-text-primary">7. 匿名使用统计</h2>
         <p>
           为了解「哪些工具真被使用、哪些环节在出错」，本站会以<strong>匿名、按天聚合</strong>的方式统计使用情况，
           用于运营看板（仅管理员可见）与功能改进。我们尽量少收集：
@@ -85,14 +100,14 @@ applyPageMeta({
       </section>
 
       <section>
-        <h2 class="mb-2 font-semibold text-text-primary">7. 第三方外链</h2>
+        <h2 class="mb-2 font-semibold text-text-primary">8. 第三方外链</h2>
         <p>
           本站资源详情页会跳转到第三方原始发布平台。跳转后你在第三方网站上的行为受该网站隐私政策约束。
         </p>
       </section>
 
       <section>
-        <h2 class="mb-2 font-semibold text-text-primary">8. 政策更新</h2>
+        <h2 class="mb-2 font-semibold text-text-primary">9. 政策更新</h2>
         <p>本政策可能随功能演进更新，重大变更会在页面显著位置说明。</p>
       </section>
     </div>

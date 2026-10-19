@@ -32,9 +32,22 @@ export const FAVORITE_KIND_LABELS: Record<FavoriteKind, string> = {
 export interface UserAccount {
   id: string
   username: string
+  /** 展示昵称（注册必填；空串时前端回退到 username） */
+  nickname?: string
+  /** 头像图片（图片 data URI，仅上传图片；空串表示未设置） */
+  avatar_url?: string
+  /** 注册邮箱（作为可选登录标识） */
+  email?: string
   /** 写操作 CSRF token（登录 / me 时下发） */
   csrf_token?: string
   expires_at?: string
+}
+
+/** 更新当前用户展示资料（昵称 / 头像） */
+export interface UpdateProfilePayload {
+  nickname: string
+  /** 头像图片 data URI（空串表示清除）；仅接受图片，由前端压缩生成 */
+  avatar_url: string
 }
 
 /** 收藏项 */
@@ -69,12 +82,29 @@ export interface UserSeed {
 
 export interface RegisterPayload {
   username: string
+  /** 展示昵称（1-60 个字符，必填） */
+  nickname: string
+  /** 注册邮箱（全局唯一，可作为登录标识） */
+  email: string
   password: string
+  /** 图形验证码一次性 ID 与用户填写答案 */
+  captcha_id: string
+  captcha_answer: string
 }
 
 export interface LoginPayload {
-  username: string
+  /** 登录标识：用户名或邮箱 */
+  identifier: string
   password: string
+}
+
+/** 图形验证码挑战（服务端签发） */
+export interface CaptchaChallenge {
+  captcha_id: string
+  /** PNG 图片的 data URI，可直接用于 <img :src> */
+  image: string
+  /** 有效期（秒） */
+  expires_in: number
 }
 
 export interface ToggleFavoritePayload {
@@ -101,5 +131,9 @@ export interface SaveSeedPayload {
 
 /** 用户名规则（与后端 usernameRe 保持一致：字母开头，3-40 位） */
 export const USERNAME_RE = /^[A-Za-z][A-Za-z0-9_-]{2,39}$/
+/** 邮箱规则（与后端 emailRe 保持一致：本地部分 + 域名 + 顶级域） */
+export const EMAIL_RE = /^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/
+/** 昵称最大长度（与后端 MaxNicknameLength、accounts.nickname 列宽一致） */
+export const MAX_NICKNAME_LENGTH = 60
 /** 用户密码最小长度（与后端 MinPasswordLength 一致） */
 export const MIN_USER_PASSWORD_LENGTH = 8

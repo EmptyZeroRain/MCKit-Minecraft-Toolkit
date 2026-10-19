@@ -2,6 +2,7 @@
 // 分类管理（需求 6.3）
 import { onMounted, reactive, ref } from 'vue'
 import FormField from '@/components/common/FormField.vue'
+import AdminTable from '@/components/admin/AdminTable.vue'
 import { useUiStore } from '@/stores/ui'
 import {
   listCategories,
@@ -10,9 +11,17 @@ import {
   deleteCategory,
 } from '@/api/admin-meta'
 import type { Category } from '@/types/category'
+import type { AdminTableColumn } from '@/types/admin'
 import { ApiError } from '@/types/api'
 
 const ui = useUiStore()
+
+const columns: AdminTableColumn[] = [
+  { key: 'name', label: '名称' },
+  { key: 'slug', label: 'Slug' },
+  { key: 'content_type', label: '类型' },
+  { key: 'actions', label: '操作', align: 'right', width: '140px' },
+]
 
 const items = ref<Category[]>([])
 const loading = ref(false)
@@ -166,30 +175,25 @@ onMounted(load)
         </div>
 
         <div v-if="error" role="alert" class="p-6 text-sm text-danger-mc">{{ error }}</div>
-        <table v-else-if="items.length" class="w-full text-left text-sm">
-          <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
-            <tr>
-              <th scope="col" class="px-4 py-2.5">名称</th>
-              <th scope="col" class="px-4 py-2.5">Slug</th>
-              <th scope="col" class="px-4 py-2.5">类型</th>
-              <th scope="col" class="px-4 py-2.5 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-border-dark">
-            <tr v-for="item in items" :key="item.id" class="hover:bg-ink-800/60">
-              <td class="px-4 py-3 text-text-primary">{{ item.name }}</td>
-              <td class="px-4 py-3 font-mono text-xs text-text-secondary">{{ item.slug }}</td>
-              <td class="px-4 py-3 text-text-secondary">{{ item.content_type }}</td>
-              <td class="px-4 py-3">
-                <div class="flex justify-end gap-1.5 text-xs">
-                  <button type="button" class="rounded border border-border-light px-2 py-1 text-grass-400 hover:bg-ink-700" @click="startEdit(item)">编辑</button>
-                  <button type="button" class="rounded border border-danger-mc/40 px-2 py-1 text-danger-mc hover:bg-danger-mc/10" @click="handleDelete(item)">删除</button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else-if="!loading" class="p-10 text-center text-sm text-text-muted">暂无分类。</div>
+        <AdminTable
+          v-else
+          :columns="columns"
+          :rows="items"
+          :loading="loading"
+          row-key="id"
+          plain
+          empty-text="暂无分类。"
+        >
+          <template #cell-slug="{ row }">
+            <span class="font-mono text-xs text-text-secondary">{{ row.slug }}</span>
+          </template>
+          <template #cell-actions="{ row }">
+            <div class="flex justify-end gap-1.5 text-xs">
+              <button type="button" class="rounded border border-border-light px-2 py-1 text-grass-400 hover:bg-ink-700" @click="startEdit(row)">编辑</button>
+              <button type="button" class="rounded border border-danger-mc/40 px-2 py-1 text-danger-mc hover:bg-danger-mc/10" @click="handleDelete(row)">删除</button>
+            </div>
+          </template>
+        </AdminTable>
       </div>
     </div>
   </div>

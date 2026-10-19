@@ -14,6 +14,7 @@ const navItems = [
   { label: '资源中心', to: '/resources' },
   { label: '关于本站', to: '/about' },
   { label: '问题反馈', to: '/feedback' },
+  { label: '资源投稿', to: '/submit-resource' },
   { label: '管理后台', to: '/admin' },
 ]
 

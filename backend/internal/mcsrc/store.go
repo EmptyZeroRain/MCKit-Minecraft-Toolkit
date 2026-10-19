@@ -132,6 +132,11 @@ type Store struct {
 	relMu sync.Mutex
 	rel   map[string]relCache
 
+	// refMu / ref 反向引用索引的内存缓存（key = version-side，值记录 jar 摘要用于失效）。
+	// 构建需全量扫描 jar 内所有 class 的常量池与指令，故只保留最近若干个版本（见 referencesFor）。
+	refMu sync.Mutex
+	ref   map[string]refCache
+
 	// progMu / prog 进行中的准备进度（key = version-side）。
 	// 只服务于进度展示，不落盘；进程重启后由下一次 Prepare 重新填充。
 	progMu sync.Mutex
@@ -152,6 +157,7 @@ func NewStore(dir string, maxBytes int64, maxClasses int) *Store {
 		maxClasses: maxClasses,
 		http:       &http.Client{Timeout: defaultDownloadTimeout},
 		prog:       map[string]progress{},
+		ref:        map[string]refCache{},
 	}
 }
 

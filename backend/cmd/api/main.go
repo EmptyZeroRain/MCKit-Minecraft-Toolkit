@@ -4,11 +4,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 	"mckit/backend/internal/audit"
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/blockids"
+	"mckit/backend/internal/captcha"
 	"mckit/backend/internal/config"
 	"mckit/backend/internal/domain"
 	"mckit/backend/internal/envutil"
@@ -27,20 +32,29 @@ import (
 	lk "mckit/backend/internal/linkcheck"
 	"mckit/backend/internal/mcsrc"
 	"mckit/backend/internal/mcversion"
+	mfacrypto "mckit/backend/internal/mfa"
 	db "mckit/backend/internal/repository"
+	"mckit/backend/internal/repository/types"
 	"mckit/backend/internal/search"
 	"mckit/backend/internal/service"
 	"mckit/backend/internal/service/adminaccount"
+	"mckit/backend/internal/service/alert"
 	"mckit/backend/internal/service/analytics"
 	"mckit/backend/internal/service/catalog"
 	"mckit/backend/internal/service/content"
+	"mckit/backend/internal/service/contenttask"
 	"mckit/backend/internal/service/dataquality"
+	"mckit/backend/internal/service/growth"
+	"mckit/backend/internal/service/jobs"
 	"mckit/backend/internal/service/linkhealth"
 	"mckit/backend/internal/service/metrics"
+	mfasvc "mckit/backend/internal/service/mfa"
 	"mckit/backend/internal/service/resource"
+	"mckit/backend/internal/service/revision"
 	"mckit/backend/internal/service/role"
 	"mckit/backend/internal/service/searchstats"
 	"mckit/backend/internal/service/sitemap"
+	"mckit/backend/internal/service/submission"
 	"mckit/backend/internal/service/user"
 	"mckit/backend/internal/service/useradmin"
 )
@@ -90,7 +104,7 @@ func main() {
 	r.Use(middleware.RateLimit(cfg.RateLimitRPS, cfg.RateLimitBurst))
 
 	api := chi.NewRouter()
-	registerRoutes(api, database, collector)
+	jobSvc, alertSvc := registerRoutes(ctx, api, database, collector)
 	api.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.NotFound(w, r)
 	})
@@ -115,6 +129,18 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// 数据库不可用时 registerRoutes 返回 nil（此时也不会注册任务接口）。
+	if jobSvc != nil {
+		jobSvc.Start(ctx, 5*time.Second)
+		// 已完成任务的保留期限（默认 90 天）：admin_jobs 是纯运维记录，超期只增负担。
+		jobSvc.StartRetention(ctx, cfgInstance.JobRetentionDays, 24*time.Hour)
+		slog.Info("后台任务调度已启动", "interval", "5s")
+	}
+	if alertSvc != nil {
+		alertSvc.Start(ctx, 5*time.Minute)
+		slog.Info("运营告警评估已启动", "interval", "5m")
+	}
+
 	go func() {
 		slog.Info("API 服务启动", "addr", cfg.AppAddr, "env", cfg.AppEnv)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -129,6 +155,13 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("优雅关闭失败", "err", err)
+	}
+	// 先停调度：避免任务在数据库/客户端关闭后继续执行。
+	if jobSvc != nil {
+		jobSvc.Stop()
+	}
+	if alertSvc != nil {
+		alertSvc.Stop()
 	}
 	// 最终落库使用统计（Stop 为空操作时为 nil）。
 	collector.Stop()
@@ -150,7 +183,8 @@ func newStatsCollector(cfg *config.Config, database *gorm.DB) *metrics.Collector
 
 // registerRoutes 注册 API 路由。
 // 阶段 A/B：健康检查 + 管理员认证；后续阶段按文档 §8 追加。
-func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector) {
+// ctx 用于启动随进程生命周期结束的后台任务（如审计日志保留清理）。
+func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collector *metrics.Collector) (*jobs.Service, *alert.Service) {
 	r.Post("/health", func(w http.ResponseWriter, req *http.Request) {
 		// 健康检查不暴露内部配置；返回常量信息。
 		response.OK(w, map[string]string{"status": "ok", "service": "mckit-api"})
@@ -193,35 +227,90 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	}
 
 	if gormDB == nil {
-		return
+		return nil, nil
 	}
 
 	// 认证模块
 	adminRepo := service.NewAdminRepo(gormDB)
-	sessionStore := auth.NewMemorySessionStore()
-	authSvc := auth.NewService(adminRepo, sessionStore, 5, 900)
+	// 会话存储（gj.md §3.4）：
+	//   memory   —— 单实例部署；进程重启后全部会话失效（默认）；
+	//   postgres —— 多实例部署；会话在所有实例间共享，创建/续期/撤销即时一致。
+	sessionOpts := auth.SessionOptions{TTL: cfgInstance.SessionTTL, IdleTTL: cfgInstance.SessionIdleTTL}
+	var sessionStore auth.SessionStore
+	if cfgInstance.SessionStore == "postgres" {
+		sessionStore = auth.NewPostgresSessionStore(gormDB, sessionOpts)
+	} else {
+		sessionStore = auth.NewMemorySessionStoreWithOptions(sessionOpts)
+	}
+	// 过期会话后台清理（两种存储都需要，避免过期数据长期驻留）。
+	auth.StartSessionPurge(ctx, sessionStore, time.Hour, slog.Default())
+	// 统一密码策略参数（gj.md §3.3）：后台与普通用户共用同一套校验实现。
+	policy := auth.PasswordPolicy{MinLength: cfgInstance.PasswordMinLengthAdmin, MaxLength: cfgInstance.PasswordMaxLength}
+	userPolicy := auth.PasswordPolicy{MinLength: cfgInstance.PasswordMinLengthUser, MaxLength: cfgInstance.PasswordMaxLength}
+
+	// 双因子认证（gj.md §10.1）：
+	// 密钥缺失时仍创建服务（key=nil），这样已绑定 MFA 的账号会被明确拒绝登录，
+	// 而不是静默降级为单因子；未绑定的账号不受影响。
+	var mfaKey []byte
+	if cfgInstance.MFAEncryptionKey != "" {
+		parsed, err := mfacrypto.ParseKey(cfgInstance.MFAEncryptionKey)
+		if err != nil {
+			slog.Error("MFA_ENCRYPTION_KEY 解析失败", "error", err)
+			return nil, nil
+		}
+		mfaKey = parsed
+	}
+	mfaSvc := mfasvc.NewService(gormDB, mfaKey, cfgInstance.MFAIssuer)
+
+	authSvc := auth.NewService(adminRepo, sessionStore, 5, 900).
+		WithPasswordPolicy(policy).
+		WithMFA(mfaSvc)
 
 	// 审计日志服务
 	auditSvc := audit.NewService(gormDB)
+	// 审计日志保留清理（AUDIT_RETENTION_DAYS，默认 180 天；<=0 关闭）：
+	// 审计表只增不减，随进程生命周期在后台按天清理。
+	auditSvc.StartRetention(ctx, cfgInstance.AuditRetentionDays, 24*time.Hour, slog.Default())
 
 	// 角色与权限点（后台「角色管理」底座）：
 	// 角色权限存 roles 表，路由用 RequirePermission 校验，替换原硬编码 RequireRole(admin)；
 	// 登录/会话接口一并返回权限点，供前端按权限显示入口（后端仍兜底）。
 	roleSvc := role.NewService(gormDB)
 
+	// 用户成长系统（jingyan.md）：经验 / 等级 / 每日任务 / 成就 / 成长审计。
+	// 服务端判定 + 业务事件驱动；业务模块通过 GrowthEventSink 投递已确认事实，
+	// 成长侧在事务内幂等处理（重复事件不重复发奖）。
+	growthSvc := growth.NewService(gormDB, cfgInstance.GrowthTimezone)
+	growthHandler := handler.NewGrowthHandler(growthSvc)
+
 	authHandler := handler.NewAuthHandler(authSvc, sessionStore, cfgInstance).
 		WithAudit(auditSvc).
-		WithPermissions(roleSvc)
+		WithPermissions(roleSvc).
+		WithMFA(mfaSvc)
 
 	r.Route("/admin/auth", func(ar chi.Router) {
 		ar.Post("/login", authHandler.Login)
+		// 第二因子校验：凭证是「登录票据 + 验证码」，不需要已有会话。
+		ar.Post("/mfa/verify", authHandler.MFAVerify)
 		ar.Group(func(protected chi.Router) {
 			protected.Use(middleware.RequireAuth(authSvc))
 			protected.Post("/logout", authHandler.Logout)
 			protected.Post("/me", authHandler.Me)
+			// 会话管理：列出当前账号全部有效会话（只读）。
+			protected.Post("/sessions/list", authHandler.Sessions)
+			// MFA 状态（只读，不含密钥材料）。
+			protected.Post("/mfa/status", authHandler.MFAStatus)
 			protected.Group(func(csrf chi.Router) {
 				csrf.Use(middleware.CSRF)
 				csrf.Post("/change-password", authHandler.ChangePassword)
+				// 自助维护展示资料（昵称 / 头像）。
+				csrf.Post("/profile", authHandler.UpdateProfile)
+				// 撤销当前账号会话（其它设备 / 全部设备）。
+				csrf.Post("/sessions/revoke", authHandler.RevokeSessions)
+				// MFA 自助绑定 / 解绑。
+				csrf.Post("/mfa/setup", authHandler.MFASetup)
+				csrf.Post("/mfa/enable", authHandler.MFAEnable)
+				csrf.Post("/mfa/disable", authHandler.MFADisable)
 			})
 		})
 	})
@@ -230,9 +319,29 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	// 统一账号（迁移 0022）后与后台共用 accounts 与会话 Cookie，
 	// 但接口仍只接受 role = 'user' 的会话（RequireUserRole），后台账号访问返回 401；
 	// 读接口仅需登录，写接口叠加 CSRF；登录按 (用户名, IP) 限流。
-	userSvc := user.NewService(user.NewRepo(gormDB), sessionStore, 5, 900)
-	userHandler := handler.NewUserHandler(userSvc, cfgInstance.SessionSecure)
+	userSvc := user.NewService(user.NewRepo(gormDB), sessionStore, 5, 900).WithPasswordPolicy(userPolicy)
+
+	// 注册图形验证码（迁移 0024 起注册需填邮箱与验证码）。
+	// 仅内存存储，与 MemorySessionStore 一致，适用于单实例部署；
+	// CAPTCHA_ENABLED=false 时不创建（注册跳过验证码校验）。
+	var captchaMgr *captcha.Manager
+	if cfgInstance.CaptchaEnabled {
+		captchaMgr = captcha.NewManager(captcha.Options{
+			TTL:       cfgInstance.CaptchaTTL,
+			FixedCode: cfgInstance.CaptchaFixedCode,
+		})
+	}
+	userHandler := handler.NewUserHandler(userSvc, captchaMgr, cfgInstance.SessionSecure).WithGrowthSink(growthSvc)
+
+	// 资源投稿（用户提交结构化资源 → 人工审核 → 转为正式资源）。
+	// 用户端与审核端共用同一服务；审核通过时复用 resource 服务生成资源，
+	// 保证字段校验、标签关联与历史版本写入与「资源管理」完全一致。
+	resSvc := resource.NewService(gormDB)
+	submissionSvc := submission.NewService(gormDB, resSvc)
+	submissionHandler := handler.NewSubmissionHandler(submissionSvc).WithGrowthSink(growthSvc)
+
 	r.Route("/user", func(ur chi.Router) {
+		ur.Post("/captcha", userHandler.Captcha)
 		ur.Post("/register", userHandler.Register)
 		ur.Post("/login", userHandler.Login)
 		ur.Group(func(authed chi.Router) {
@@ -243,19 +352,46 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			authed.Post("/favorites/list", userHandler.ListFavorites)
 			authed.Post("/recents/list", userHandler.ListRecents)
 			authed.Post("/seeds/list", userHandler.ListSeeds)
+			// 我的投稿（含审核状态）。
+			authed.Post("/submissions/list", submissionHandler.ListMine)
 			authed.Group(func(csrf chi.Router) {
 				csrf.Use(middleware.CSRF)
+				// 处于「必须改密」状态时仍允许自助改密与资料维护（否则无法自救）。
 				csrf.Post("/change-password", userHandler.ChangePassword)
-				csrf.Post("/delete", userHandler.DeleteAccount)
-				csrf.Post("/favorites/toggle", userHandler.ToggleFavorite)
-				csrf.Post("/favorites/remove", userHandler.RemoveFavorite)
-				csrf.Post("/recents/record", userHandler.RecordRecent)
-				csrf.Post("/recents/clear", userHandler.ClearRecents)
-				csrf.Post("/seeds/save", userHandler.SaveSeed)
-				csrf.Post("/seeds/delete", userHandler.DeleteSeed)
+				// 自助维护展示资料（昵称 / 头像）。
+				csrf.Post("/profile", userHandler.UpdateProfile)
+				// 其余写操作在完成改密前一律拒绝（gj.md §10.2）。
+				csrf.Group(func(gated chi.Router) {
+					gated.Use(middleware.RequirePasswordChanged())
+					// 资源投稿（进入待审核队列，审核通过后由管理员转为资源）。
+					gated.Post("/submissions/submit", submissionHandler.Submit)
+					gated.Post("/delete", userHandler.DeleteAccount)
+					gated.Post("/favorites/toggle", userHandler.ToggleFavorite)
+					gated.Post("/favorites/remove", userHandler.RemoveFavorite)
+					gated.Post("/recents/record", userHandler.RecordRecent)
+					gated.Post("/recents/clear", userHandler.ClearRecents)
+					gated.Post("/seeds/save", userHandler.SaveSeed)
+					gated.Post("/seeds/delete", userHandler.DeleteSeed)
+				})
 			})
 		})
 	})
+
+	// 用户成长中心（jingyan.md §9）：仅本人成长数据，等级仅展示用。
+	// 读接口只要求登录（普通用户角色），不做任何前端可影响的判定。
+	r.Route("/growth", func(gr chi.Router) {
+		gr.Use(middleware.RequireAuth(authSvc))
+		gr.Use(middleware.RequireUserRole())
+		gr.Post("/overview", growthHandler.Overview)
+		gr.Post("/ledger", growthHandler.Ledger)
+		gr.Post("/daily-tasks", growthHandler.DailyTasks)
+		gr.Post("/daily-tasks/history", growthHandler.DailyTaskHistory)
+		gr.Post("/achievements", growthHandler.Achievements)
+	})
+
+	// 公开个人主页成长摘要（不含经验流水与登录信息）。
+	r.Post("/public/users/detail", growthHandler.PublicProfile)
+	r.Post("/public/users/achievements", growthHandler.PublicAchievements)
 
 	// 审计日志（admin 专属）
 	auditHandler := handler.NewAuditHandler(auditSvc)
@@ -264,12 +400,21 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	// 角色权限存 roles 表，路由用 RequirePermission 校验，替换原硬编码 RequireRole(admin)。
 	roleHandler := handler.NewRoleHandler(roleSvc, auditSvc)
 
+	// 目录服务（映射等）：mcsrc 的「映射重命名」需要按版本查映射，故提前构造。
+	catalogSvc := catalog.NewService(gormDB)
+
 	// MC 源码库（mcsrc）：公开只读状态与类检索；/prepare 任何访客可用
 	// （前端在用户选中版本时自动触发下载 + 建索引），并叠加限流与并发上限
 	// （单次可达数百 MB，禁止并发叠加）。
+	// 提到块外：缓存重建任务需要把 jobSvc 注入到同一个 handler 实例。
+	var mcsrcAdminHandler *handler.McsrcHandler
 	if mcsrcStore != nil {
 		mcsrcHandler := handler.NewMcsrcHandler(mcsrcStore, mcMetaClient).
-			WithAutoPrepare(roleSvc, cfgInstance.MCSRCAutoPrepareMax)
+			WithAutoPrepare(roleSvc, cfgInstance.MCSRCAutoPrepareMax).
+			WithAudit(auditSvc).
+			WithMappings(catalogSvc).
+			WithCacheAlertMB(cfgInstance.MCSRCCacheAlertMB)
+		mcsrcAdminHandler = mcsrcHandler
 		mcsrcHeavy := middleware.RateLimit(cfgInstance.MCHeavyRPS, cfgInstance.MCHeavyBurst)
 		mcsrcConc := middleware.ConcurrencyLimit(1)
 		r.Route("/mcsrc", func(mr chi.Router) {
@@ -280,9 +425,17 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			// 与检索同属公开只读（不触发下载）。
 			mr.Post("/classes/detail", mcsrcHandler.ClassDetail)
 			mr.Post("/classes/hierarchy", mcsrcHandler.ClassHierarchy)
-			// jar 下载：公开只读，供前端在浏览器内做反编译（Vineflower WASM）。
-			// 唯一的 GET 接口，需要 Range / ETag 语义（见 handler 注释）。
-			mr.Get("/jar", mcsrcHandler.Jar)
+			// 字节码反汇编（ASM Textifier 风格文本）：同样为纯字节码解析。
+			mr.Post("/classes/bytecode", mcsrcHandler.ClassBytecode)
+			// 查找引用：扫描全 jar 常量池与指令建反向引用索引（首次较慢，之后缓存）。
+			mr.Post("/classes/references", mcsrcHandler.ClassReferences)
+			// 映射重命名：只读数据库中的映射数据（不读 jar、不建索引），
+			// 未导入映射时返回 available=false。
+			mr.Post("/classes/mapping", mcsrcHandler.ClassMapping)
+			// jar 下发：公开只读，供前端在浏览器内做反编译（Vineflower WASM）。
+			// 与项目约定一致走 POST（JSON 入参 + 二进制响应）；单次可达数十 MB，
+			// 故叠加重接口限流。并发上限只给 /prepare，避免「取 jar + 建索引」互相阻塞。
+			mr.With(mcsrcHeavy).Post("/jar", mcsrcHandler.Jar)
 			// 自动准备：匿名可用，但受 MCSRC_AUTO_PREPARE_MAX 额度限制
 			// （默认 12 个 version+side）；具备 ops.mcsrc 的管理员不受限。
 			// OptionalAuth 只用于识别管理员，绝不返回 401。
@@ -293,6 +446,21 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 				wr.Post("/prepare", mcsrcHandler.Prepare)
 			})
 		})
+
+		// 缓存运维（后台「MC 源码缓存」）：列出磁盘占用 / 清理单个版本 / 清空全部。
+		// jar 与索引均为可重建的派生数据，清理不影响业务数据；但属运维动作，
+		// 故要求 ops.mcsrc 权限 + CSRF，并写审计（含释放字节数）。
+		r.Route("/admin/mcsrc", func(ar chi.Router) {
+			ar.Use(middleware.RequireAuth(authSvc))
+			ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsMCsrc))
+			ar.Use(middleware.CSRF)
+			ar.Post("/cache/list", mcsrcHandler.CacheList)
+			ar.Post("/cache/preview", mcsrcHandler.CachePreview)
+			ar.Post("/cache/purge", mcsrcHandler.CachePurge)
+			ar.Post("/cache/purge-all", mcsrcHandler.CachePurgeAll)
+			// 缓存重建（gj.md 阶段三 / §11）：下载 + 建索引耗时数十秒，走后台任务队列。
+			ar.Post("/cache/rebuild", mcsrcHandler.CacheRebuild)
+		})
 	}
 	r.Route("/admin/roles", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
@@ -300,13 +468,16 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", roleHandler.List)
 		ar.Post("/permissions", roleHandler.Permissions)
+		ar.Post("/impact", roleHandler.Impact)
 		ar.Post("/create", roleHandler.Create)
 		ar.Post("/update", roleHandler.Update)
 		ar.Post("/delete", roleHandler.Delete)
 	})
 
 	// 管理员账号管理（admin 专属，需求 §6.1 / §6.2）
-	adminAccountSvc := adminaccount.NewService(gormDB)
+	adminAccountSvc := adminaccount.NewService(gormDB).
+		WithPasswordPolicy(policy).
+		WithSessionRevoker(sessionStore)
 	adminAccountHandler := handler.NewAdminAccountHandler(adminAccountSvc, authSvc, auditSvc)
 	r.Route("/admin/admins", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
@@ -316,27 +487,137 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Post("/create", adminAccountHandler.Create)
 		ar.Post("/update", adminAccountHandler.Update)
 		ar.Post("/reset-password", adminAccountHandler.ResetPassword)
+		ar.Post("/delete-preview", adminAccountHandler.DeletePreview)
+		// 账号恢复：解绑目标账号的 MFA（换手机且恢复码丢失时使用）。
+		ar.Post("/mfa/reset", adminAccountHandler.ResetMFA)
 		ar.Post("/delete", adminAccountHandler.Delete)
 	})
 
-	// 普通用户管理（admin 专属）：账号列表 + 个人数据计数（后台「普通用户管理」）。
-	userAdminSvc := useradmin.NewService(gormDB)
-	userAdminHandler := handler.NewUserAdminHandler(userAdminSvc)
+	// 普通用户管理（需 accounts.users 权限）：列表 / 详情 / 启用停用 / 重置密码 / 删除 / 导出。
+	userAdminSvc := useradmin.NewService(gormDB).
+		WithPasswordPolicy(userPolicy).
+		WithSessionRevoker(sessionStore)
+	userAdminHandler := handler.NewUserAdminHandler(userAdminSvc, authSvc, auditSvc)
 	r.Route("/admin/users", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
 		ar.Use(middleware.RequirePermission(roleSvc, domain.PermAccountsUsers))
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", userAdminHandler.List)
+		ar.Post("/create", userAdminHandler.Create)
+		ar.Post("/detail", userAdminHandler.Detail)
+		ar.Post("/update", userAdminHandler.Update)
+		ar.Post("/reset-password", userAdminHandler.ResetPassword)
+		ar.Post("/delete-preview", userAdminHandler.DeletePreview)
+		ar.Post("/delete", userAdminHandler.Delete)
+		ar.Post("/export", userAdminHandler.Export)
+	})
+
+	// 用户成长管理（后台，需 ops.growth 权限）：概览 / 规则 / 等级 / 全局流水 /
+	// 人工调整与冲正 / 审计；定义类操作与经验变更均写成长审计日志。
+	r.Route("/admin/growth", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsGrowth))
+		ar.Use(middleware.CSRF)
+		ar.Post("/overview", growthHandler.AdminOverview)
+		ar.Post("/ledger/list", growthHandler.AdminLedger)
+		ar.Post("/adjust", growthHandler.Adjust)
+		ar.Post("/reverse", growthHandler.Reverse)
+		ar.Post("/audit/list", growthHandler.AdminAudit)
+		ar.Post("/rules/list", growthHandler.RulesList)
+		ar.Post("/rules/create", growthHandler.RulesCreate)
+		ar.Post("/rules/update", growthHandler.RulesUpdate)
+		ar.Post("/rules/toggle", growthHandler.RulesToggle)
+		ar.Post("/rules/delete", growthHandler.RulesDelete)
+		ar.Post("/levels/list", growthHandler.LevelsList)
+		ar.Post("/levels/update", growthHandler.LevelsUpdate)
+		ar.Post("/levels/recalculate", growthHandler.LevelsRecalculate)
+	})
+
+	// 每日任务定义管理（后台，需 ops.growth 权限）。
+	r.Route("/admin/daily-tasks", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsGrowth))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", growthHandler.TasksList)
+		ar.Post("/create", growthHandler.TasksCreate)
+		ar.Post("/update", growthHandler.TasksUpdate)
+		ar.Post("/toggle", growthHandler.TasksToggle)
+		ar.Post("/delete", growthHandler.TasksDelete)
+	})
+
+	// 成就定义管理（后台，需 ops.growth 权限）：含历史补算。
+	r.Route("/admin/achievements", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsGrowth))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", growthHandler.AchievementsList)
+		ar.Post("/create", growthHandler.AchievementsCreate)
+		ar.Post("/update", growthHandler.AchievementsUpdate)
+		ar.Post("/toggle", growthHandler.AchievementsToggle)
+		ar.Post("/recalculate", growthHandler.AchievementsRecalculate)
 	})
 
 	// 数据质量与导入任务（admin 专属，TODO §2 / §4）
 	dataQualitySvc := dataquality.NewService(gormDB)
-	dataQualityHandler := handler.NewDataQualityHandler(dataQualitySvc)
+	dataQualityHandler := handler.NewDataQualityHandler(dataQualitySvc, auditSvc)
+
+	// 运营告警（gj.md 阶段三）：规则定时评估 + 人工确认 / 关闭，历史保留。
+	alertSvc := alert.NewService(gormDB)
+	alertSvc.RegisterRule(alert.Rule{
+		Key:      "dataquality.error_checks",
+		Severity: domain.AlertSeverityWarning,
+		Title:    "存在未修复的严重数据质量问题",
+		Check: func(jobCtx context.Context) (bool, string, map[string]any, error) {
+			ov, err := dataQualitySvc.Overview(jobCtx)
+			if err != nil {
+				return false, "", nil, err
+			}
+			var n int64
+			for _, c := range ov.Checks {
+				if c.Severity == "error" && c.Count > 0 {
+					n++
+				}
+			}
+			metric := map[string]any{"error_checks": n}
+			if n == 0 {
+				return false, "", metric, nil
+			}
+			return true, fmt.Sprintf("%d 项严重数据质量问题仍未修复", n), metric, nil
+		},
+	})
+	// 缓存容量告警：占用超过阈值时提示运营清理（jar 可重建，清理无业务风险）。
+	if mcsrcStore != nil {
+		alertSvc.RegisterRule(alert.Rule{
+			Key:      "mcsrc.capacity",
+			Severity: domain.AlertSeverityWarning,
+			Title:    "MC 源码缓存占用超过阈值",
+			Check: func(jobCtx context.Context) (bool, string, map[string]any, error) {
+				_, usage, err := mcsrcStore.ListCache()
+				if err != nil {
+					return false, "", nil, err
+				}
+				limit := int64(cfgInstance.MCSRCCacheAlertMB) << 20
+				metric := map[string]any{
+					"total_bytes": usage.TotalBytes,
+					"limit_bytes": limit,
+					"entries":     usage.Entries,
+				}
+				if limit <= 0 || usage.TotalBytes < limit {
+					return false, "", metric, nil
+				}
+				return true, fmt.Sprintf("缓存占用 %d MB，超过阈值 %d MB",
+					usage.TotalBytes>>20, limit>>20), metric, nil
+			},
+		})
+	}
+	alertsHandler := handler.NewAlertsHandler(alertSvc, auditSvc)
 	r.Route("/admin/data-quality", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
 		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsDataQuality))
 		ar.Use(middleware.CSRF)
 		ar.Post("/overview", dataQualityHandler.Overview)
+		ar.Post("/assignees", dataQualityHandler.Assignees)
+		ar.Post("/issues/update", dataQualityHandler.UpdateIssue)
 	})
 	r.Route("/admin/data-import-jobs", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
@@ -366,7 +647,8 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	if collector != nil {
 		statsRecorder = collector
 	}
-	r.Post("/stats/event", handler.NewStatsHandler(statsRecorder, analyticsSvc).Event)
+	r.With(middleware.OptionalAuth(authSvc)).
+		Post("/stats/event", handler.NewStatsHandler(statsRecorder, analyticsSvc).WithGrowthSink(growthSvc).Event)
 
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsSvc)
 	r.Route("/admin/analytics", func(ar chi.Router) {
@@ -381,24 +663,163 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 	})
 
 	// 内容服务
-	resSvc := resource.NewService(gormDB)
 	contentSvc := content.NewService(gormDB)
 
 	// 管理端 CRUD
 	adminHandler := handler.NewAdminHandler(resSvc, contentSvc, auditSvc)
 
+	// 资源投稿审核（审核通过会生成 resources 记录，与资源管理同权能）。
+	submissionAdminHandler := handler.NewSubmissionAdminHandler(submissionSvc, auditSvc).WithGrowthSink(growthSvc)
+
 	// 链接检查器（SSRF 防护）
 	linkChecker := lk.NewChecker(cfgInstance.LinkCheckTimeout, cfgInstance.LinkCheckMaxRedirect)
 	adminHandler.SetLinkChecker(linkCheckAdapter{checker: linkChecker})
+
+	// 内容历史版本（gj.md §15 / §16.2）：记录 + 差异 + 回滚。
+	// 还原器在 main 装配，避免 revision 与内容服务之间的循环依赖。
+	revisionSvc := revision.NewService(gormDB)
+	revisionSvc.Register(domain.RevisionContentResource, resSvc)
+	revisionSvc.Register(domain.RevisionContentTool, contentSvc)
+	revisionSvc.Register(domain.RevisionContentWiki, contentSvc)
+	revisionHandler := handler.NewRevisionHandler(revisionSvc, auditSvc)
 
 	// 链接健康与人工确认（TODO §6：后台复查 + 并发限制）
 	linkHealthSvc := linkhealth.NewService(gormDB, linkChecker, cfgInstance.LinkCheckConcurrency)
 	linkHealthHandler := handler.NewLinkHealthHandler(linkHealthSvc, auditSvc)
 
+	// 通用后台任务（gj.md 阶段二：任务重试与失败详情）。
+	// 耗时 / 可能失败的运维动作统一走队列，避免同步请求超时，并支持自动与人工重试。
+	jobSvc := jobs.NewService(gormDB)
+	jobSvc.Register("linkhealth.run", "链接健康巡检", func(jobCtx context.Context, payload types.JSONB) (types.JSONB, error) {
+		var p struct {
+			OnlyPending bool `json:"only_pending"`
+			Limit       int  `json:"limit"`
+		}
+		if len(payload) > 0 {
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return nil, fmt.Errorf("任务参数格式错误")
+			}
+		}
+		if p.Limit < 0 {
+			p.Limit = 0
+		}
+		// 单次上限保护：全量巡检数据量大时应分批，而不是让一个任务跑几小时。
+		if p.Limit > 2000 {
+			p.Limit = 2000
+		}
+		sum, err := linkHealthSvc.RunCheck(jobCtx, linkhealth.RunOptions{
+			OnlyPending:   p.OnlyPending,
+			Limit:         p.Limit,
+			TriggerSource: domain.LinkTriggerManual,
+		})
+		if err != nil {
+			// 原始错误可能含 SQL / 连接串，只写日志，返回给运营的是通用文案。
+			slog.Error("链接巡检任务失败", "err", err)
+			return nil, fmt.Errorf("链接巡检执行失败，请查看服务日志")
+		}
+		out, _ := json.Marshal(sum)
+		return types.JSONB(out), nil
+	})
+	// MC 源码缓存重建：清理 → 拉取版本详情 → 重新下载并建索引。
+	// 失败原因面向运营脱敏，原始错误只进日志。
+	jobSvc.Register("mcsrc.rebuild", "MC 源码缓存重建", func(jobCtx context.Context, payload types.JSONB) (types.JSONB, error) {
+		var p struct {
+			Version string `json:"version"`
+			Side    string `json:"side"`
+		}
+		if len(payload) > 0 {
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return nil, fmt.Errorf("任务参数格式错误")
+			}
+		}
+		version := strings.TrimSpace(p.Version)
+		if version == "" {
+			return nil, fmt.Errorf("version 必填")
+		}
+		side := strings.ToLower(strings.TrimSpace(p.Side))
+		if side == "" {
+			side = mcsrc.SideClient
+		}
+		if side != mcsrc.SideClient && side != mcsrc.SideServer {
+			return nil, fmt.Errorf("side 仅支持 client / server")
+		}
+		if mcsrcStore == nil || mcMetaClient == nil {
+			return nil, fmt.Errorf("MC 源码缓存未启用")
+		}
+		// 先清理旧缓存；未缓存时 Purge 幂等返回 nil。
+		if err := mcsrcStore.Purge(version, side); err != nil {
+			if errors.Is(err, mcsrc.ErrCacheBusy) {
+				return nil, fmt.Errorf("该版本正在下载 / 建索引，请稍后重试")
+			}
+			return nil, fmt.Errorf("清理旧缓存失败，请查看服务日志")
+		}
+		detail, err := mcMetaClient.FetchVersion(jobCtx, version)
+		if err != nil {
+			slog.Warn("缓存重建获取版本详情失败", "version", version, "err", err)
+			return nil, fmt.Errorf("获取版本详情失败，请检查版本号与网络")
+		}
+		dl, ok := detail.Downloads[side]
+		if !ok || strings.TrimSpace(dl.URL) == "" {
+			return nil, fmt.Errorf("该版本缺少 %s 端下载地址", side)
+		}
+		st, err := mcsrcStore.Prepare(jobCtx, version, side, dl)
+		if err != nil {
+			slog.Error("缓存重建失败", "version", version, "side", side, "err", err)
+			return nil, fmt.Errorf("下载或建索引失败，请查看服务日志")
+		}
+		out, _ := json.Marshal(map[string]any{
+			"version":     st.Version,
+			"side":        st.Side,
+			"size":        st.Size,
+			"class_count": st.ClassCount,
+			"indexed":     st.Indexed,
+		})
+		return types.JSONB(out), nil
+	})
+	if mcsrcAdminHandler != nil {
+		mcsrcAdminHandler.WithJobs(jobSvc)
+	}
+	jobsHandler := handler.NewJobsHandler(jobSvc, auditSvc)
+
 	// 认证保护的管理接口
 	r.Route("/admin", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
 		ar.Use(middleware.CSRF)
+		// 内容历史版本：按内容类型细分权限点，保持最小权限边界（§15 / §16.2）。
+		ar.Route("/revisions", func(rv chi.Router) {
+			for _, spec := range []struct{ path, ctype, perm string }{
+				{"resources", domain.RevisionContentResource, domain.PermContentResources},
+				{"tools", domain.RevisionContentTool, domain.PermContentTools},
+				{"wiki", domain.RevisionContentWiki, domain.PermContentWiki},
+			} {
+				spec := spec
+				rv.Route("/"+spec.path, func(x chi.Router) {
+					x.Use(middleware.RequirePermission(roleSvc, spec.perm))
+					x.Post("/list", revisionHandler.List(spec.ctype))
+					x.Post("/diff", revisionHandler.Diff(spec.ctype))
+					x.Post("/rollback", revisionHandler.Rollback(spec.ctype))
+				})
+			}
+		})
+		// 运营告警：汇总 / 列表 / 手动评估 / 确认 / 关闭（gj.md 阶段三）。
+		ar.Route("/alerts", func(alr chi.Router) {
+			alr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsAlerts))
+			alr.Post("/summary", alertsHandler.Summary)
+			alr.Post("/list", alertsHandler.List)
+			alr.Post("/evaluate", alertsHandler.Evaluate)
+			alr.Post("/ack", alertsHandler.Ack)
+			alr.Post("/resolve", alertsHandler.Resolve)
+		})
+		// 后台任务：入队 / 列表 / 详情 / 重试 / 取消（gj.md 阶段二）。
+		ar.Route("/jobs", func(jr chi.Router) {
+			jr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsJobs))
+			jr.Post("/types", jobsHandler.Types)
+			jr.Post("/list", jobsHandler.List)
+			jr.Post("/detail", jobsHandler.Detail)
+			jr.Post("/enqueue", jobsHandler.Enqueue)
+			jr.Post("/retry", jobsHandler.Retry)
+			jr.Post("/cancel", jobsHandler.Cancel)
+		})
 		// 链接健康与人工确认（TODO §6）
 		ar.Route("/link-health", func(lr chi.Router) {
 			lr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsLinkHealth))
@@ -411,6 +832,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentResources))
 			// 前端契约：动作子路径 + 全 POST
 			rr.Post("/list", adminHandler.ListResources)
+			rr.Post("/export", adminHandler.ExportResources)
 			rr.Post("/create", adminHandler.CreateResource)
 			rr.Post("/detail", handler.WithBodyID(adminHandler.ResourceDetail))
 			rr.Post("/update", handler.WithBodyID(adminHandler.UpdateResource))
@@ -426,6 +848,15 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			rr.Patch("/{id}", adminHandler.UpdateResource)
 			rr.Delete("/{id}", adminHandler.RemoveResource)
 			rr.Post("/{id}/check-link", adminHandler.CheckResourceLink)
+		})
+		// 资源投稿审核（用户提交 → 通过则生成资源）：与资源管理同权限点。
+		ar.Route("/submissions", func(sr chi.Router) {
+			sr.Use(middleware.RequirePermission(roleSvc, domain.PermContentResources))
+			sr.Post("/list", submissionAdminHandler.List)
+			sr.Post("/detail", submissionAdminHandler.Detail)
+			sr.Post("/review", submissionAdminHandler.Review)
+			// 批量审核：逐条独立事务，返回逐条结果（部分成功是正常情况）。
+			sr.Post("/batch-review", submissionAdminHandler.BatchReview)
 		})
 		ar.Route("/tools", func(rr chi.Router) {
 			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentTools))
@@ -465,6 +896,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Route("/tags", func(rr chi.Router) {
 			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentTags))
 			rr.Post("/list", adminHandler.ListTags)
+			rr.Post("/usage", adminHandler.TagUsage)
 			rr.Post("/create", adminHandler.CreateTag)
 			rr.Post("/update", adminHandler.UpdateTag)
 			rr.Post("/delete", adminHandler.DeleteTag)
@@ -489,12 +921,27 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			protected.Use(middleware.CSRF)
 			protected.Post("/", auditHandler.List)
 			protected.Post("/list", auditHandler.List)
+			protected.Post("/export", auditHandler.Export)
 		})
 	})
 
 	// 公开 API
-	catalogSvc := catalog.NewService(gormDB)
 	searchSvc := search.NewService(gormDB)
+
+	// 内容建设任务（gj.md §8.3 搜索词闭环）：搜索缺口 → 可指派/可跟踪的运营任务。
+	contentTaskSvc := contenttask.NewService(gormDB, searchSvc)
+	contentTaskHandler := handler.NewContentTaskHandler(contentTaskSvc, auditSvc)
+	r.Route("/admin/content-tasks", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsContentTasks))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", contentTaskHandler.List)
+		ar.Post("/candidates", contentTaskHandler.Candidates)
+		ar.Post("/create", contentTaskHandler.Create)
+		ar.Post("/update", contentTaskHandler.Update)
+		ar.Post("/recheck", contentTaskHandler.Recheck)
+		ar.Post("/delete", contentTaskHandler.Delete)
+	})
 
 	// 红石机器设计审核（TODO §15，admin 专属）：按审核状态查询 + 审核留痕。
 	redstoneAdminHandler := handler.NewRedstoneAdminHandler(catalogSvc, auditSvc)
@@ -504,6 +951,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Use(middleware.CSRF)
 		ar.Post("/designs/list", redstoneAdminHandler.ListDesigns)
 		ar.Post("/designs/review", redstoneAdminHandler.ReviewDesign)
+		ar.Post("/designs/batch-review", redstoneAdminHandler.BatchReviewDesigns)
 	})
 
 	// Mod 与整合包审核（TODO §16，admin 专属）：按审核状态查询 + 审核留痕。
@@ -514,6 +962,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", modAdminHandler.AdminMods)
 		ar.Post("/review", modAdminHandler.ReviewMod)
+		ar.Post("/batch-review", modAdminHandler.BatchReviewMods)
 	})
 	r.Route("/admin/modpacks", func(ar chi.Router) {
 		ar.Use(middleware.RequireAuth(authSvc))
@@ -521,6 +970,7 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 		ar.Use(middleware.CSRF)
 		ar.Post("/list", modAdminHandler.AdminModpacks)
 		ar.Post("/review", modAdminHandler.ReviewModpack)
+		ar.Post("/batch-review", modAdminHandler.BatchReviewModpacks)
 	})
 
 	publicHandler := handler.NewPublicHandler(resSvc, contentSvc, catalogSvc, searchSvc).WithSearchStats(searchStatsSvc)
@@ -619,6 +1069,8 @@ func registerRoutes(r chi.Router, gormDB *gorm.DB, collector *metrics.Collector)
 			Post("/seeds/find", mcHandler.FindSeeds)
 		mr.Post("/seeds/parse", mcHandler.ParseSeed)
 	})
+
+	return jobSvc, alertSvc
 }
 
 // cfgInstance 由 main 在启动时注入（避免全局配置散落）。

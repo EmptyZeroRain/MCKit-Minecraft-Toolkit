@@ -4,8 +4,10 @@
 // 数据为匿名化聚合结果：只含归一化关键词与计数，不含 IP / 会话 / 用户标识。
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import ListShell from '@/components/admin/list-shell.vue'
+import AdminTable from '@/components/admin/AdminTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { listSearchTerms } from '@/api/admin-search-terms'
+import type { AdminTableColumn } from '@/types/admin'
 import { ApiError } from '@/types/api'
 import type { SearchTermKind, SearchTermStat } from '@/types/search-term'
 import { isHighNoResult, noResultRatio } from '@/utils/search-term'
@@ -31,6 +33,25 @@ const kindOptions: Array<{ label: string; value: SearchTermKind; hint: string }>
 ]
 
 const currentHint = computed(() => kindOptions.find((o) => o.value === filters.kind)?.hint ?? '')
+
+const columns: AdminTableColumn[] = [
+  { key: 'term', label: '关键词' },
+  { key: 'hits', label: '搜索次数', width: '110px' },
+  { key: 'no_result_hits', label: '无结果次数', width: '110px' },
+  { key: 'failed_hits', label: '失败次数', width: '100px' },
+  { key: 'ratio', label: '无结果占比', width: '110px' },
+  { key: 'last_result_count', label: '最近一次结果数', width: '140px' },
+  { key: 'last_seen_at', label: '最近搜索', width: '120px' },
+]
+
+/** 空态文案随当前统计维度变化。 */
+const emptyText = computed(() =>
+  filters.kind === 'no_result'
+    ? '暂无无结果搜索记录。'
+    : filters.kind === 'failed'
+      ? '暂无查询失败记录。'
+      : '暂无搜索记录。',
+)
 
 async function loadTerms() {
   loading.value = true
@@ -124,53 +145,39 @@ onMounted(loadTerms)
 
       <p class="mb-3 text-xs text-text-muted">{{ currentHint }}</p>
 
-      <div v-if="terms.length" class="card overflow-x-auto">
-        <table class="w-full min-w-[720px] text-left text-sm">
-          <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
-            <tr>
-              <th scope="col" class="px-4 py-2.5">关键词</th>
-              <th scope="col" class="px-4 py-2.5">搜索次数</th>
-              <th scope="col" class="px-4 py-2.5">无结果次数</th>
-              <th scope="col" class="px-4 py-2.5">失败次数</th>
-              <th scope="col" class="px-4 py-2.5">无结果占比</th>
-              <th scope="col" class="px-4 py-2.5">最近一次结果数</th>
-              <th scope="col" class="px-4 py-2.5">最近搜索</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-border-dark">
-            <tr v-for="t in terms" :key="t.id" class="hover:bg-ink-800/60">
-              <td class="px-4 py-2.5">
-                <span class="text-text-primary">{{ t.term }}</span>
-                <span
-                  v-if="filters.kind === 'no_result' && isHighNoResult(t)"
-                  class="ml-2 rounded bg-danger-mc/15 px-1.5 py-0.5 text-xs text-danger-mc"
-                >
-                  高频缺口
-                </span>
-              </td>
-              <td class="px-4 py-2.5 text-text-secondary">{{ t.hits }}</td>
-              <td class="px-4 py-2.5" :class="t.no_result_hits ? 'text-amber-300' : 'text-text-muted'">
-                {{ t.no_result_hits }}
-              </td>
-              <td class="px-4 py-2.5" :class="t.failed_hits ? 'text-danger-mc' : 'text-text-muted'">
-                {{ t.failed_hits }}
-              </td>
-              <td class="px-4 py-2.5 text-text-secondary">{{ noResultRatio(t) }}%</td>
-              <td class="px-4 py-2.5 text-text-secondary">{{ t.last_result_count }}</td>
-              <td class="px-4 py-2.5 text-xs text-text-muted">{{ timeAgo(t.last_seen_at) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loading" class="card p-10 text-center text-sm text-text-muted">
-        {{
-          filters.kind === 'no_result'
-            ? '暂无无结果搜索记录。'
-            : filters.kind === 'failed'
-              ? '暂无查询失败记录。'
-              : '暂无搜索记录。'
-        }}
-      </div>
+      <AdminTable
+        :columns="columns"
+        :rows="terms"
+        row-key="id"
+        min-width="720px"
+        :empty-text="emptyText"
+      >
+        <template #cell-term="{ row }">
+          <span class="text-text-primary">{{ row.term }}</span>
+          <span
+            v-if="filters.kind === 'no_result' && isHighNoResult(row)"
+            class="ml-2 rounded bg-danger-mc/15 px-1.5 py-0.5 text-xs text-danger-mc"
+          >
+            高频缺口
+          </span>
+        </template>
+        <template #cell-no_result_hits="{ row }">
+          <span :class="row.no_result_hits ? 'text-amber-300' : 'text-text-muted'">
+            {{ row.no_result_hits }}
+          </span>
+        </template>
+        <template #cell-failed_hits="{ row }">
+          <span :class="row.failed_hits ? 'text-danger-mc' : 'text-text-muted'">
+            {{ row.failed_hits }}
+          </span>
+        </template>
+        <template #cell-ratio="{ row }">
+          <span class="text-text-secondary">{{ noResultRatio(row) }}%</span>
+        </template>
+        <template #cell-last_seen_at="{ row }">
+          <span class="text-xs text-text-muted">{{ timeAgo(row.last_seen_at) }}</span>
+        </template>
+      </AdminTable>
     </ListShell>
 
     <Pagination

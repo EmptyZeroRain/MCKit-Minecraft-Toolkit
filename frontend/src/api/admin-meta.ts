@@ -1,7 +1,7 @@
 // ===== 分类 / 标签管理 API（全 POST + 动作子路径）=====
 import http, { toPaged } from './http'
 import type { ApiResponse } from '@/types/api'
-import type { Category, CategoryQuery, Tag, TagQuery } from '@/types/category'
+import type { Category, CategoryQuery, Tag, TagQuery, TagUsageRow } from '@/types/category'
 
 export interface CategoryPayload {
   name: string
@@ -53,4 +53,10 @@ export async function updateTag(id: string, payload: Partial<TagPayload>): Promi
 
 export async function deleteTag(id: string): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/tags/delete', { id })
+}
+
+/** 标签使用统计（跨资源 / 工具 / 百科，来自关联表聚合，按使用次数降序）。 */
+export async function listTagUsage(limit = 200): Promise<TagUsageRow[]> {
+  const { data } = await http.post<ApiResponse<TagUsageRow[]>>('/admin/tags/usage', { limit })
+  return data.data
 }

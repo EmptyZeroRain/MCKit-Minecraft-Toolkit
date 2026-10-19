@@ -3,6 +3,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import FormField from '@/components/common/FormField.vue'
+import ContentRevisionsPanel from '@/components/admin/ContentRevisionsPanel.vue'
 import { useUiStore } from '@/stores/ui'
 import {
   getResource,
@@ -564,5 +565,13 @@ const dependencyTypeOptions = DEPENDENCY_TYPES.map((t: ResourceDependencyType) =
         </button>
       </div>
     </form>
+
+    <ContentRevisionsPanel
+      v-if="isEdit && !loading"
+      class="mt-5"
+      content-type="resource"
+      :content-id="id"
+      @rolled-back="loadForEdit"
+    />
   </div>
 </template>

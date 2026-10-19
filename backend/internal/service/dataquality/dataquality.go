@@ -9,9 +9,12 @@ package dataquality
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"mckit/backend/internal/domain"
@@ -35,6 +38,20 @@ type Check struct {
 	Count    int64  `json:"count"`    // 命中问题的条目数
 	Total    int64  `json:"total"`    // 该表总条目数（便于展示占比）
 	Hint     string `json:"hint"`
+	// Issue 人工处理状态（未建单时为 nil）。检查结果是实时的，处理状态是持久的。
+	Issue *IssueState `json:"issue,omitempty"`
+}
+
+// IssueState 叠加在检查项上的人工处理状态。
+type IssueState struct {
+	Status        string     `json:"status"` // open | assigned | resolved | ignored
+	AssigneeID    string     `json:"assignee_id,omitempty"`
+	AssigneeName  string     `json:"assignee_name"`
+	Note          string     `json:"note"`
+	SnapshotCount int64      `json:"snapshot_count"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	UpdatedBy     string     `json:"updated_by"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
 }
 
 // Overview 数据质量概览。
@@ -65,7 +82,7 @@ func (o *Overview) add(c Check) {
 	o.Checks = append(o.Checks, c)
 }
 
-// Overview 汇总数据质量检查结果。
+// Overview 汇总数据质量检查结果，并叠加人工处理状态。
 func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	db := s.db.WithContext(ctx)
 	out := &Overview{GeneratedAt: time.Now(), Checks: make([]Check, 0, 16)}
@@ -759,7 +776,193 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	out.add(Check{Key: "import_recent_failed", Label: "近 30 天存在失败的导入任务", Category: "import",
 		Severity: SeverityError, Count: recentFailed, Total: 0, Hint: "查看导入任务列表中的错误摘要并修正数据源。"})
 
+	// 叠加人工处理状态：失败降级而不是整体失败——没有工单数据时仍应能看到质量概览。
+	if states, err := s.issueStates(ctx); err == nil {
+		for i := range out.Checks {
+			out.Checks[i].Issue = states[out.Checks[i].Key]
+		}
+	}
 	return out, nil
+}
+
+// issueStates 读取全部工单并按 check_key 建索引。
+func (s *Service) issueStates(ctx context.Context) (map[string]*IssueState, error) {
+	var rows []domain.DataQualityIssue
+	if err := s.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]*IssueState, len(rows))
+	for i := range rows {
+		r := rows[i]
+		st := &IssueState{
+			Status:        r.Status,
+			AssigneeName:  r.AssigneeName,
+			Note:          r.Note,
+			SnapshotCount: r.SnapshotCount,
+			ResolvedAt:    r.ResolvedAt,
+			UpdatedBy:     r.UpdatedBy,
+			UpdatedAt:     &r.UpdatedAt,
+		}
+		if r.AssigneeID != nil {
+			st.AssigneeID = r.AssigneeID.String()
+		}
+		out[r.CheckKey] = st
+	}
+	return out, nil
+}
+
+// Assignee 可指派的管理员（数据质量问题的负责人）。
+type Assignee struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Assignees 列出启用中的管理员账号（昵称优先，回退用户名）。
+//
+// 数据质量问题由运营处理，但不要求调用方具备 accounts.admins 权限，
+// 因此这里只返回展示所需的最小字段（id + 名称）。
+func (s *Service) Assignees(ctx context.Context) ([]Assignee, error) {
+	var rows []struct {
+		ID       string
+		Nickname string
+		Username string
+	}
+	if err := s.db.WithContext(ctx).Model(&domain.Account{}).
+		Select("id, nickname, username").
+		Where("role = ? AND is_active = ?", domain.RoleAdmin, true).
+		Order("username").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Assignee, 0, len(rows))
+	for _, r := range rows {
+		name := strings.TrimSpace(r.Nickname)
+		if name == "" {
+			name = r.Username
+		}
+		out = append(out, Assignee{ID: r.ID, Name: name})
+	}
+	return out, nil
+}
+
+// ErrBadIssue 数据质量工单入参非法。
+var ErrBadIssue = errors.New("数据质量工单入参非法")
+
+// UpdateIssueInput 更新数据质量工单。
+type UpdateIssueInput struct {
+	CheckKey string
+	Status   string
+	// AssigneeID 为空表示清除负责人。
+	AssigneeID *uuid.UUID
+	Note       string
+	// SnapshotCount 前端回传当前命中条数，用于记录处理时的快照。
+	SnapshotCount int64
+	Operator      string
+}
+
+// UpdateIssue 新建或更新一条数据质量工单。
+//
+// Upsert 语义：检查项首次被处理时才建单，之后按 check_key 更新。
+// resolved / ignored 会记录 resolved_at；重新打开时清空，避免「已解决时间」残留。
+func (s *Service) UpdateIssue(ctx context.Context, in UpdateIssueInput) (*domain.DataQualityIssue, error) {
+	key := strings.TrimSpace(in.CheckKey)
+	if key == "" || len(key) > 80 {
+		return nil, fmt.Errorf("%w: check_key 非法", ErrBadIssue)
+	}
+	if !domain.IsValidQualityIssueStatus(in.Status) {
+		return nil, fmt.Errorf("%w: 状态非法", ErrBadIssue)
+	}
+
+	var assigneeName string
+	if in.AssigneeID != nil {
+		var acc domain.Account
+		if err := s.db.WithContext(ctx).First(&acc, "id = ?", *in.AssigneeID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("%w: 负责人不存在", ErrBadIssue)
+			}
+			return nil, err
+		}
+		if !acc.IsActive || acc.Role != domain.RoleAdmin {
+			return nil, fmt.Errorf("%w: 负责人必须是启用中的管理员", ErrBadIssue)
+		}
+		assigneeName = strings.TrimSpace(acc.Nickname)
+		if assigneeName == "" {
+			assigneeName = acc.Username
+		}
+	}
+	// assigned 必须有人负责，否则退回 open，避免出现「已指派但无人」的脏状态。
+	status := in.Status
+	if status == domain.QualityIssueAssigned && in.AssigneeID == nil {
+		status = domain.QualityIssueOpen
+	}
+
+	now := time.Now()
+	var resolvedAt *time.Time
+	if status == domain.QualityIssueResolved || status == domain.QualityIssueIgnored {
+		resolvedAt = &now
+	}
+
+	var issue domain.DataQualityIssue
+	err := s.db.WithContext(ctx).
+		Where("check_key = ?", key).
+		First(&issue).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		issue = domain.DataQualityIssue{
+			CheckKey:      key,
+			Status:        status,
+			AssigneeID:    in.AssigneeID,
+			AssigneeName:  assigneeName,
+			Note:          strings.TrimSpace(in.Note),
+			SnapshotCount: maxInt64(in.SnapshotCount, 0),
+			ResolvedAt:    resolvedAt,
+			UpdatedBy:     in.Operator,
+		}
+		if err := s.db.WithContext(ctx).Create(&issue).Error; err != nil {
+			return nil, err
+		}
+		return &issue, nil
+	case err != nil:
+		return nil, err
+	}
+
+	// 注意：map 里的 typed nil 会被 GORM 当成零值跳过，导致「清除负责人 / 清空解决时间」
+	// 静默失效；这里显式使用 NULL 表达式。
+	updates := map[string]any{
+		"status":         status,
+		"assignee_id":    gorm.Expr("NULL"),
+		"assignee_name":  assigneeName,
+		"note":           strings.TrimSpace(in.Note),
+		"snapshot_count": maxInt64(in.SnapshotCount, 0),
+		"resolved_at":    gorm.Expr("NULL"),
+		"updated_by":     in.Operator,
+		"updated_at":     now,
+	}
+	if in.AssigneeID != nil {
+		updates["assignee_id"] = *in.AssigneeID
+	}
+	if resolvedAt != nil {
+		updates["resolved_at"] = *resolvedAt
+	}
+	if err := s.db.WithContext(ctx).Model(&domain.DataQualityIssue{}).
+		Where("id = ?", issue.ID).
+		Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	// 用全新变量重新读取：GORM 扫描到已有值的结构体时，NULL 列不会覆盖旧值，
+	// 会造成「数据库已清空、返回值仍有值」的假象。
+	var fresh domain.DataQualityIssue
+	if err := s.db.WithContext(ctx).First(&fresh, "id = ?", issue.ID).Error; err != nil {
+		return nil, err
+	}
+	return &fresh, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // count 统计表内满足条件的行数；where 为空时统计全表。

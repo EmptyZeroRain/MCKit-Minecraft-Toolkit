@@ -5,6 +5,8 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import router from '@/router'
 import { BUILTIN_TOOLS, builtinToolRoute } from '@/utils/builtin-tools'
+import { useAuthStore } from '@/stores/auth'
+import { useUserAuthStore } from '@/stores/user-auth'
 
 describe('内置工具路由接线', () => {
   beforeEach(() => {
@@ -56,5 +58,106 @@ describe('内置工具路由接线', () => {
     await router.push('/definitely-not-a-real-page')
     await router.isReady()
     expect(router.currentRoute.value.name).toBe('not-found')
+  })
+})
+
+// 后台信息架构合并（gj.md §2.2）：多个功能页合并为带 Tab 的单一页面，
+// 旧入口保留为重定向，避免既有书签 / 外链失效。
+describe('后台信息架构合并', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.stubGlobal('scrollTo', vi.fn())
+    // 管理页受路由守卫保护，这里直接置为已登录（前端守卫仅体验优化）。
+    const auth = useAuthStore()
+    auth.user = {
+      id: '00000000-0000-0000-0000-000000000000',
+      username: 'it-admin',
+      role: 'admin',
+      permissions: [
+        'content.categories',
+        'content.tags',
+        'review.redstone',
+        'review.mods',
+        'ops.analytics',
+        'ops.searchstats',
+        'accounts.admins',
+        'accounts.users',
+      ],
+    } as never
+    auth.initialized = true
+  })
+
+  const merged = [
+    { path: '/admin/taxonomy', name: 'admin-taxonomy' },
+    { path: '/admin/review', name: 'admin-review' },
+    { path: '/admin/insights', name: 'admin-insights' },
+    { path: '/admin/accounts', name: 'admin-accounts' },
+  ] as const
+
+  it.each(merged)('合并页 $path 已接线', async ({ path, name }) => {
+    await router.push(path)
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe(name)
+  })
+
+  const legacy = [
+    { path: '/admin/categories', name: 'admin-taxonomy', tab: 'categories' },
+    { path: '/admin/tags', name: 'admin-taxonomy', tab: 'tags' },
+    { path: '/admin/redstone', name: 'admin-review', tab: 'redstone' },
+    { path: '/admin/mods', name: 'admin-review', tab: 'mods' },
+    { path: '/admin/analytics', name: 'admin-insights', tab: 'analytics' },
+    { path: '/admin/search-terms', name: 'admin-insights', tab: 'search-terms' },
+    { path: '/admin/admins', name: 'admin-accounts', tab: 'admins' },
+    { path: '/admin/users', name: 'admin-accounts', tab: 'users' },
+  ] as const
+
+  it.each(legacy)('旧入口 $path 重定向到 $name?tab=$tab', async ({ path, name, tab }) => {
+    await router.push(path)
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe(name)
+    expect(router.currentRoute.value.query.tab).toBe(tab)
+  })
+
+  it('新增「内容建设任务」页已接线（gj.md §8.3）', async () => {
+    await router.push('/admin/content-tasks')
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe('admin-content-tasks')
+  })
+})
+
+// 成长系统路由（jingyan.md §10 / §11）：用户成长中心 + 后台用户成长。
+describe('成长系统路由接线', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.stubGlobal('scrollTo', vi.fn())
+
+    const auth = useAuthStore()
+    auth.user = {
+      id: '00000000-0000-0000-0000-000000000000',
+      username: 'it-admin',
+      role: 'admin',
+      permissions: ['ops.growth'],
+    } as never
+    auth.initialized = true
+
+    const userAuth = useUserAuthStore()
+    userAuth.user = {
+      id: '00000000-0000-0000-0000-000000000001',
+      username: 'it-user',
+    } as never
+    userAuth.initialized = true
+  })
+
+  it('用户成长中心 /growth 已接线且要求登录', async () => {
+    await router.push('/growth')
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe('growth')
+    expect(router.currentRoute.value.meta.requiresUser).toBe(true)
+  })
+
+  it('后台用户成长 /admin/growth 已接线', async () => {
+    await router.push('/admin/growth')
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe('admin-growth')
   })
 })

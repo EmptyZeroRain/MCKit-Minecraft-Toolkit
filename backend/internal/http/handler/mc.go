@@ -200,11 +200,11 @@ func (h *MCHandler) Strongholds(w http.ResponseWriter, r *http.Request) {
 // 查询指定范围内的史莱姆区块。
 func (h *MCHandler) SlimeChunks(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Seed    json.RawMessage `json:"seed"`
-		MinX    int             `json:"min_chunk_x"`
-		MinZ    int             `json:"min_chunk_z"`
-		MaxX    int             `json:"max_chunk_x"`
-		MaxZ    int             `json:"max_chunk_z"`
+		Seed json.RawMessage `json:"seed"`
+		MinX int             `json:"min_chunk_x"`
+		MinZ int             `json:"min_chunk_z"`
+		MaxX int             `json:"max_chunk_x"`
+		MaxZ int             `json:"max_chunk_z"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		response.BadRequest(w, r, "请求体格式错误")
@@ -351,12 +351,12 @@ func (h *MCHandler) GenerateSeeds(w http.ResponseWriter, r *http.Request) {
 // 搜索满足"结构在目标坐标附近"的种子。
 func (h *MCHandler) FindSeeds(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Type        string          `json:"type"`
-		CenterX     int             `json:"center_x"`
-		CenterZ     int             `json:"center_z"`
-		Radius      int             `json:"radius"`
-		Limit       int             `json:"limit"`
-		MaxAttempts int             `json:"max_attempts"`
+		Type        string `json:"type"`
+		CenterX     int    `json:"center_x"`
+		CenterZ     int    `json:"center_z"`
+		Radius      int    `json:"radius"`
+		Limit       int    `json:"limit"`
+		MaxAttempts int    `json:"max_attempts"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		response.BadRequest(w, r, "请求体格式错误")

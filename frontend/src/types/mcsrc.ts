@@ -9,6 +9,14 @@ export const MCSRC_SIDE_LABELS: Record<McsrcSide, string> = {
   server: '服务端',
 }
 
+/**
+ * 字节码视图的 Monaco 语言 id。
+ *
+ * 定义在类型模块（而非 `@/mcsrc/bytecode`）是为了让页面入口能引用同一常量而不引入 monaco：
+ * monaco 只在懒加载的 SourceViewer 里注册，不能进入首屏包。
+ */
+export const MCSRC_BYTECODE_LANGUAGE = 'bytecode'
+
 /** 单个版本（含侧别）的准备状态 */
 export interface McsrcStatus {
   version: string
@@ -206,4 +214,129 @@ export interface McsrcDecompileResult {
   language: 'java'
   /** 源码 token（着色 / 跳转）；引擎未产出时为空数组 */
   tokens: McsrcToken[]
+}
+
+/** 类字节码反汇编（ASM Textifier 风格文本，由服务端纯 Go 解析） */
+export interface McsrcClassBytecode {
+  /** 点号全限定类名 */
+  name: string
+  simple: string
+  pkg: string
+  kind: McsrcClassKind
+  /** class 文件主版本号 */
+  major: number
+  minor: number
+  /** ASM Textifier 风格的反汇编全文（前端按 bytecode 语言高亮） */
+  text: string
+  /** 方法总数（含无 Code 的抽象 / native 方法） */
+  method_count: number
+  /** 指令总数（不含标签与伪指令） */
+  instruction_count: number
+  /** 文本达到上限被截断 */
+  truncated: boolean
+}
+
+/** 查找引用的目标类型 */
+export type McsrcReferenceKind = 'class' | 'method' | 'field'
+
+/** 一个引用点：由某个成员引用了目标 */
+export interface McsrcReferenceSite {
+  /** 引用点所在类（点分全限定名） */
+  from_class: string
+  /** 引用点所在成员类型 */
+  from_kind: 'method' | 'field'
+  from_name: string
+  /** 引用点所在成员描述符 */
+  from_descriptor: string
+}
+
+/** 查找引用结果 */
+export interface McsrcReferences {
+  /** 归一化引用键：`c:<owner>` / `m:<owner>:<name>:<desc>` / `f:<owner>:<name>:<desc>` */
+  key: string
+  kind: McsrcReferenceKind
+  /** 目标类（点分全限定名） */
+  owner: string
+  /** 目标成员名（类引用为空） */
+  name?: string
+  /** 目标成员描述符（类引用为空） */
+  descriptor?: string
+  /** 引用点（按类名 / 成员排序并去重） */
+  sites: McsrcReferenceSite[]
+  /** 引用点总数（去重后） */
+  total: number
+  /** 引用点过多被截断 */
+  truncated: boolean
+}
+
+/** 查找引用请求 */
+export interface McsrcReferenceQuery {
+  version: string
+  side?: McsrcSide
+  kind?: McsrcReferenceKind
+  class: string
+  name?: string
+  descriptor?: string
+}
+
+/** 映射成员名（按 obf 名 + 描述符与结构视图成员匹配） */
+export interface McsrcMappingMember {
+  kind: 'method' | 'field' | 'param'
+  obf_name: string
+  mid_name: string
+  named_name: string
+  obf_desc: string
+  named_desc: string
+  side: string
+}
+
+/** 类映射重命名结果 */
+export interface McsrcClassMapping {
+  /** 是否找到该类映射（未导入映射时为 false，前端据此隐藏映射名） */
+  available: boolean
+  set_key?: string
+  mc_version?: string
+  mapping_type?: string
+  /** 命中方式：obf（jar 为混淆名）/ named（jar 已反混淆）/ mid（中间名） */
+  matched_by?: string
+  class?: {
+    obf_name: string
+    mid_name: string
+    named_name: string
+    package: string
+  }
+  /** 该类全部成员映射 */
+  members: McsrcMappingMember[]
+  /** 成员列表被截断 */
+  truncated: boolean
+}
+
+/** 引用点格式化：`<成员名><描述符>`（类引用退化为类简名） */
+export function formatReferenceSite(site: McsrcReferenceSite): string {
+  return `${site.from_name}${site.from_descriptor}`
+}
+
+/** 查找引用目标的可读标签 */
+export function referenceTargetLabel(ref: {
+  kind: McsrcReferenceKind
+  owner: string
+  name?: string
+  descriptor?: string
+}): string {
+  const owner = ref.owner
+  if (ref.kind === 'class') return owner
+  return `${owner}.${ref.name ?? ''}${ref.descriptor ?? ''}`
+}
+
+/** 备注（Javadoc）存储目标：类或类内成员 */
+export interface McsrcNoteTarget {
+  version: string
+  side: McsrcSide
+  className: string
+  /** 成员备注目标；省略表示类备注 */
+  member?: {
+    kind: 'method' | 'field'
+    name: string
+    descriptor: string
+  }
 }

@@ -3,9 +3,14 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"mckit/backend/internal/audit"
+	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/service/catalog"
 )
@@ -104,4 +109,74 @@ func (h *RedstoneAdminHandler) ReviewDesign(w http.ResponseWriter, r *http.Reque
 		})
 	}
 	response.OK(w, design)
+}
+
+// redstoneBatchReviewRequest 批量审核红石设计请求。
+type redstoneBatchReviewRequest struct {
+	IDs          []string `json:"ids"`
+	ReviewStatus string   `json:"review_status"`
+	Note         string   `json:"note"`
+}
+
+// BatchReviewDesigns POST /api/v1/admin/redstone/designs/batch-review
+//
+// 批量审核红石设计：逐条独立事务，返回逐条结果（部分成功是正常情况）。
+func (h *RedstoneAdminHandler) BatchReviewDesigns(w http.ResponseWriter, r *http.Request) {
+	var req redstoneBatchReviewRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	if len(req.IDs) == 0 {
+		response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: "请至少选择一条设计"}})
+		return
+	}
+	if len(req.IDs) > domain.MaxBatchReview {
+		response.Validation(w, r, []response.ErrorDetail{{
+			Field:   "ids",
+			Message: fmt.Sprintf("单次最多 %d 条，请分批提交", domain.MaxBatchReview),
+		}})
+		return
+	}
+	for _, id := range req.IDs {
+		if _, err := uuid.Parse(strings.TrimSpace(id)); err != nil {
+			response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: "存在非法的设计 ID"}})
+			return
+		}
+	}
+
+	reviewer := actorName(r)
+	result, err := h.catalog.BatchReviewRedstoneDesigns(r.Context(), req.IDs, req.ReviewStatus, reviewer, req.Note)
+	if err != nil {
+		switch {
+		case errors.Is(err, catalog.ErrNoIDs), errors.Is(err, catalog.ErrTooManyIDs):
+			response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: err.Error()}})
+		case errors.Is(err, catalog.ErrInvalidReviewStatus):
+			response.BadRequest(w, r, "无效的审核状态（pending / published / rejected）")
+		default:
+			response.HandleError(w, r, err)
+		}
+		return
+	}
+
+	if h.auditSvc != nil {
+		for _, item := range result.Items {
+			if !item.OK {
+				continue
+			}
+			h.auditSvc.Write(r, audit.Entry{
+				ActorAdminID: actorID(r),
+				Action:       "redstone_design.review",
+				ObjectType:   "redstone_design",
+				ObjectID:     item.ID,
+				After: map[string]any{
+					"review_status": req.ReviewStatus,
+					"reviewer":      reviewer,
+					"note":          req.Note,
+					"batch":         true,
+				},
+			})
+		}
+	}
+	response.OK(w, result)
 }

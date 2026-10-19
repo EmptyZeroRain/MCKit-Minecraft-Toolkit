@@ -2,9 +2,11 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -66,12 +68,47 @@ func (s *Service) Write(r *http.Request, e Entry) {
 	}
 }
 
+// SecurityActionPrefixes 与账号安全直接相关的动作前缀。
+//
+// 「安全事件视图」只筛这些动作（登录、改密、MFA、会话撤销），
+// 避免把内容审核等业务操作混进安全审计。
+var SecurityActionPrefixes = []string{
+	"admin.login",
+	"admin.password",
+	"admin.mfa",
+	"admin.revoke_sessions",
+}
+
 // ListFilter 审计日志查询筛选。
 type ListFilter struct {
 	ActorID  string
 	Action   string
+	// ObjectType 对象类型精确匹配（如 resource / admin_job / ops_alert）。
+	ObjectType string
+	// Result 结果精确匹配：success / failure。
+	Result string
+	// ActionPrefixes 动作前缀（OR 关系），用于「安全事件」这类聚合视图。
+	ActionPrefixes []string
+	// SourceIP 来源 IP 精确匹配。
+	SourceIP string
 	Page     int
 	PageSize int
+}
+
+// ExportMax 单次导出上限：审计日志增长快，避免一次导出把内存打满。
+const ExportMax = 5000
+
+// Export 按筛选条件导出审计日志（不分页，最多 ExportMax 条）。
+// truncated 表示结果被上限截断，调用方应在响应头中提示。
+func (s *Service) Export(ctx context.Context, f ListFilter) (items []LogItem, truncated bool, err error) {
+	f.Page = 1
+	f.PageSize = ExportMax
+	// 直接复用 List 的筛选逻辑，避免两套 SQL 漂移。
+	items, total, err := s.List(f)
+	if err != nil {
+		return nil, false, err
+	}
+	return items, total > int64(len(items)), nil
 }
 
 // LogItem 返回给管理端的审计日志条目。
@@ -97,6 +134,31 @@ func (s *Service) List(f ListFilter) ([]LogItem, int64, error) {
 	}
 	if f.Action != "" {
 		q = q.Where("action = ?", f.Action)
+	}
+	// 以下三项是 gj.md 阶段三 ⑨ 的修复点：前端一直在传，后端此前直接忽略，
+	// 造成「筛选条件看起来生效、结果却没变」的静默错误。
+	if f.ObjectType != "" {
+		q = q.Where("object_type = ?", f.ObjectType)
+	}
+	if f.Result != "" {
+		q = q.Where("result = ?", f.Result)
+	}
+	if f.SourceIP != "" {
+		q = q.Where("source_ip = ?", f.SourceIP)
+	}
+	if len(f.ActionPrefixes) > 0 {
+		conds := make([]string, 0, len(f.ActionPrefixes))
+		args := make([]any, 0, len(f.ActionPrefixes))
+		for _, p := range f.ActionPrefixes {
+			if p == "" {
+				continue
+			}
+			conds = append(conds, "action LIKE ?")
+			args = append(args, p+"%")
+		}
+		if len(conds) > 0 {
+			q = q.Where("("+strings.Join(conds, " OR ")+")", args...)
+		}
 	}
 
 	var total int64

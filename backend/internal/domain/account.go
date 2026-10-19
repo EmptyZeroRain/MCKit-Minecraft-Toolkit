@@ -15,12 +15,22 @@ type Account struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	Username     string    `gorm:"uniqueIndex;size:80;not null" json:"username"`
 	PasswordHash string    `gorm:"not null" json:"-"`
+	// Email 邮箱（迁移 0026）。普通用户注册必填，后台账号可留空（空串）。
+	// 服务端统一按小写存储，唯一性由部分唯一索引 idx_accounts_email_unique 保证。
+	Email string `gorm:"size:254;not null;default:''" json:"email"`
+	// Nickname 展示昵称（迁移 0025）。空串表示未设置，前端回退到 username。
+	Nickname string `gorm:"size:60;not null;default:''" json:"nickname"`
+	// AvatarURL 头像图片地址（迁移 0025）。与资源封面一致采用外链 URL，空串表示未设置。
+	AvatarURL string `gorm:"type:text;not null;default:''" json:"avatar_url"`
 	// Role 外键引用 roles(name)；默认 'user'，注册普通用户时无需显式指定。
-	Role        string     `gorm:"size:40;not null;default:user" json:"role"`
-	IsActive    bool       `gorm:"not null;default:true" json:"is_active"`
-	LastLoginAt *time.Time `json:"last_login_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	Role     string `gorm:"size:40;not null;default:user" json:"role"`
+	IsActive bool   `gorm:"not null;default:true" json:"is_active"`
+	// MustChangePassword 是否强制下次登录修改密码（迁移 0031）。
+	// 管理员重置密码后置为 true，账号在完成改密前被限制使用后台功能（gj.md §10.1）。
+	MustChangePassword bool       `gorm:"not null;default:false" json:"must_change_password"`
+	LastLoginAt        *time.Time `json:"last_login_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // TableName 指定表名。

@@ -17,6 +17,17 @@ export async function listResources(params: ResourceListQuery = {}) {
   return toPaged({ data })
 }
 
+/** 按当前筛选条件导出资源 CSV；返回文件内容与是否被上限截断 */
+export async function exportResourcesCsv(
+  params: ResourceListQuery = {},
+): Promise<{ blob: Blob; truncated: boolean }> {
+  const res = await http.post('/admin/resources/export', params, { responseType: 'blob' })
+  return {
+    blob: res.data as Blob,
+    truncated: String(res.headers['x-export-truncated'] ?? '') === 'true',
+  }
+}
+
 /** 资源详情（id，含发布版本与兼容性结论） */
 export async function getResource(id: string): Promise<ResourceDetail | null> {
   const { data } = await http.post<ApiResponse<ResourceDetail>>('/admin/resources/detail', { id })

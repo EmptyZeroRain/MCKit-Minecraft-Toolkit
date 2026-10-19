@@ -165,6 +165,80 @@ func (s *Service) Update(ctx context.Context, name string, in UpdateInput) (*dom
 	return s.Get(ctx, r.Name)
 }
 
+// Impact 权限变更影响预览（gj.md §3.2）。
+//
+// 在「修改角色」前展示：受影响账号数量与权限点增减，避免误操作放大权限或锁死功能。
+type Impact struct {
+	Role               string   `json:"role"`
+	Label              string   `json:"label"`
+	IsSystem           bool     `json:"is_system"`
+	AffectedAccounts   int64    `json:"affected_accounts"`
+	CurrentPermissions []string `json:"current_permissions"`
+	NextPermissions    []string `json:"next_permissions"`
+	Added              []string `json:"added"`
+	Removed            []string `json:"removed"`
+	Notes              []string `json:"notes"`
+}
+
+// Impact 计算把角色权限调整为 permissions 后的影响。
+func (s *Service) Impact(ctx context.Context, name string, permissions []string) (*Impact, error) {
+	r, err := s.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	next, err := validatePermissions(permissions)
+	if err != nil {
+		return nil, err
+	}
+	cur := []string(r.Permissions)
+
+	var used int64
+	if err := s.db.WithContext(ctx).Model(&domain.Admin{}).
+		Where("role = ?", r.Name).Count(&used).Error; err != nil {
+		return nil, err
+	}
+
+	curSet := make(map[string]struct{}, len(cur))
+	for _, p := range cur {
+		curSet[p] = struct{}{}
+	}
+	nextSet := make(map[string]struct{}, len(next))
+	for _, p := range next {
+		nextSet[p] = struct{}{}
+	}
+	added := make([]string, 0)
+	for _, p := range next {
+		if _, ok := curSet[p]; !ok {
+			added = append(added, p)
+		}
+	}
+	removed := make([]string, 0)
+	for _, p := range cur {
+		if _, ok := nextSet[p]; !ok {
+			removed = append(removed, p)
+		}
+	}
+
+	notes := []string{"权限变更会立即影响该角色下所有账号的下一次鉴权"}
+	if len(removed) > 0 {
+		notes = append(notes, "被移除权限的账号会立即失去对应功能入口（后端同步生效）")
+	}
+	if r.Name == domain.RoleAdmin {
+		notes = append(notes, "内置 admin 角色必须保留全部权限")
+	}
+	return &Impact{
+		Role:               r.Name,
+		Label:              r.Label,
+		IsSystem:           r.IsSystem,
+		AffectedAccounts:   used,
+		CurrentPermissions: cur,
+		NextPermissions:    next,
+		Added:              added,
+		Removed:            removed,
+		Notes:              notes,
+	}, nil
+}
+
 // Delete 删除自定义角色；内置角色与仍被账号引用的角色会被拒绝。
 func (s *Service) Delete(ctx context.Context, name string) error {
 	r, err := s.Get(ctx, name)

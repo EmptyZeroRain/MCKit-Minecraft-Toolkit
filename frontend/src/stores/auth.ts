@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia'
 import type { AdminUser } from '@/types/admin'
 import * as adminAuthApi from '@/api/admin-auth'
+import type { LoginOutcome } from '@/api/admin-auth'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -14,7 +15,10 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isLoggedIn: (state) => state.user !== null,
     isAdmin: (state) => state.user?.role === 'admin',
-    displayName: (state) => state.user?.username ?? '',
+    /** 展示名：优先昵称，未设置时回退到登录用户名 */
+    displayName: (state) => state.user?.nickname || state.user?.username || '',
+    /** 头像地址（未设置时为空串，由组件决定占位展示） */
+    avatarUrl: (state) => state.user?.avatar_url ?? '',
     /**
      * 是否具备某权限点（决定后台入口显隐）。
      * 后端登录 / 会话接口会返回 permissions；缺失时按内置角色默认权限兜底
@@ -44,11 +48,23 @@ export const useAuthStore = defineStore('auth', {
         this.loaded = true
       }
     },
-    /** 登录（凭证由后端校验） */
-    async login(username: string, password: string): Promise<AdminUser> {
-      const user = await adminAuthApi.login({ username, password })
+    /** 登录（凭证由后端校验）；启用 MFA 的账号返回票据，需再调 verifyMFA */
+    async login(username: string, password: string): Promise<LoginOutcome> {
+      const outcome = await adminAuthApi.login({ username, password })
+      if (!outcome.mfa_required) this.user = outcome.user
+      return outcome
+    },
+    /** 第二因子校验，成功后写入登录态 */
+    async verifyMFA(ticket: string, code: string): Promise<AdminUser> {
+      const user = await adminAuthApi.verifyMFA(ticket, code)
       this.user = user
       return user
+    },
+    /** 更新当前账号展示资料（昵称 / 头像），成功后同步本地用户信息 */
+    async updateProfile(nickname: string, avatarUrl: string): Promise<void> {
+      const user = await adminAuthApi.updateProfile({ nickname, avatar_url: avatarUrl })
+      // 后端只回传展示字段，合并进现有 user，避免覆盖权限等既有信息。
+      this.user = { ...(this.user as AdminUser), ...user }
     },
     async logout(): Promise<void> {
       try {

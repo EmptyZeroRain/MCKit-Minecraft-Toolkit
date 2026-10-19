@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { UserFavoriteItem, UserRecentItem, UserSeed } from '@/types/user'
 
 const api = {
+  fetchCaptcha: vi.fn(),
   register: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
@@ -122,6 +123,36 @@ describe('user-auth store', () => {
     api.changePassword.mockResolvedValue(undefined)
     await auth.changePassword('password123', 'newpassword123')
     expect(auth.isLoggedIn).toBe(false)
+  })
+
+  it('登录以 identifier 传参，注册透传完整 payload', async () => {
+    api.login.mockResolvedValue({ id: 'u1', username: 'alice', nickname: '爱丽丝' })
+    const auth = useUserAuthStore()
+    await auth.login('alice@example.com', 'password123')
+    expect(api.login).toHaveBeenCalledWith({
+      identifier: 'alice@example.com',
+      password: 'password123',
+    })
+    expect(auth.displayName).toBe('爱丽丝')
+
+    api.register.mockResolvedValue({ id: 'u2', username: 'bob', nickname: '鲍勃' })
+    const payload = {
+      username: 'bob',
+      nickname: '鲍勃',
+      email: 'bob@example.com',
+      password: 'password123',
+      captcha_id: 'c1',
+      captcha_answer: 'AB12',
+    }
+    await auth.register(payload)
+    expect(api.register).toHaveBeenCalledWith(payload)
+  })
+
+  it('displayName 无昵称时回退到用户名', async () => {
+    api.me.mockResolvedValue({ id: 'u1', username: 'alice' })
+    const auth = useUserAuthStore()
+    await auth.restoreSession()
+    expect(auth.displayName).toBe('alice')
   })
 })
 

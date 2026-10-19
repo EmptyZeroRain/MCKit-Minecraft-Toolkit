@@ -3,9 +3,11 @@ package user
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"mckit/backend/internal/auth"
+	"mckit/backend/internal/domain"
 )
 
 // newTestService 构造带内存仓储与内存会话存储的服务。
@@ -15,22 +17,32 @@ func newTestService() (*Service, *MemoryRepo, auth.SessionStore) {
 	return NewService(repo, sessions, 5, 900), repo, sessions
 }
 
+// reg 便捷注册：昵称取用户名，邮箱取 <username>@example.com。
+func reg(ctx context.Context, svc *Service, username, password string) (*domain.User, error) {
+	return svc.Register(ctx, RegisterInput{
+		Username: username,
+		Nickname: username,
+		Email:    username + "@example.com",
+		Password: password,
+	})
+}
+
 func TestRegisterValidation(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
 
 	for _, name := range []string{"a", "1abc", "ab", "with space", "用户名"} {
-		if _, err := svc.Register(ctx, name, "password123"); !errors.Is(err, ErrBadUsername) {
+		if _, err := reg(ctx, svc, name, "password123"); !errors.Is(err, ErrBadUsername) {
 			t.Errorf("用户名 %q 应被拒绝，实际 %v", name, err)
 		}
 	}
-	if _, err := svc.Register(ctx, "alice", "short"); !errors.Is(err, ErrWeakPassword) {
+	if _, err := reg(ctx, svc, "alice", "short"); !errors.Is(err, ErrWeakPassword) {
 		t.Errorf("弱密码应被拒绝，实际 %v", err)
 	}
-	if _, err := svc.Register(ctx, "alice", "password123"); err != nil {
+	if _, err := reg(ctx, svc, "alice", "password123"); err != nil {
 		t.Fatalf("合法注册失败: %v", err)
 	}
-	if _, err := svc.Register(ctx, "alice", "password123"); !errors.Is(err, ErrUsernameTaken) {
+	if _, err := reg(ctx, svc, "alice", "password123"); !errors.Is(err, ErrUsernameTaken) {
 		t.Errorf("重复用户名应被拒绝，实际 %v", err)
 	}
 }
@@ -39,7 +51,7 @@ func TestLoginFlow(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
 
-	if _, err := svc.Register(ctx, "bob", "password123"); err != nil {
+	if _, err := reg(ctx, svc, "bob", "password123"); err != nil {
 		t.Fatalf("注册失败: %v", err)
 	}
 
@@ -78,7 +90,7 @@ func TestLoginLockout(t *testing.T) {
 func TestToggleFavorite(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
-	u, _ := svc.Register(ctx, "carol", "password123")
+	u, _ := reg(ctx, svc, "carol", "password123")
 	id := u.ID.String()
 
 	added, err := svc.ToggleFavorite(ctx, id, "tool", "seed-tools", "种子工具", "/seed-tools")
@@ -108,8 +120,8 @@ func TestToggleFavorite(t *testing.T) {
 func TestFavoritesIsolatedByUser(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
-	a, _ := svc.Register(ctx, "dave", "password123")
-	b, _ := svc.Register(ctx, "erin", "password123")
+	a, _ := reg(ctx, svc, "dave", "password123")
+	b, _ := reg(ctx, svc, "erin", "password123")
 
 	_, _ = svc.ToggleFavorite(ctx, a.ID.String(), "wiki", "redstone", "红石", "/wiki/redstone")
 
@@ -123,7 +135,7 @@ func TestFavoritesIsolatedByUser(t *testing.T) {
 func TestRecordRecentPrune(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
-	u, _ := svc.Register(ctx, "frank", "password123")
+	u, _ := reg(ctx, svc, "frank", "password123")
 	id := u.ID.String()
 
 	for i := 0; i < MaxRecents+5; i++ {
@@ -167,7 +179,7 @@ func TestRecordRecentPrune(t *testing.T) {
 func TestSeedCRUD(t *testing.T) {
 	svc, _, _ := newTestService()
 	ctx := context.Background()
-	u, _ := svc.Register(ctx, "grace", "password123")
+	u, _ := reg(ctx, svc, "grace", "password123")
 	id := u.ID.String()
 
 	if _, err := svc.SaveSeed(ctx, id, "", "", "123", ""); !errors.Is(err, ErrBadInput) {
@@ -205,7 +217,7 @@ func TestSeedCRUD(t *testing.T) {
 func TestChangePasswordInvalidatesSessions(t *testing.T) {
 	svc, _, sessions := newTestService()
 	ctx := context.Background()
-	u, _ := svc.Register(ctx, "heidi", "password123")
+	u, _ := reg(ctx, svc, "heidi", "password123")
 
 	res, err := svc.Login(ctx, "heidi", "password123", "1.1.1.1")
 	if err != nil {
@@ -226,7 +238,7 @@ func TestChangePasswordInvalidatesSessions(t *testing.T) {
 func TestDeleteAccountCascades(t *testing.T) {
 	svc, _, sessions := newTestService()
 	ctx := context.Background()
-	u, _ := svc.Register(ctx, "ivan", "password123")
+	u, _ := reg(ctx, svc, "ivan", "password123")
 	id := u.ID.String()
 
 	res, _ := svc.Login(ctx, "ivan", "password123", "2.2.2.2")
@@ -255,6 +267,153 @@ func TestDeleteAccountCascades(t *testing.T) {
 	}
 	if sess, _ := sessions.Get(ctx, res.SessionID); sess != nil {
 		t.Error("删除账号后会话应失效")
+	}
+}
+
+// TestRegisterEmailValidation 邮箱格式、唯一性与归一化。
+func TestRegisterEmailValidation(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+
+	base := RegisterInput{Username: "zoe", Nickname: "佐伊", Email: "zoe@example.com", Password: "password123"}
+
+	// 非法邮箱。
+	for _, bad := range []string{"", "no-at", "a@b", "a@b.", "a b@c.com", "a@b..com"} {
+		in := base
+		in.Email = bad
+		if _, err := svc.Register(ctx, in); !errors.Is(err, ErrBadEmail) {
+			t.Errorf("邮箱 %q 应被拒绝，实际 %v", bad, err)
+		}
+	}
+	// 超长邮箱（>254）。
+	in := base
+	in.Email = strings.Repeat("a", 250) + "@example.com"
+	if _, err := svc.Register(ctx, in); !errors.Is(err, ErrBadEmail) {
+		t.Errorf("超长邮箱应被拒绝，实际 %v", err)
+	}
+
+	// 合法注册后邮箱按小写存储。
+	in = base
+	in.Email = "Zoe@Example.COM"
+	u, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("合法注册失败: %v", err)
+	}
+	if u.Email != "zoe@example.com" {
+		t.Errorf("邮箱应归一化为小写，实际 %q", u.Email)
+	}
+	if u.Nickname != "佐伊" {
+		t.Errorf("昵称不符: %q", u.Nickname)
+	}
+
+	// 邮箱重复（大小写不敏感）。
+	dup := base
+	dup.Username = "zoe2"
+	dup.Email = "ZOE@example.com"
+	if _, err := svc.Register(ctx, dup); !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("重复邮箱应被拒绝，实际 %v", err)
+	}
+}
+
+// TestRegisterNicknameValidation 昵称必填、限长、拒绝控制字符。
+func TestRegisterNicknameValidation(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+
+	base := RegisterInput{Username: "nick", Nickname: "尼", Email: "nick@example.com", Password: "password123"}
+
+	in := base
+	in.Nickname = "   "
+	if _, err := svc.Register(ctx, in); !errors.Is(err, ErrBadNickname) {
+		t.Errorf("空昵称应被拒绝，实际 %v", err)
+	}
+
+	in = base
+	in.Nickname = strings.Repeat("好", MaxNicknameLength+1)
+	if _, err := svc.Register(ctx, in); !errors.Is(err, ErrBadNickname) {
+		t.Errorf("超长昵称应被拒绝，实际 %v", err)
+	}
+
+	in = base
+	in.Nickname = "坏\x00名"
+	if _, err := svc.Register(ctx, in); !errors.Is(err, ErrBadNickname) {
+		t.Errorf("含控制字符的昵称应被拒绝，实际 %v", err)
+	}
+
+	// 首尾空白被去除。
+	in = base
+	in.Nickname = "  昵称  "
+	u, err := svc.Register(ctx, in)
+	if err != nil {
+		t.Fatalf("合法昵称注册失败: %v", err)
+	}
+	if u.Nickname != "昵称" {
+		t.Errorf("昵称应去除首尾空白，实际 %q", u.Nickname)
+	}
+}
+
+// TestLoginByIdentifier 用户名与邮箱均可登录；邮箱大小写不敏感。
+func TestLoginByIdentifier(t *testing.T) {
+	svc, _, _ := newTestService()
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, RegisterInput{
+		Username: "yuri", Nickname: "尤里", Email: "Yuri@Example.com", Password: "password123",
+	}); err != nil {
+		t.Fatalf("注册失败: %v", err)
+	}
+
+	for _, id := range []string{"yuri", "yuri@example.com", "YURI@EXAMPLE.COM"} {
+		if _, err := svc.Login(ctx, id, "password123", "3.3.3.3"); err != nil {
+			t.Errorf("以 %q 登录应成功，实际 %v", id, err)
+		}
+	}
+	if _, err := svc.Login(ctx, "other@example.com", "password123", "3.3.3.3"); !errors.Is(err, auth.ErrCredentials) {
+		t.Errorf("未知邮箱应返回 ErrCredentials，实际 %v", err)
+	}
+}
+
+// TestUpdateProfile 覆盖用户侧「用户信息」自助维护：昵称 / 头像（仅图片）写入与校验。
+func TestUpdateProfile(t *testing.T) {
+	svc, repo, _ := newTestService()
+	ctx := context.Background()
+	u, err := reg(ctx, svc, "alice", "password123")
+	if err != nil {
+		t.Fatalf("注册失败: %v", err)
+	}
+
+	// 1x1 PNG 的合法头像 data URI（内容嗅探为 image/png）。
+	const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	updated, err := svc.UpdateProfile(ctx, u.ID.String(), "  爱丽丝  ", png)
+	if err != nil {
+		t.Fatalf("更新资料失败: %v", err)
+	}
+	if updated.Nickname != "爱丽丝" || updated.AvatarURL != png {
+		t.Fatalf("更新结果不符: nickname=%q avatar=%q", updated.Nickname, updated.AvatarURL)
+	}
+	// 回源读取应反映最新资料。
+	if got, _ := repo.FindByID(ctx, u.ID.String()); got == nil || got.Nickname != "爱丽丝" {
+		t.Fatalf("仓储未持久化昵称: %+v", got)
+	}
+
+	// 昵称非法：空 / 超长。
+	if _, err := svc.UpdateProfile(ctx, u.ID.String(), "", png); !errors.Is(err, ErrBadNickname) {
+		t.Fatalf("空昵称应返回 ErrBadNickname，实际 %v", err)
+	}
+	long := strings.Repeat("字", MaxNicknameLength+1)
+	if _, err := svc.UpdateProfile(ctx, u.ID.String(), long, png); !errors.Is(err, ErrBadNickname) {
+		t.Fatalf("超长昵称应返回 ErrBadNickname，实际 %v", err)
+	}
+
+	// 头像只能上传图片：外链 URL、非图片 data URI 均被拒绝。
+	for _, bad := range []string{
+		"https://cdn.example.com/a.png",
+		"data:text/plain;base64,aGVsbG8=",
+	} {
+		if _, err := svc.UpdateProfile(ctx, u.ID.String(), "n", bad); !errors.Is(err, auth.ErrInvalidAvatar) {
+			t.Fatalf("非法头像 %q 应返回 ErrInvalidAvatar，实际 %v", bad, err)
+		}
 	}
 }
 

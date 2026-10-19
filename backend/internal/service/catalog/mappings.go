@@ -380,3 +380,201 @@ func (s *Service) GetMappingClass(ctx context.Context, classID string, kind, q s
 	}
 	return out, nil
 }
+
+// mappingMemberLookupLimit 单类成员映射返回上限（防御异常映射文件撑爆响应）。
+const mappingMemberLookupLimit = 4000
+
+// MappingClassNames 类级映射的三个命名空间名字。
+type MappingClassNames struct {
+	ObfName   string `json:"obf_name"`
+	MidName   string `json:"mid_name"`
+	NamedName string `json:"named_name"`
+	Package   string `json:"package"`
+}
+
+// ClassMappingLookup 按 MC 版本 + jar 内类名精确查找类映射的结果。
+//
+// Available=false 表示该版本没有导入任何映射数据集，或没有任何数据集覆盖该类；
+// 这是**正常状态**（映射数据不预置），调用方据此隐藏映射名，而不是当作错误处理。
+type ClassMappingLookup struct {
+	Available bool `json:"available"`
+	// SetKey / MCVersion / MappingType 命中的映射数据集信息。
+	SetKey      string `json:"set_key,omitempty"`
+	MCVersion   string `json:"mc_version,omitempty"`
+	MappingType string `json:"mapping_type,omitempty"`
+	// MatchedBy 命中方式：obf（jar 为混淆名）/ named（jar 已反混淆）/ mid（中间名）。
+	MatchedBy string `json:"matched_by,omitempty"`
+	// Class 类级映射名。
+	Class *MappingClassNames `json:"class,omitempty"`
+	// Members 该类全部成员映射（含 obf 名与描述符，供调用方按成员匹配）。
+	Members []MappingMemberView `json:"members"`
+	// Truncated 成员列表超出上限被截断。
+	Truncated bool `json:"truncated"`
+}
+
+// LookupMappingClassByName 按 MC 版本 + jar 内类名精确查找类映射。
+//
+// 语义：
+//   - 只在 mc_version 完全匹配的数据集内查找（不同版本的混淆名不可混用）；
+//   - 优先按 obf_name 匹配（jar 通常是混淆包），再回退 named_name / mid_name
+//     （jar 若已反混淆或使用中间名，也能命中）；
+//   - 多个数据集命中时按映射类型优先级选取（官方 mojang > tsrg > yarn > srg > 其它），
+//     同级按 set_key 稳定排序，保证结果可预期、不随查询计划漂移。
+//
+// 与 SearchMappings 的差异：这里是「已知 jar 内类名，反查映射」，走 (set_id, obf_name)
+// 唯一索引的精确匹配，不做模糊搜索，因此开销与类总数无关。
+func (s *Service) LookupMappingClassByName(ctx context.Context, mcVersion, className string) (*ClassMappingLookup, error) {
+	version := strings.TrimSpace(mcVersion)
+	name := strings.TrimSpace(className)
+	if version == "" || name == "" {
+		return nil, ErrNotFound
+	}
+	variants := classLookupVariants(name)
+
+	var sets []domain.MappingSet
+	if err := s.db.WithContext(ctx).Where("mc_version = ?", version).Find(&sets).Error; err != nil {
+		return nil, err
+	}
+	sort.SliceStable(sets, func(i, j int) bool {
+		pi, pj := mappingTypePriority(sets[i].MappingType), mappingTypePriority(sets[j].MappingType)
+		if pi != pj {
+			return pi < pj
+		}
+		return sets[i].SetKey < sets[j].SetKey
+	})
+
+	for i := range sets {
+		cls, matchedBy, err := s.mappingClassInSet(ctx, sets[i].ID, variants)
+		if err != nil {
+			return nil, err
+		}
+		if cls == nil {
+			continue
+		}
+		members, truncated, err := s.mappingClassMembers(ctx, cls.ID)
+		if err != nil {
+			return nil, err
+		}
+		return &ClassMappingLookup{
+			Available:   true,
+			SetKey:      cls.SetKey,
+			MCVersion:   cls.MCVersion,
+			MappingType: cls.MappingType,
+			MatchedBy:   matchedBy,
+			Class: &MappingClassNames{
+				ObfName:   cls.ObfName,
+				MidName:   cls.MidName,
+				NamedName: cls.NamedName,
+				Package:   cls.Package,
+			},
+			Members:   members,
+			Truncated: truncated,
+		}, nil
+	}
+	return &ClassMappingLookup{Available: false, MCVersion: version, Members: []MappingMemberView{}}, nil
+}
+
+// mappingTypePriority 映射类型优先级（越小越优先），用于多数据集命中时的确定性选择。
+// 官方 mojang 映射覆盖最全且最权威，其次为 TSRG / Yarn 的可读名。
+func mappingTypePriority(mappingType string) int {
+	switch mappingType {
+	case domain.MappingTypeMojang:
+		return 0
+	case domain.MappingTypeTSRG:
+		return 1
+	case domain.MappingTypeYarn:
+		return 2
+	case domain.MappingTypeSRG:
+		return 3
+	case domain.MappingTypeParchment:
+		return 4
+	default:
+		return 5
+	}
+}
+
+// classLookupVariants 生成类名匹配候选：点分全限定名与内部名（/ 分隔）。
+// 不同映射格式对类名的分隔符不一致（ProGuard 用 .，Tiny / TSRG 用 /），
+// 两个变体都试，避免因格式差异漏配。
+func classLookupVariants(name string) []string {
+	out := []string{name}
+	if internal := strings.ReplaceAll(name, ".", "/"); internal != name {
+		out = append(out, internal)
+	}
+	if dotted := strings.ReplaceAll(name, "/", "."); dotted != name {
+		out = append(out, dotted)
+	}
+	seen := make(map[string]bool, len(out))
+	uniq := out[:0]
+	for _, v := range out {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		uniq = append(uniq, v)
+	}
+	return uniq
+}
+
+// mappingClassRow 类映射查询的扁平结果。
+// 独立于 MappingClassHit：后者含切片字段（成员预览），GORM 在 Take 单条时
+// 会把切片字段当作关联解析而报错；本结构只承载查询列，无关联语义。
+type mappingClassRow struct {
+	ID          uuid.UUID `gorm:"column:id"`
+	SetID       uuid.UUID `gorm:"column:set_id"`
+	SetKey      string    `gorm:"column:set_key"`
+	MCVersion   string    `gorm:"column:mc_version"`
+	MappingType string    `gorm:"column:mapping_type"`
+	ObfName     string    `gorm:"column:obf_name"`
+	MidName     string    `gorm:"column:mid_name"`
+	NamedName   string    `gorm:"column:named_name"`
+	Package     string    `gorm:"column:package"`
+	MemberCount int       `gorm:"column:member_count"`
+}
+
+// mappingClassInSet 在指定数据集内按 obf / named / mid 顺序匹配类名，返回首个命中。
+func (s *Service) mappingClassInSet(ctx context.Context, setID uuid.UUID, variants []string) (*mappingClassRow, string, error) {
+	for _, probe := range []struct {
+		column string
+		by     string
+	}{
+		{"c.obf_name", "obf"},
+		{"c.named_name", "named"},
+		{"c.mid_name", "mid"},
+	} {
+		var row mappingClassRow
+		err := s.db.WithContext(ctx).
+			Table("mapping_classes AS c").
+			Joins("JOIN mapping_sets AS ms ON ms.id = c.set_id").
+			Where("c.set_id = ?", setID).
+			Where(probe.column+" IN ?", variants).
+			Select(mappingClassColumns).
+			Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		return &row, probe.by, nil
+	}
+	return nil, "", nil
+}
+
+// mappingClassMembers 取某类的全部成员映射（按类型与名字排序）。
+func (s *Service) mappingClassMembers(ctx context.Context, classID uuid.UUID) ([]MappingMemberView, bool, error) {
+	members := make([]MappingMemberView, 0, 64)
+	err := s.db.WithContext(ctx).Model(&domain.MappingMember{}).
+		Where("class_id = ?", classID).
+		Select("kind, obf_name, mid_name, named_name, obf_desc, named_desc, side").
+		Order("kind ASC, obf_name ASC").
+		Limit(mappingMemberLookupLimit + 1).
+		Scan(&members).Error
+	if err != nil {
+		return nil, false, err
+	}
+	if len(members) > mappingMemberLookupLimit {
+		return members[:mappingMemberLookupLimit], true, nil
+	}
+	return members, false, nil
+}

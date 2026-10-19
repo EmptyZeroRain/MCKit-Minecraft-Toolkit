@@ -1,5 +1,10 @@
 // 数据质量展示辅助纯函数（可单测，不含副作用）
-import type { CheckSeverity, DataQualityCheck, DataImportJob } from '@/types/data-quality'
+import type {
+  CheckSeverity,
+  DataQualityCheck,
+  DataImportJob,
+  QualityIssueStatus,
+} from '@/types/data-quality'
 
 /** 严重级别展示文案 */
 const SEVERITY_LABELS: Record<CheckSeverity, string> = {
@@ -92,4 +97,66 @@ export function categoryLabel(category: string): string {
 /** 导入任务是否失败（有失败行） */
 export function isJobFailed(job: Pick<DataImportJob, 'failed_count'>): boolean {
   return job.failed_count > 0
+}
+
+// ===== 数据质量问题处理状态（工单） =====
+
+/** 工单状态展示文案 */
+export const ISSUE_STATUS_LABELS: Record<QualityIssueStatus, string> = {
+  open: '待处理',
+  assigned: '已指派',
+  resolved: '已解决',
+  ignored: '已忽略',
+}
+
+/** 工单状态对应的徽标样式类 */
+export function issueStatusClass(status: QualityIssueStatus): string {
+  switch (status) {
+    case 'assigned':
+      return 'bg-blue-500/15 text-blue-300'
+    case 'resolved':
+      return 'bg-grass-500/15 text-grass-300'
+    case 'ignored':
+      return 'bg-ink-700 text-text-muted'
+    default:
+      return 'bg-amber-500/15 text-amber-300'
+  }
+}
+
+/**
+ * 检查项 → 可直接跳转的页面。
+ *
+ * 数据质量检查覆盖的是「资料库原始数据」，多数没有独立的后台编辑页，
+ * 因此直接跳到公开资料页或对应审核工作台，让运营看到实际数据再决定怎么修。
+ */
+export function checkActionPath(category: string): string {
+  switch (category) {
+    case 'items':
+      return '/items'
+    case 'recipes':
+      return '/recipes'
+    case 'commands':
+      return '/commands'
+    case 'potions':
+      return '/potions'
+    case 'dev_docs':
+      return '/dev'
+    case 'villagers':
+      return '/villagers'
+    case 'mobs':
+      return '/mobs'
+    case 'redstone':
+      return '/redstone'
+    case 'mods':
+      return '/admin/review?tab=mods'
+    case 'import':
+      return '/admin/data-quality#import-jobs'
+    default:
+      return ''
+  }
+}
+
+/** 工单是否处于「已处理完」状态（解决 / 忽略） */
+export function isIssueClosed(status?: QualityIssueStatus): boolean {
+  return status === 'resolved' || status === 'ignored'
 }

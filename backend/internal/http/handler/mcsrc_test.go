@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/mcsrc"
 	"mckit/backend/internal/mcversion"
+	"mckit/backend/internal/service/catalog"
 )
 
 // testJar 生成最小 jar（zip）字节流。
@@ -422,6 +424,148 @@ func TestMcsrcClassDetailAndHierarchy(t *testing.T) {
 	}
 }
 
+// TestMcsrcClassBytecodeAndReferences 覆盖字节码反汇编与查找引用两个只读接口的
+// 路由 / 校验 / 错误映射（具体反汇编与引用语义在 internal/mcsrc 层单测）。
+func TestMcsrcClassBytecodeAndReferences(t *testing.T) {
+	h := newMcsrcTestHandler(t)
+
+	// 版本未准备（jar 未缓存）→ 404。
+	rec := doMcsrc(h, h.ClassBytecode, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未准备版本的字节码期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未准备版本的查找引用期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 缺 class → 422。
+	rec = doMcsrc(h, h.ClassBytecode, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("字节码缺 class 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("查找引用缺 class 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 准备 jar + 索引。
+	if rec = doMcsrc(h, h.Prepare, `{"version":"1.21.4","side":"client"}`); rec.Code != http.StatusOK {
+		t.Fatalf("prepare 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 字节码：200 + 元信息。
+	rec = doMcsrc(h, h.ClassBytecode, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("字节码期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var bc mcsrc.ClassBytecode
+	dataOf(t, rec, &bc)
+	if bc.Name != "net.minecraft.server.MinecraftServer" || bc.Kind != "class" || bc.Major != 52 {
+		t.Fatalf("字节码元信息异常：%+v", bc)
+	}
+
+	// 字节码：类不存在 → 404 CLASS_NOT_FOUND。
+	rec = doMcsrc(h, h.ClassBytecode, `{"version":"1.21.4","class":"net.minecraft.Nope"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("字节码类不存在期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 查找引用：类级 200（测试 jar 无指令引用 → 空列表）。
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("查找引用期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var ref mcsrc.ReferenceResult
+	dataOf(t, rec, &ref)
+	if ref.Kind != "class" || ref.Key != "c:net.minecraft.server.MinecraftServer" || len(ref.Sites) != 0 {
+		t.Fatalf("类引用结果异常：%+v", ref)
+	}
+
+	// 方法引用缺 name → 422（ErrBadReference）。
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer","kind":"method"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("方法引用缺 name 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	// 非法 kind → 422。
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4","class":"net.minecraft.server.MinecraftServer","kind":"bogus"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("非法 kind 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	// 类不存在 → 404。
+	rec = doMcsrc(h, h.ClassReferences, `{"version":"1.21.4","class":"net.minecraft.Nope"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("查找引用类不存在期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+}
+
+// fakeMappings 返回预置映射结果，用于验证「映射重命名」接口的接线与参数透传。
+type fakeMappings struct {
+	res                  *catalog.ClassMappingLookup
+	err                  error
+	gotVersion, gotClass string
+}
+
+func (f *fakeMappings) LookupMappingClassByName(_ context.Context, mcVersion, className string) (*catalog.ClassMappingLookup, error) {
+	f.gotVersion, f.gotClass = mcVersion, className
+	return f.res, f.err
+}
+
+// TestMcsrcClassMapping 覆盖「映射重命名」接口：未注入映射数据时返回 available=false
+// （正常状态，非错误），注入后透传版本与类名并返回映射名。
+func TestMcsrcClassMapping(t *testing.T) {
+	h := newMcsrcTestHandler(t)
+
+	// 缺 class → 422。
+	rec := doMcsrc(h, h.ClassMapping, `{"version":"1.21.4"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺 class 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 未注入映射数据源 → 200 + available=false。
+	rec = doMcsrc(h, h.ClassMapping, `{"version":"1.21.4","class":"aab"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("未注入映射期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var empty catalog.ClassMappingLookup
+	dataOf(t, rec, &empty)
+	if empty.Available {
+		t.Fatalf("未注入映射应返回 available=false，实际 %+v", empty)
+	}
+
+	// 注入映射数据源 → 透传参数并返回映射名（不依赖 jar / 索引）。
+	fake := &fakeMappings{res: &catalog.ClassMappingLookup{
+		Available:   true,
+		SetKey:      "mojang-1.21.4",
+		MCVersion:   "1.21.4",
+		MappingType: "mojang",
+		MatchedBy:   "obf",
+		Class: &catalog.MappingClassNames{
+			ObfName:   "aab",
+			NamedName: "net.minecraft.server.MinecraftServer",
+		},
+		Members: []catalog.MappingMemberView{
+			{Kind: "method", ObfName: "a", NamedName: "tick"},
+		},
+	}}
+	h = h.WithMappings(fake)
+	rec = doMcsrc(h, h.ClassMapping, `{"version":"1.21.4","class":"aab"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("映射查询期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var got catalog.ClassMappingLookup
+	dataOf(t, rec, &got)
+	if !got.Available || got.Class == nil || got.Class.NamedName != "net.minecraft.server.MinecraftServer" {
+		t.Fatalf("映射结果异常：%+v", got)
+	}
+	if len(got.Members) != 1 || got.Members[0].NamedName != "tick" {
+		t.Fatalf("映射成员异常：%+v", got.Members)
+	}
+	if fake.gotVersion != "1.21.4" || fake.gotClass != "aab" {
+		t.Fatalf("参数透传异常：version=%q class=%q", fake.gotVersion, fake.gotClass)
+	}
+}
+
 // errCodeOf 取出错误响应里的 error.code。
 func errCodeOf(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
@@ -526,29 +670,25 @@ func TestMcsrcPrepareAdminBypassQuota(t *testing.T) {
 	}
 }
 
-// doMcsrcGet 发起 GET 请求（仅 jar 下载用）。
-func doMcsrcGet(h *McsrcHandler, fn http.HandlerFunc, url string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, url, nil)
-	rec := httptest.NewRecorder()
-	fn(rec, req)
-	return rec
-}
-
+// TestMcsrcJarDownload 覆盖 jar 下发（POST + JSON body）。
+//
+// 项目约定接口统一 POST，因此不再有浏览器 HTTP 缓存 / Range / ETag 语义：
+// 前端改为依据响应头 X-Mcsrc-Jar-Sha1 把 jar 持久化到 IndexedDB。
 func TestMcsrcJarDownload(t *testing.T) {
 	h := newMcsrcTestHandler(t)
 
 	// 未准备 → 404（不触发下载）。
-	rec := doMcsrcGet(h, h.Jar, "/api/v1/mcsrc/jar?version=1.21.4&side=client")
+	rec := doMcsrc(h, h.Jar, `{"version":"1.21.4","side":"client"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("未准备版本的 jar 期望 404，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
 	// 缺 version → 422；非法版本号（路径穿越）→ 422。
-	rec = doMcsrcGet(h, h.Jar, "/api/v1/mcsrc/jar")
+	rec = doMcsrc(h, h.Jar, `{}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("缺 version 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	rec = doMcsrcGet(h, h.Jar, "/api/v1/mcsrc/jar?version=../etc/passwd")
+	rec = doMcsrc(h, h.Jar, `{"version":"../etc/passwd"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("非法版本号期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
@@ -561,7 +701,7 @@ func TestMcsrcJarDownload(t *testing.T) {
 	var st mcsrc.Status
 	dataOf(t, rec, &st)
 
-	rec = doMcsrcGet(h, h.Jar, "/api/v1/mcsrc/jar?version=1.21.4&side=client")
+	rec = doMcsrc(h, h.Jar, `{"version":"1.21.4","side":"client"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("jar 下载期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
@@ -574,33 +714,34 @@ func TestMcsrcJarDownload(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/java-archive" {
 		t.Fatalf("Content-Type 期望 application/java-archive，实际 %q", ct)
 	}
-	if etag := rec.Header().Get("ETag"); etag != `"`+st.SHA1+`"` {
-		t.Fatalf("ETag 期望 jar 摘要，实际 %q", etag)
+	// POST 下载靠摘要头 + no-store 替代 ETag / Range，供前端 IndexedDB 缓存。
+	if got := rec.Header().Get("X-Mcsrc-Jar-Sha1"); got != st.SHA1 {
+		t.Fatalf("X-Mcsrc-Jar-Sha1 期望 %q，实际 %q", st.SHA1, got)
 	}
-
-	// Range 请求 → 206 + 指定区间内容（前端按需读取 / 断点续传依赖）。
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/mcsrc/jar?version=1.21.4&side=client", nil)
-	req.Header.Set("Range", "bytes=0-3")
-	rr := httptest.NewRecorder()
-	h.Jar(rr, req)
-	if rr.Code != http.StatusPartialContent {
-		t.Fatalf("Range 请求期望 206，实际 %d（%s）", rr.Code, rr.Body.String())
+	if got := rec.Header().Get("Content-Length"); got != strconv.FormatInt(st.Size, 10) {
+		t.Fatalf("Content-Length 期望 %d，实际 %q", st.Size, got)
 	}
-	if !bytes.Equal(rr.Body.Bytes(), body[:4]) {
-		t.Fatalf("Range 内容不一致：%v", rr.Body.Bytes())
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control 期望 no-store，实际 %q", got)
+	}
+	if got := rec.Header().Get("ETag"); got != "" {
+		t.Fatalf("POST 下载不应再返回 ETag，实际 %q", got)
 	}
 }
 
 func TestMcsrcHandlerUnavailable(t *testing.T) {
 	h := NewMcsrcHandler(nil, nil)
 	for name, fn := range map[string]http.HandlerFunc{
-		"status":    h.Status,
-		"prepared":  h.Prepared,
-		"prepare":   h.Prepare,
-		"jar":       h.Jar,
-		"classes":   h.Classes,
-		"detail":    h.ClassDetail,
-		"hierarchy": h.ClassHierarchy,
+		"status":     h.Status,
+		"prepared":   h.Prepared,
+		"prepare":    h.Prepare,
+		"jar":        h.Jar,
+		"classes":    h.Classes,
+		"detail":     h.ClassDetail,
+		"hierarchy":  h.ClassHierarchy,
+		"bytecode":   h.ClassBytecode,
+		"references": h.ClassReferences,
+		"mapping":    h.ClassMapping,
 	} {
 		rec := doMcsrc(h, fn, `{"version":"1.21.4","class":"a.A"}`)
 		if rec.Code != http.StatusServiceUnavailable {

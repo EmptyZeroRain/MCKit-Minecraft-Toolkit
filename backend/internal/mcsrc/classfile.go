@@ -29,6 +29,7 @@ const (
 	accStatic       = 0x0008 // 字段 / 方法
 	accFinal        = 0x0010 // 类 / 字段 / 方法
 	accSynchronized = 0x0020 // 方法
+	accSuper        = 0x0020 // 类（ACC_SUPER，与方法的 synchronized 同位）
 	accVolatile     = 0x0040 // 字段
 	accBridge       = 0x0040 // 方法
 	accTransient    = 0x0080 // 字段
@@ -67,13 +68,16 @@ type ClassFile struct {
 }
 
 // Kind 返回类种类：class / interface / enum / annotation。
-func (c *ClassFile) Kind() string {
+func (c *ClassFile) Kind() string { return kindFromFlags(c.AccessFlags) }
+
+// kindFromFlags 由类访问标志推断种类。
+func kindFromFlags(flags uint16) string {
 	switch {
-	case c.AccessFlags&accAnnotation != 0:
+	case flags&accAnnotation != 0:
 		return "annotation"
-	case c.AccessFlags&accEnum != 0:
+	case flags&accEnum != 0:
 		return "enum"
-	case c.AccessFlags&accInterface != 0:
+	case flags&accInterface != 0:
 		return "interface"
 	default:
 		return "class"
@@ -83,7 +87,7 @@ func (c *ClassFile) Kind() string {
 // IsAbstract 是否为抽象类（含接口，接口本身即抽象）。
 func (c *ClassFile) IsAbstract() bool { return c.AccessFlags&accAbstract != 0 }
 
-// cpEntry 常量池条目（只保留解析结构所需字段）。
+// cpEntry 常量池条目。
 type cpEntry struct {
 	tag uint8
 	// utf8 仅 tag == 1（Utf8）时有意义。
@@ -91,9 +95,14 @@ type cpEntry struct {
 	// idx1 / idx2 依 tag 含义不同：
 	//   Class / String / MethodType / Module / Package → idx1 指向 Utf8
 	//   Fieldref / Methodref / InterfaceMethodref / NameAndType / Dynamic / InvokeDynamic → idx1、idx2 指向其它条目
-	//   MethodHandle → idx1 为引用类型（u1），idx2 指向其它条目
+	//   MethodHandle → idx1 指向其它条目
 	idx1 uint16
 	idx2 uint16
+	// num 数值常量的原始位模式：Integer / Float 取低 32 位，Long / Double 取 64 位。
+	// 结构视图用不到它，但反汇编要渲染 LDC 的操作数，故在解析期一并保留。
+	num int64
+	// handleKind 仅 tag == 15（MethodHandle）时有意义，取值 1..9（JVMS §4.4.8）。
+	handleKind uint8
 }
 
 // cpPool 常量池：命名切片类型（Go 不允许在切片字面量上定义方法）。
@@ -255,9 +264,10 @@ func parseConstantPool(r *classReader) (cpPool, error) {
 			}
 			e.utf8 = string(b)
 		case 3, 4: // Integer / Float
-			r.skip(4)
+			e.num = int64(r.u4())
 		case 5, 6: // Long / Double：占两个槽位
-			r.skip(8)
+			hi, lo := r.u4(), r.u4()
+			e.num = int64(uint64(hi)<<32 | uint64(lo))
 			i++
 		case 7, 8, 16, 19, 20: // Class / String / MethodType / Module / Package
 			e.idx1 = r.u2()
@@ -265,7 +275,7 @@ func parseConstantPool(r *classReader) (cpPool, error) {
 			e.idx1 = r.u2()
 			e.idx2 = r.u2()
 		case 15: // MethodHandle
-			r.skip(1)
+			e.handleKind = r.u1()
 			e.idx1 = r.u2()
 		default:
 			return nil, fmt.Errorf("%w: 未知常量池 tag %d", ErrBadClassFile, tag)

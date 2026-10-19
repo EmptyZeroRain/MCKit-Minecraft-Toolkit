@@ -3,8 +3,8 @@
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { search } from '@/api/public'
+import SearchResults from '@/components/search/SearchResults.vue'
 import type { SearchResultItem } from '@/types/search'
-import { highlightSegments } from '@/utils/highlight'
 
 const props = defineProps<{ autofocus?: boolean }>()
 
@@ -61,21 +61,6 @@ function goFullResults() {
   router.push({ path: '/search', query: { q } })
   emit('done')
 }
-
-function typeLabel(type: string): string {
-  const map: Record<string, string> = {
-    tool: '工具',
-    resource: '资源',
-    wiki: '百科',
-    item: '物品',
-    devdoc: '开发文档',
-  }
-  return map[type] ?? type
-}
-
-/** 标题/摘要按关键词切分，供模板用 <mark> 渲染（需求 §5.1）。 */
-const titleSegments = (item: SearchResultItem) => highlightSegments(item.title, keyword.value)
-const summarySegments = (item: SearchResultItem) => highlightSegments(item.summary ?? '', keyword.value)
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
@@ -135,32 +120,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onClickOutside))
       class="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-lg border border-border-light bg-ink-800 shadow-2xl shadow-black/50"
       role="listbox"
     >
-      <ul class="max-h-80 overflow-y-auto py-1">
-        <li
-          v-for="item in results"
-          :key="item.type + item.id"
-          role="option"
-          class="cursor-pointer px-3 py-2 hover:bg-ink-700"
-          @click="goResult(item)"
-        >
-          <div class="flex items-center gap-2">
-            <span class="shrink-0 rounded bg-ink-700 px-1.5 py-0.5 text-[10px] text-text-muted">
-              {{ typeLabel(item.type) }}
-            </span>
-            <span class="truncate text-sm text-text-primary">
-              <template v-for="(seg, i) in titleSegments(item)" :key="i">
-                <mark v-if="seg.match" class="bg-grass-500/30 text-grass-200">{{ seg.text }}</mark>
-                <template v-else>{{ seg.text }}</template>
-              </template>
-            </span>
-          </div>
-          <p v-if="item.summary" class="mt-0.5 truncate pl-1 text-xs text-text-muted">
-            <template v-for="(seg, i) in summarySegments(item)" :key="i">
-              <mark v-if="seg.match" class="bg-grass-500/30 text-grass-200">{{ seg.text }}</mark>
-              <template v-else>{{ seg.text }}</template>
-            </template>
-          </p>
-        </li>
+      <ul class="max-h-80 overflow-y-auto">
+        <SearchResults
+          :items="results"
+          :keyword="keyword"
+          variant="compact"
+          @select="goResult"
+        />
       </ul>
       <button
         type="button"

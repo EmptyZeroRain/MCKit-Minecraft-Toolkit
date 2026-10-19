@@ -7,7 +7,7 @@ import ListShell from '@/components/admin/list-shell.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import FormField from '@/components/common/FormField.vue'
 import { useUiStore } from '@/stores/ui'
-import { createRole, deleteRole, listPermissions, listRoles, updateRole } from '@/api/admin-roles'
+import { createRole, deleteRole, getRoleImpact, listPermissions, listRoles, updateRole, type RoleImpact } from '@/api/admin-roles'
 import type { PermissionGroup, RoleRow } from '@/types/admin'
 import { ApiError } from '@/types/api'
 
@@ -88,6 +88,11 @@ function toggleGroup(group: PermissionGroup) {
   selected.value = next
 }
 
+// 权限变更影响预览（编辑角色时先预览再提交）
+const impactOpen = ref(false)
+const impactText = ref('')
+const pendingSave = ref<{ label: string; description: string; permissions: string[] } | null>(null)
+
 async function save() {
   if (saving.value) return
   const label = form.label.trim()
@@ -100,27 +105,72 @@ async function save() {
     return
   }
 
-  saving.value = true
-  try {
-    const permissions = [...selected.value]
-    if (editing.value) {
-      await updateRole({
-        name: editing.value.name,
-        label,
-        description: form.description.trim(),
-        permissions,
-      })
-      ui.success('角色已更新，使用该角色的账号需重新登录生效')
-    } else {
+  // 新建：直接创建。
+  if (!editing.value) {
+    saving.value = true
+    try {
       await createRole({
         name: form.name.trim(),
         label,
         description: form.description.trim(),
-        permissions,
+        permissions: [...selected.value],
       })
       ui.success('角色已创建')
+      dialogOpen.value = false
+      load()
+    } catch (err) {
+      ui.error(err instanceof ApiError ? err.message : '保存失败')
+    } finally {
+      saving.value = false
     }
+    return
+  }
+
+  // 编辑：先预览影响（受影响账号数 + 权限增减），确认后再提交。
+  saving.value = true
+  try {
+    const permissions = [...selected.value]
+    const impact = await getRoleImpact(editing.value.name, permissions)
+    pendingSave.value = { label, description: form.description.trim(), permissions }
+    impactText.value = buildImpactText(impact)
+    impactOpen.value = true
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '加载影响预览失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 把影响预览整理为可读文本（供确认对话框展示）。 */
+function buildImpactText(impact: RoleImpact): string {
+  const lines: string[] = [`受影响账号：${impact.affected_accounts} 个`]
+  lines.push(`新增权限：${impact.added.length > 0 ? impact.added.join('、') : '无'}`)
+  lines.push(`移除权限：${impact.removed.length > 0 ? impact.removed.join('、') : '无'}`)
+  lines.push(...impact.notes)
+  return lines.join('\n')
+}
+
+function cancelImpact() {
+  impactOpen.value = false
+  pendingSave.value = null
+}
+
+/** 确认影响后提交更新。 */
+async function confirmImpact() {
+  if (!pendingSave.value || !editing.value || saving.value) return
+  saving.value = true
+  try {
+    await updateRole({
+      name: editing.value.name,
+      label: pendingSave.value.label,
+      description: pendingSave.value.description,
+      permissions: pendingSave.value.permissions,
+    })
+    // 权限点为实时查表（RequirePermission 每请求解析），变更下一次请求即生效，无需重新登录。
+    ui.success('角色已更新，权限变更即时生效')
+    impactOpen.value = false
     dialogOpen.value = false
+    pendingSave.value = null
     load()
   } catch (err) {
     ui.error(err instanceof ApiError ? err.message : '保存失败')
@@ -356,6 +406,17 @@ onMounted(load)
       :confirm-disabled="deleting"
       @confirm="confirmDelete"
       @cancel="toDelete = null"
+    />
+
+    <!-- 权限变更影响预览：确认受影响账号数与权限增减后再提交 -->
+    <ConfirmDialog
+      :open="impactOpen"
+      title="确认权限变更"
+      :message="impactText"
+      confirm-text="确认保存"
+      :confirm-disabled="saving"
+      @confirm="confirmImpact"
+      @cancel="cancelImpact"
     />
   </div>
 </template>

@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   createRole: vi.fn(),
   updateRole: vi.fn(),
   deleteRole: vi.fn(),
+  getRoleImpact: vi.fn(),
 }))
 vi.mock('@/api/admin-roles', () => api)
 
@@ -81,6 +82,17 @@ describe('后台角色管理', () => {
     api.createRole.mockResolvedValue(role({ name: 'reviewer2' }))
     api.updateRole.mockResolvedValue(role({ name: 'reviewer' }))
     api.deleteRole.mockResolvedValue(undefined)
+    api.getRoleImpact.mockResolvedValue({
+      role: 'reviewer',
+      label: '内容审核员',
+      is_system: false,
+      affected_accounts: 2,
+      current_permissions: ['content.tools'],
+      next_permissions: ['content.tools', 'ops.mcsrc'],
+      added: ['ops.mcsrc'],
+      removed: [],
+      notes: ['权限变更会立即影响该角色下所有账号的下一次鉴权'],
+    })
   })
 
   it('渲染角色列表、权限点数量与类型徽标', async () => {
@@ -181,5 +193,55 @@ describe('后台角色管理', () => {
     await buttonByText(wrapper, '重试')!.trigger('click')
     await flushPromises()
     expect(wrapper.findAll('tbody tr').length).toBe(2)
+  })
+})
+
+describe('后台角色管理 · 权限变更影响预览', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.listRoles.mockResolvedValue(ROLES)
+    api.listPermissions.mockResolvedValue(GROUPS)
+    api.updateRole.mockResolvedValue(role({ name: 'reviewer' }))
+    api.getRoleImpact.mockResolvedValue({
+      role: 'reviewer',
+      label: '内容审核员',
+      is_system: false,
+      affected_accounts: 2,
+      current_permissions: ['content.tools'],
+      next_permissions: ['content.tools', 'ops.mcsrc'],
+      added: ['ops.mcsrc'],
+      removed: [],
+      notes: ['权限变更会立即影响该角色下所有账号的下一次鉴权'],
+    })
+  })
+
+  it('编辑角色先展示影响预览，确认后才提交更新', async () => {
+    const wrapper = await mountView()
+    // 第二行是自定义角色 reviewer，第一个按钮为「编辑」
+    await wrapper.findAll('tbody tr')[1].findAll('button')[0].trigger('click')
+    await flushPromises()
+
+    // 勾选「运营」分组新增 ops.mcsrc
+    await buttonByText(wrapper, '运营（全选）')!.trigger('click')
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存')!.trigger('click')
+    await flushPromises()
+
+    expect(api.getRoleImpact).toHaveBeenCalledWith('reviewer', expect.arrayContaining(['ops.mcsrc']))
+    // 预览阶段尚未提交更新
+    expect(api.updateRole).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('受影响账号：2 个')
+    expect(wrapper.text()).toContain('新增权限：ops.mcsrc')
+
+    await buttonByText(wrapper, '确认保存')!.trigger('click')
+    await flushPromises()
+
+    expect(api.updateRole).toHaveBeenCalledWith({
+      name: 'reviewer',
+      label: expect.any(String),
+      description: expect.any(String),
+      permissions: expect.arrayContaining(['ops.mcsrc']),
+    })
   })
 })

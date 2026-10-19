@@ -378,3 +378,79 @@ type SearchTerm struct {
 
 // TableName 指定表名。
 func (SearchTerm) TableName() string { return "search_terms" }
+
+// ---- 内容建设任务（gj.md §8.3 搜索词闭环 / §15 内容任务）----
+
+// 内容建设任务状态。
+const (
+	ContentTaskStatusOpen       = "open"        // 待处理
+	ContentTaskStatusInProgress = "in_progress" // 处理中
+	ContentTaskStatusDone       = "done"        // 已完成
+	ContentTaskStatusIgnored    = "ignored"     // 已忽略
+)
+
+// ContentTaskStatuses 全部合法状态（按流程顺序，供前端展示与校验）。
+var ContentTaskStatuses = []string{
+	ContentTaskStatusOpen, ContentTaskStatusInProgress, ContentTaskStatusDone, ContentTaskStatusIgnored,
+}
+
+// IsValidContentTaskStatus 判断任务状态是否合法。
+func IsValidContentTaskStatus(s string) bool {
+	for _, v := range ContentTaskStatuses {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// IsOpenContentTaskStatus 是否为「未完结」状态。
+// 同一关键词只允许一个未完结任务（数据库部分唯一索引的判定条件与此保持一致）。
+func IsOpenContentTaskStatus(s string) bool {
+	return s == ContentTaskStatusOpen || s == ContentTaskStatusInProgress
+}
+
+// ContentTaskMinNoResultHits 无结果词转为内容建设任务的建议阈值（§8.3「达到阈值后」）。
+const ContentTaskMinNoResultHits = 3
+
+// 内容任务可关联的内容类型（与 content_revisions.content_type 同口径）。
+const (
+	ContentTaskContentResource = "resource"
+	ContentTaskContentTool     = "tool"
+	ContentTaskContentWiki     = "wiki"
+)
+
+// IsValidContentTaskContentType 判断关联内容类型是否合法（空串表示尚未关联）。
+func IsValidContentTaskContentType(t string) bool {
+	switch t {
+	case "", ContentTaskContentResource, ContentTaskContentTool, ContentTaskContentWiki:
+		return true
+	}
+	return false
+}
+
+// ContentTask 内容建设任务：把搜索缺口关键词沉淀为可指派、可跟踪的运营任务。
+type ContentTask struct {
+	ID      uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Keyword string    `gorm:"size:64;not null" json:"keyword"`
+	// SearchTermID 关联的搜索词统计行（统计行被清理时为 NULL）。
+	SearchTermID *uuid.UUID `gorm:"type:uuid" json:"search_term_id"`
+	// Hits / NoResultHits / LastSeenAt 为创建时（或最近一次同步）的统计快照。
+	Hits         int64      `gorm:"not null;default:0" json:"hits"`
+	NoResultHits int64      `gorm:"not null;default:0" json:"no_result_hits"`
+	LastSeenAt   *time.Time `json:"last_seen_at"`
+	Status       string     `gorm:"size:20;not null;default:open" json:"status"`
+	// AssigneeID / AssigneeName 负责人（后台账号）。
+	AssigneeID   *uuid.UUID `gorm:"type:uuid" json:"assignee_id"`
+	AssigneeName string     `gorm:"size:80;not null;default:''" json:"assignee_name"`
+	// RelatedContentType / RelatedContentID 指向为填补该缺口而创建或更新的内容。
+	RelatedContentType string     `gorm:"size:20;not null;default:''" json:"related_content_type"`
+	RelatedContentID   *uuid.UUID `gorm:"type:uuid" json:"related_content_id"`
+	Note               string     `gorm:"type:text;not null;default:''" json:"note"`
+	CreatedBy          *uuid.UUID `gorm:"type:uuid" json:"created_by"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (ContentTask) TableName() string { return "content_tasks" }

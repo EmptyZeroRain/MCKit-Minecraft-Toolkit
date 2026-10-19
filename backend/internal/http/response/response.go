@@ -156,3 +156,13 @@ func Forbidden(w http.ResponseWriter, r *http.Request) {
 func TooManyRequests(w http.ResponseWriter, r *http.Request) {
 	Error(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "请求过于频繁，请稍后重试", nil)
 }
+
+// ServiceUnavailable 输出依赖服务不可用（503）。
+//
+// 用于共享会话存储等关键依赖故障：必须安全失败（拒绝请求），不得降级为「跳过认证」。
+func ServiceUnavailable(w http.ResponseWriter, r *http.Request, message string) {
+	if message == "" {
+		message = "服务暂时不可用，请稍后重试"
+	}
+	Error(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", message, nil)
+}

@@ -6,6 +6,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import BaseChart from '@/components/common/BaseChart.vue'
+import { useAuthStore } from '@/stores/auth'
 import {
   fetchApiUsage,
   fetchResourceUsage,
@@ -23,6 +24,8 @@ import type {
   UsageOverview,
   UsageTrendPoint,
 } from '@/types/analytics'
+
+const auth = useAuthStore()
 
 // 预设区间（天数，含当天）。落库周期默认 60s，故最近 1 天数据可能仍在内存中。
 const presets = [
@@ -189,7 +192,8 @@ const failBarWidth = (v: number) => `${Math.min(100, Math.round(v * 100))}%`
         </p>
       </div>
       <RouterLink
-        to="/admin/search-terms"
+        v-if="auth.hasPermission('ops.searchstats')"
+        :to="{ name: 'admin-insights', query: { tab: 'search-terms' } }"
         class="shrink-0 rounded-md border border-border-light bg-ink-700 px-3 py-2 text-xs text-text-primary hover:bg-ink-600"
       >
         查看高频无结果词

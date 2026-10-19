@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"mckit/backend/internal/builtintools"
+	"mckit/backend/internal/domain"
+	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/service/metrics"
 )
@@ -32,11 +34,19 @@ type StatsSlugResolver interface {
 type StatsHandler struct {
 	recorder StatsRecorder
 	resolver StatsSlugResolver
+	// growth 成长事件接收端（可选注入）：仅对已登录用户的「有效使用工具」投递。
+	growth domain.GrowthEventSink
 }
 
 // NewStatsHandler 创建处理器。recorder 为 nil 时接口静默成功（统计关闭）。
 func NewStatsHandler(recorder StatsRecorder, resolver StatsSlugResolver) *StatsHandler {
 	return &StatsHandler{recorder: recorder, resolver: resolver}
+}
+
+// WithGrowthSink 注入成长事件接收端（main 装配；链式调用）。
+func (h *StatsHandler) WithGrowthSink(sink domain.GrowthEventSink) *StatsHandler {
+	h.growth = sink
+	return h
 }
 
 // statsIDPattern 统计对象标识的合法字符与长度（slug / item_id / 工具 slug）。
@@ -80,6 +90,13 @@ func (h *StatsHandler) Event(w http.ResponseWriter, r *http.Request) {
 		}
 		if h.recorder != nil {
 			h.recorder.RecordTool(id, action)
+		}
+		// 成长事件：仅对已登录普通用户的「有效使用工具」投递；
+		// 匿名使用只计入统计，不发奖（避免刷奖）。subject 为工具 slug，按天幂等。
+		if action == metrics.ActionUse {
+			if session := middleware.SessionFrom(r.Context()); session != nil && session.Role == domain.RoleUser {
+				emitGrowth(r.Context(), h.growth, "stats", domain.EventToolUsedValidly, session.AccountID, "tool", id)
+			}
 		}
 	case "resource":
 		if action != metrics.ActionVisit {

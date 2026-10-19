@@ -5,13 +5,28 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import ListShell from '@/components/admin/list-shell.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useUiStore } from '@/stores/ui'
-import { fetchDataQualityOverview, listDataImportJobs } from '@/api/admin-data-quality'
+import {
+  fetchDataQualityOverview,
+  listDataImportJobs,
+  listQualityAssignees,
+  updateQualityIssue,
+} from '@/api/admin-data-quality'
 import { ApiError } from '@/types/api'
-import type { DataImportJob, DataQualityOverview } from '@/types/data-quality'
+import type {
+  DataImportJob,
+  DataQualityCheck,
+  DataQualityOverview,
+  QualityAssignee,
+  QualityIssueStatus,
+} from '@/types/data-quality'
 import {
   actionableChecks,
   categoryLabel,
+  checkActionPath,
   groupChecksByCategory,
+  isIssueClosed,
+  issueStatusClass,
+  ISSUE_STATUS_LABELS,
   isJobFailed,
   problemRatio,
   severityClass,
@@ -48,6 +63,7 @@ async function loadOverview() {
   error.value = ''
   try {
     overview.value = await fetchDataQualityOverview()
+    syncIssueDrafts(overview.value)
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '加载失败'
   } finally {
@@ -90,13 +106,78 @@ function reloadAll() {
   ui.success('已刷新')
 }
 
+// ---- 数据质量问题工单（分派 / 处理状态 / 直接跳转） ----
+const assignees = ref<QualityAssignee[]>([])
+/** 各检查项的负责人草稿（未选择时为空串） */
+const issueAssignee = reactive<Record<string, string>>({})
+/** 各检查项的处理备注草稿 */
+const issueNote = reactive<Record<string, string>>({})
+/** 正在保存的检查项 key */
+const issueBusy = ref('')
+
+async function loadAssignees() {
+  try {
+    assignees.value = await listQualityAssignees()
+  } catch {
+    // 负责人列表失败不阻断概览：仍可查看问题与处理状态。
+    assignees.value = []
+  }
+}
+
+/** 用后端返回的工单状态初始化草稿。 */
+function syncIssueDrafts(ov: DataQualityOverview | null) {
+  if (!ov) return
+  for (const c of ov.checks) {
+    if (!(c.key in issueAssignee)) issueAssignee[c.key] = c.issue?.assignee_id ?? ''
+    if (!(c.key in issueNote)) issueNote[c.key] = c.issue?.note ?? ''
+  }
+}
+
+async function saveIssue(check: DataQualityCheck, status: QualityIssueStatus) {
+  if (issueBusy.value) return
+  issueBusy.value = check.key
+  try {
+    await updateQualityIssue({
+      check_key: check.key,
+      status,
+      assignee_id: issueAssignee[check.key] || undefined,
+      note: issueNote[check.key] || '',
+      snapshot_count: check.count,
+    })
+    const action =
+      status === 'assigned' ? '已指派' : status === 'resolved' ? '已标记解决' : status === 'ignored' ? '已忽略' : '已重新打开'
+    ui.success(`${action}：${check.label}`)
+    await loadOverview()
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '保存处理状态失败')
+  } finally {
+    issueBusy.value = ''
+  }
+}
+
+/** 切换负责人即保存（空值表示清除指派）。 */
+function onAssigneeChange(check: DataQualityCheck) {
+  const status: QualityIssueStatus = issueAssignee[check.key] ? 'assigned' : 'open'
+  saveIssue(check, status)
+}
+
+/** 备注在失焦时保存，状态沿用当前工单状态（未建单视为待处理）。 */
+function saveNote(check: DataQualityCheck) {
+  const status = check.issue?.status ?? 'open'
+  if (isIssueClosed(status) && !issueNote[check.key]) return
+  saveIssue(check, status)
+}
+
 // 导入任务失败行的展开开关
 const expanded = ref('')
 function toggleExpand(id: string) {
   expanded.value = expanded.value === id ? '' : id
 }
 
-onMounted(reloadAll)
+onMounted(() => {
+  loadAssignees()
+  reloadAll()
+})
 </script>
 
 <template>
@@ -140,24 +221,101 @@ onMounted(reloadAll)
           </div>
         </div>
 
-        <!-- 需要关注的检查项 -->
+        <!-- 需要关注的检查项（含分派 / 处理状态 / 直接跳转） -->
         <div v-if="actionable.length" class="mb-5 space-y-2">
           <div
             v-for="c in actionable"
             :key="c.key"
-            class="flex items-start gap-3 rounded-md border border-border-dark bg-ink-900 p-3"
+            class="rounded-md border border-border-dark bg-ink-900 p-3"
           >
-            <span class="mt-0.5 shrink-0 rounded px-2 py-0.5 text-xs" :class="severityClass(c.severity)">
-              {{ severityLabel(c.severity) }}
-            </span>
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-2 text-sm text-text-primary">
-                <span>{{ categoryLabel(c.category) }} · {{ c.label }}</span>
-                <span class="text-text-muted">
-                  {{ c.count }}<span v-if="c.total"> / {{ c.total }}（{{ problemRatio(c.count, c.total) }}%）</span>
-                </span>
+            <div class="flex items-start gap-3">
+              <span class="mt-0.5 shrink-0 rounded px-2 py-0.5 text-xs" :class="severityClass(c.severity)">
+                {{ severityLabel(c.severity) }}
+              </span>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2 text-sm text-text-primary">
+                  <span>{{ categoryLabel(c.category) }} · {{ c.label }}</span>
+                  <span class="text-text-muted">
+                    {{ c.count }}<span v-if="c.total"> / {{ c.total }}（{{ problemRatio(c.count, c.total) }}%）</span>
+                  </span>
+                  <span
+                    v-if="c.issue"
+                    class="rounded px-2 py-0.5 text-xs"
+                    :class="issueStatusClass(c.issue.status)"
+                  >
+                    {{ ISSUE_STATUS_LABELS[c.issue.status] }}
+                  </span>
+                  <span
+                    v-else
+                    class="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300"
+                  >
+                    {{ ISSUE_STATUS_LABELS.open }}
+                  </span>
+                </div>
+                <p class="mt-0.5 text-xs text-text-muted">{{ c.hint }}</p>
+                <div v-if="c.issue?.updated_at" class="mt-1 text-xs text-text-muted">
+                  {{ c.issue.assignee_name ? `负责人：${c.issue.assignee_name} · ` : '' }}
+                  最近更新：{{ c.issue.updated_by || '系统' }} · {{ timeAgo(c.issue.updated_at) }}
+                  <template v-if="c.issue.snapshot_count !== c.count">
+                    · 处理时 {{ c.issue.snapshot_count }} 条
+                  </template>
+                </div>
+
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    v-model="issueAssignee[c.key]"
+                    aria-label="问题负责人"
+                    class="h-8 rounded border border-border-dark bg-ink-800 px-2 text-xs text-text-primary focus:border-grass-500 focus:outline-none"
+                    :disabled="issueBusy === c.key"
+                    @change="onAssigneeChange(c)"
+                  >
+                    <option value="">未指派</option>
+                    <option v-for="a in assignees" :key="a.id" :value="a.id">{{ a.name }}</option>
+                  </select>
+                  <input
+                    v-model="issueNote[c.key]"
+                    type="text"
+                    placeholder="处理备注（失焦保存）"
+                    class="h-8 w-56 rounded border border-border-dark bg-ink-800 px-2 text-xs text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none"
+                    :disabled="issueBusy === c.key"
+                    @blur="saveNote(c)"
+                  />
+                  <button
+                    v-if="!isIssueClosed(c.issue?.status)"
+                    type="button"
+                    class="rounded border border-grass-500/50 bg-grass-500/10 px-2 py-1 text-xs text-grass-300 transition hover:bg-grass-500/20 disabled:opacity-50"
+                    :disabled="issueBusy === c.key"
+                    @click="saveIssue(c, 'resolved')"
+                  >
+                    标记已解决
+                  </button>
+                  <button
+                    v-if="!isIssueClosed(c.issue?.status)"
+                    type="button"
+                    class="rounded border border-border-dark px-2 py-1 text-xs text-text-secondary transition hover:bg-ink-700 disabled:opacity-50"
+                    :disabled="issueBusy === c.key"
+                    @click="saveIssue(c, 'ignored')"
+                  >
+                    忽略
+                  </button>
+                  <button
+                    v-if="isIssueClosed(c.issue?.status)"
+                    type="button"
+                    class="rounded border border-border-dark px-2 py-1 text-xs text-text-secondary transition hover:bg-ink-700 disabled:opacity-50"
+                    :disabled="issueBusy === c.key"
+                    @click="saveIssue(c, 'open')"
+                  >
+                    重新打开
+                  </button>
+                  <RouterLink
+                    v-if="checkActionPath(c.category)"
+                    :to="checkActionPath(c.category)"
+                    class="text-xs text-grass-300 hover:underline"
+                  >
+                    去处理 →
+                  </RouterLink>
+                </div>
               </div>
-              <p class="mt-0.5 text-xs text-text-muted">{{ c.hint }}</p>
             </div>
           </div>
         </div>
@@ -201,6 +359,7 @@ onMounted(reloadAll)
     </ListShell>
 
     <!-- 导入任务 -->
+    <div id="import-jobs" />
     <ListShell title="数据导入任务" :loading="jobsLoading" :error="jobsError" @retry="loadJobs">
       <div class="mb-4">
         <select

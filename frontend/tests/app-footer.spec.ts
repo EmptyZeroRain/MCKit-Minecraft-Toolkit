@@ -13,6 +13,7 @@ function makeRouter() {
       '/',
       '/about',
       '/feedback',
+      '/submit-resource',
       '/privacy',
       '/copyright',
       ...BUILTIN_TOOLS.map((tool) => tool.route),
@@ -41,7 +42,9 @@ describe('页脚', () => {
   it('站点信息与非官方声明保持完整', async () => {
     const wrapper = await mountFooter()
 
-    expect(wrapper.find('nav[aria-label="站点信息"]').findAll('li')).toHaveLength(4)
+    const items = wrapper.find('nav[aria-label="站点信息"]').findAll('li')
+    expect(items).toHaveLength(5)
+    expect(items.map((li) => li.text())).toContain('资源投稿')
     expect(wrapper.text()).toContain('非官方社区项目')
     expect(wrapper.text()).toContain('MC 工具站')
   })

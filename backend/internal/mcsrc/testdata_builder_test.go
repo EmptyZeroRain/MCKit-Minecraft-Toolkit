@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,11 +16,23 @@ import (
 // 真实 jar 不可提交进仓库，单元测试需要能精确控制字节码内容，
 // 因此按 JVMS §4 手工拼装最小合法 class 文件（常量池 + 头 + 字段 / 方法表）。
 
+// refSpec 常量池成员 / 类引用（构造查找引用索引所需的最小指令）。
+type refSpec struct {
+	// Kind 取值 field | method | iface | class。
+	Kind string
+	// Owner 点分全限定名（class 时即被引用的类名）。
+	Owner string
+	Name  string
+	Desc  string
+}
+
 // memberSpec 字段 / 方法定义。
 type memberSpec struct {
 	Access uint16
 	Name   string
 	Desc   string
+	// Refs 非空时该方法带一个 Code 属性，正文依次引用 Refs 中的常量池条目。
+	Refs []refSpec
 }
 
 // classSpec class 定义。
@@ -85,6 +98,37 @@ func (w *cpWriter) nameAndType(name, desc string) uint16 {
 	return w.slots
 }
 
+// memberRef 写入 Fieldref / Methodref / InterfaceMethodref 条目，返回其索引。
+// tag 取 9（Fieldref）/ 10（Methodref）/ 11（InterfaceMethodref）。
+func (w *cpWriter) memberRef(tag byte, owner, name, desc string) uint16 {
+	key := fmt.Sprintf("r:%d:%s:%s:%s", tag, owner, name, desc)
+	if i, ok := w.seen[key]; ok {
+		return i
+	}
+	ownerIdx := w.class(owner)
+	ntIdx := w.nameAndType(name, desc)
+	w.buf.WriteByte(tag)
+	_ = binary.Write(&w.buf, binary.BigEndian, ownerIdx)
+	_ = binary.Write(&w.buf, binary.BigEndian, ntIdx)
+	w.slots++
+	w.seen[key] = w.slots
+	return w.slots
+}
+
+// registerRef 把一条引用登记进常量池，返回其操作码与常量池索引。
+func (w *cpWriter) registerRef(r refSpec) (opcode byte, index uint16) {
+	switch r.Kind {
+	case "field":
+		return 0xb4, w.memberRef(9, internal(r.Owner), r.Name, r.Desc) // GETFIELD
+	case "iface":
+		return 0xb9, w.memberRef(11, internal(r.Owner), r.Name, r.Desc) // INVOKEINTERFACE
+	case "class":
+		return 0xbb, w.class(internal(r.Owner)) // NEW
+	default: // method
+		return 0xb6, w.memberRef(10, internal(r.Owner), r.Name, r.Desc) // INVOKEVIRTUAL
+	}
+}
+
 // internal 点分名 → 内部形式。
 func internal(name string) string {
 	out := make([]byte, len(name))
@@ -116,9 +160,28 @@ func buildClass(t *testing.T, spec classSpec) []byte {
 		ifaceIdx = append(ifaceIdx, cp.class(internal(i)))
 	}
 	// 成员名与描述符必须先进常量池（引用顺序无关，这里显式登记）。
-	for _, f := range append(append([]memberSpec{}, spec.Fields...), spec.Methods...) {
+	all := append(append([]memberSpec{}, spec.Fields...), spec.Methods...)
+	for _, f := range all {
 		cp.utf8(f.Name)
 		cp.utf8(f.Desc)
+	}
+	// 方法体（引用）也必须在写出常量池之前登记：Code 属性名同样先登记。
+	codeNameIdx := cp.utf8("Code")
+	methodCodes := make([][]byte, len(spec.Methods))
+	for i, m := range spec.Methods {
+		if len(m.Refs) == 0 {
+			continue
+		}
+		code := make([]byte, 0, len(m.Refs)*5+1)
+		for _, r := range m.Refs {
+			op, idx := cp.registerRef(r)
+			code = append(code, op, byte(idx>>8), byte(idx))
+			if op == 0xb9 { // INVOKEINTERFACE：u1 参数槽数 + u1 保留位
+				code = append(code, 1, 0)
+			}
+		}
+		code = append(code, 0xb1) // RETURN
+		methodCodes[i] = code
 	}
 
 	var out bytes.Buffer
@@ -136,17 +199,37 @@ func buildClass(t *testing.T, spec classSpec) []byte {
 		_ = binary.Write(&out, binary.BigEndian, i)
 	}
 
-	writeMembers := func(list []memberSpec) {
+	// writeCodeAttr 写出一个 Code 属性（max_stack / max_locals 取 1，异常表与子属性为空）。
+	writeCodeAttr := func(code []byte) {
+		_ = binary.Write(&out, binary.BigEndian, codeNameIdx)
+		body := make([]byte, 0, 8+len(code)+4)
+		var hdr bytes.Buffer
+		_ = binary.Write(&hdr, binary.BigEndian, uint16(1))
+		_ = binary.Write(&hdr, binary.BigEndian, uint16(1))
+		_ = binary.Write(&hdr, binary.BigEndian, uint32(len(code)))
+		body = append(body, hdr.Bytes()...)
+		body = append(body, code...)
+		body = append(body, 0, 0, 0, 0)
+		_ = binary.Write(&out, binary.BigEndian, uint32(len(body)))
+		out.Write(body)
+	}
+
+	writeMembers := func(list []memberSpec, codes [][]byte) {
 		_ = binary.Write(&out, binary.BigEndian, uint16(len(list)))
-		for _, m := range list {
+		for i, m := range list {
 			_ = binary.Write(&out, binary.BigEndian, m.Access)
 			_ = binary.Write(&out, binary.BigEndian, cp.utf8(m.Name))
 			_ = binary.Write(&out, binary.BigEndian, cp.utf8(m.Desc))
-			_ = binary.Write(&out, binary.BigEndian, uint16(0)) // 属性表为空
+			if codes != nil && codes[i] != nil {
+				_ = binary.Write(&out, binary.BigEndian, uint16(1)) // 属性数量 = 1（Code）
+				writeCodeAttr(codes[i])
+			} else {
+				_ = binary.Write(&out, binary.BigEndian, uint16(0)) // 属性表为空
+			}
 		}
 	}
-	writeMembers(spec.Fields)
-	writeMembers(spec.Methods)
+	writeMembers(spec.Fields, nil)
+	writeMembers(spec.Methods, methodCodes)
 	_ = binary.Write(&out, binary.BigEndian, uint16(0)) // 类属性表为空
 	return out.Bytes()
 }

@@ -2,6 +2,7 @@
 // 对应后端 handler.RedstoneAdminHandler：按审核状态 / 用途筛选 + 审核留痕。
 import http, { toPaged } from './http'
 import type { ApiResponse } from '@/types/api'
+import type { BatchReviewResult } from '@/types/batch'
 import type { RedstoneDesign, RedstoneDesignPurpose, RedstoneReviewStatus } from '@/types/redstone'
 
 /** 管理端机器设计列表查询参数（对齐后端 redstoneDesignListRequest） */
@@ -31,5 +32,18 @@ export async function reviewRedstoneDesign(
     review_status: reviewStatus,
     note,
   })
+  return data.data
+}
+
+/** 批量审核红石设计（单次最多 50 条；逐条返回结果）。 */
+export async function batchReviewRedstoneDesigns(
+  ids: string[],
+  reviewStatus: RedstoneReviewStatus,
+  note = '',
+): Promise<BatchReviewResult> {
+  const { data } = await http.post<ApiResponse<BatchReviewResult>>(
+    '/admin/redstone/designs/batch-review',
+    { ids, review_status: reviewStatus, note },
+  )
   return data.data
 }

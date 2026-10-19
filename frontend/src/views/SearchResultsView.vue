@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // 搜索结果页（需求 5.1）：类型筛选 + 分页 + 空结果建议
 import { onMounted, reactive, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import Breadcrumbs from '@/components/layout/Breadcrumbs.vue'
 import ShareButton from '@/components/common/ShareButton.vue'
+import SearchResults from '@/components/search/SearchResults.vue'
 import { search } from '@/api/public'
 import type { SearchResultItem, SearchSort } from '@/types/search'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -13,7 +14,6 @@ import LoadingSkeleton from '@/components/common/LoadingSkeleton.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { ApiError } from '@/types/api'
 import { applyPageMeta } from '@/utils/seo'
-import { highlightSegments } from '@/utils/highlight'
 import { buildVersionOptions, loadReleaseVersions, majorVersions } from '@/utils/mc-versions'
 
 const route = useRoute()
@@ -60,10 +60,6 @@ const sortOptions: Array<{ label: string; value: SearchSort }> = [
 /** 游戏版本筛选（TODO §5 / §6-C）；空值表示不限版本。
  *  选项来自官方正式版清单（动态覆盖全部 MC 版本），并含「全部 MC 版本」通配筛选。 */
 const versionOptions = ref<{ label: string; value: string }[]>([])
-
-/** 标题/摘要按当前关键词切分，供模板用 <mark> 渲染（需求 §5.1 关键词高亮）。 */
-const titleSegments = (item: SearchResultItem) => highlightSegments(item.title, filters.q)
-const summarySegments = (item: SearchResultItem) => highlightSegments(item.summary ?? '', filters.q)
 
 async function loadResults() {
   if (!filters.q.trim()) return
@@ -144,11 +140,6 @@ function onPageChange(p: number) {
   loadResults()
 }
 
-function typeLabel(type: string): string {
-  const map: Record<string, string> = { tool: '工具', resource: '资源', wiki: '百科', item: '物品', devdoc: '开发文档' }
-  return map[type] ?? type
-}
-
 onMounted(loadResults)
 
 // 版本选项动态加载（失败内部回退兜底清单）。
@@ -227,29 +218,7 @@ onMounted(async () => {
       <LoadingSkeleton v-if="loading" :count="5" />
       <ErrorState v-else-if="error" :message="error" retryable @retry="loadResults" />
 
-      <ul v-else-if="results.length" class="space-y-3">
-        <li v-for="item in results" :key="item.type + item.id" class="card card-hover p-4">
-          <RouterLink :to="item.url" class="flex items-start gap-3">
-            <span class="mt-0.5 shrink-0 rounded bg-ink-700 px-1.5 py-0.5 text-[10px] text-text-muted">
-              {{ typeLabel(item.type) }}
-            </span>
-            <div class="min-w-0 flex-1">
-              <h2 class="mb-1 font-medium text-text-primary hover:text-grass-300">
-                <template v-for="(seg, i) in titleSegments(item)" :key="i">
-                  <mark v-if="seg.match" class="bg-grass-500/30 text-grass-200">{{ seg.text }}</mark>
-                  <template v-else>{{ seg.text }}</template>
-                </template>
-              </h2>
-              <p class="line-clamp-2 text-sm text-text-secondary">
-                <template v-for="(seg, i) in summarySegments(item)" :key="i">
-                  <mark v-if="seg.match" class="bg-grass-500/30 text-grass-200">{{ seg.text }}</mark>
-                  <template v-else>{{ seg.text }}</template>
-                </template>
-              </p>
-            </div>
-          </RouterLink>
-        </li>
-      </ul>
+      <SearchResults v-else-if="results.length" :items="results" :keyword="filters.q" />
 
       <div v-else-if="!loading && !error" class="space-y-4">
         <EmptyState

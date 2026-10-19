@@ -4,10 +4,12 @@
 // 组合合法性校验 + 铁砧合并花费（Java 公式）+ 结果附魔推演 + 附魔资料表。
 // 规则来源：Minecraft Wiki《Anvil mechanics》；未核实/未覆盖部分显式标注。
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import Breadcrumbs from '@/components/layout/Breadcrumbs.vue'
 import FormField from '@/components/common/FormField.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
+import ShareButton from '@/components/common/ShareButton.vue'
 import { useRecentToolsStore } from '@/stores/recent-tools'
 import { loadReleaseVersions } from '@/utils/mc-versions'
 import VersionNotice from '@/components/common/VersionNotice.vue'
@@ -25,6 +27,7 @@ import {
   validateCombination,
 } from '@/utils/enchant-calculator'
 import { applyPageMeta } from '@/utils/seo'
+import { changedOnly, queryBool, queryNumber, queryString } from '@/utils/share'
 
 applyPageMeta({
   title: '附魔与装备计算器',
@@ -58,6 +61,93 @@ watch(equipment, () => {
   targetEnchants.value = targetEnchants.value.filter((e) => ids.has(e.id))
   sacrificeEnchants.value = sacrificeEnchants.value.filter((e) => ids.has(e.id))
 })
+
+// ===== URL 分享（TODO §14）=====
+// 把装备 / 版本 / 双方附魔与使用次数写入地址栏，分享链接打开即复现同一组计算参数。
+const route = useRoute()
+const router = useRouter()
+
+const EQUIPMENT_IDS = EQUIPMENT.map((e) => e.id)
+
+/** 解析 JSON 附魔数组参数（非法值回退空数组）。 */
+function enchantListParam(raw: string): EnchantLevel[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(
+        (e): e is EnchantLevel =>
+          !!e &&
+          typeof e === 'object' &&
+          typeof (e as EnchantLevel).id === 'string' &&
+          Number.isFinite(Number((e as EnchantLevel).level)),
+      )
+      .map((e) => ({ id: e.id, level: Number(e.level) }))
+  } catch {
+    return []
+  }
+}
+
+/** 用 URL 查询参数覆盖计算参数（缺失字段保持默认值）。 */
+function applyQuery() {
+  const q = route.query
+  const s = (key: string) => queryString(q[key])
+
+  version.value = s('v') || version.value
+
+  const eq = s('equipment')
+  if ((EQUIPMENT_IDS as string[]).includes(eq)) equipment.value = eq as EquipmentId
+
+  const targetList = enchantListParam(s('t_ench'))
+  if (targetList.length) targetEnchants.value = targetList
+  targetUseCount.value = queryNumber(q.t_uses, targetUseCount.value)
+
+  const kind = s('s_kind')
+  if (kind === 'item' || kind === 'book') sacrificeKind.value = kind
+
+  const sacrificeList = enchantListParam(s('s_ench'))
+  if (sacrificeList.length) sacrificeEnchants.value = sacrificeList
+  sacrificeUseCount.value = queryNumber(q.s_uses, sacrificeUseCount.value)
+
+  rename.value = queryBool(q.rename)
+  targetDamaged.value = queryBool(q.damaged)
+}
+
+/** 把当前参数写回地址栏（只写与默认值不同的字段）。 */
+function syncUrl() {
+  router.replace({
+    path: '/enchant-calculator',
+    query: changedOnly({
+      v: version.value === '1.21' ? '' : version.value,
+      equipment: equipment.value === 'sword' ? '' : equipment.value,
+      t_ench: targetEnchants.value.length ? JSON.stringify(targetEnchants.value) : '',
+      t_uses: targetUseCount.value ? String(targetUseCount.value) : '',
+      s_kind: sacrificeKind.value === 'book' ? '' : sacrificeKind.value,
+      s_ench: sacrificeEnchants.value.length ? JSON.stringify(sacrificeEnchants.value) : '',
+      s_uses: sacrificeUseCount.value ? String(sacrificeUseCount.value) : '',
+      rename: rename.value ? '1' : '',
+      damaged: targetDamaged.value ? '1' : '',
+    }),
+  })
+}
+
+applyQuery()
+watch(
+  [
+    version,
+    equipment,
+    targetEnchants,
+    targetUseCount,
+    sacrificeKind,
+    sacrificeEnchants,
+    sacrificeUseCount,
+    rename,
+    targetDamaged,
+  ],
+  syncUrl,
+  { deep: true },
+)
 
 const issues = computed(() => validateCombination(equipment.value, targetEnchants.value, version.value))
 const errors = computed(() => issues.value.filter((i) => i.level === 'error'))
@@ -159,12 +249,15 @@ function addSnapshot() {
   <PageContainer maxWidth="max-w-6xl">
     <Breadcrumbs :items="[{ label: '工具中心', to: '/tools' }, { label: '附魔计算器' }]" />
 
-    <div class="mb-6">
-      <h1 class="mb-2 text-2xl font-bold text-text-primary md:text-3xl">附魔与装备计算器</h1>
-      <p class="text-text-secondary">
-        校验附魔组合是否合法，并按官方公式估算<strong class="text-text-primary">铁砧合并的经验花费</strong>与先作惩罚。
-        涉及版本差异时按所选版本裁决；无法确认的边界会明确标注。
-      </p>
+    <div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 class="mb-2 text-2xl font-bold text-text-primary md:text-3xl">附魔与装备计算器</h1>
+        <p class="text-text-secondary">
+          校验附魔组合是否合法，并按官方公式估算<strong class="text-text-primary">铁砧合并的经验花费</strong>与先作惩罚。
+          涉及版本差异时按所选版本裁决；无法确认的边界会明确标注。
+        </p>
+      </div>
+      <ShareButton />
     </div>
 
     <div class="grid gap-6 lg:grid-cols-5">

@@ -90,6 +90,12 @@ func (h *RoleHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before, err := h.svc.Get(r.Context(), req.Name)
+	if err != nil {
+		writeRoleError(w, r, err)
+		return
+	}
+
 	updated, err := h.svc.Update(r.Context(), req.Name, role.UpdateInput{
 		Label:       req.Label,
 		Description: req.Description,
@@ -99,11 +105,35 @@ func (h *RoleHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeRoleError(w, r, err)
 		return
 	}
-	h.auditLog(r, "role.update", updated.Name, nil, map[string]any{
-		"label":       updated.Label,
-		"permissions": updated.Permissions,
-	})
+	// 敏感变更（权限 / 名称）记录脱敏后的前后差异（gj.md §9.2）。
+	h.auditLog(r, "role.update", updated.Name,
+		map[string]any{"label": before.Label, "permissions": before.Permissions},
+		map[string]any{"label": updated.Label, "permissions": updated.Permissions})
 	response.OK(w, updated)
+}
+
+// Impact POST /api/v1/admin/roles/impact
+// body: {name, permissions?}；返回权限变更的影响预览（受影响账号数、权限增减）。
+// 只读计算，不写审计。
+func (h *RoleHandler) Impact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string   `json:"name"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		response.Validation(w, r, []response.ErrorDetail{{Field: "name", Message: "name 必填"}})
+		return
+	}
+	impact, err := h.svc.Impact(r.Context(), req.Name, req.Permissions)
+	if err != nil {
+		writeRoleError(w, r, err)
+		return
+	}
+	response.OK(w, impact)
 }
 
 // Delete POST /api/v1/admin/roles/delete

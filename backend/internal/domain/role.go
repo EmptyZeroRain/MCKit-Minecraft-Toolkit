@@ -41,9 +41,17 @@ const (
 	PermOpsAudit       = "ops.audit"
 	PermOpsDataQuality = "ops.dataquality"
 	PermOpsSearchStats = "ops.searchstats"
-	PermOpsAnalytics   = "ops.analytics"
-	PermOpsLinkHealth  = "ops.linkhealth"
-	PermOpsMCsrc       = "ops.mcsrc"
+	// PermOpsContentTasks 内容建设任务（搜索缺口 → 运营任务，gj.md §8.3）。
+	PermOpsContentTasks = "ops.contenttasks"
+	PermOpsAnalytics    = "ops.analytics"
+	PermOpsLinkHealth   = "ops.linkhealth"
+	PermOpsMCsrc        = "ops.mcsrc"
+	// PermOpsGrowth 用户成长（经验规则 / 等级 / 每日任务 / 成就 / 人工调整与冲正）。
+	PermOpsGrowth = "ops.growth"
+	// PermOpsJobs 后台运维任务（入队 / 重试 / 取消 / 查看失败详情）。
+	PermOpsJobs = "ops.jobs"
+	// PermOpsAlerts 运营告警中心（告警列表 / 确认 / 关闭 / 手动评估）。
+	PermOpsAlerts = "ops.alerts"
 )
 
 // Permission 单个权限点（key 为存储值，label 为中文展示名）。
@@ -97,16 +105,20 @@ var PermissionGroups = []PermissionGroup{
 			{PermOpsAudit, "操作日志"},
 			{PermOpsDataQuality, "数据质量"},
 			{PermOpsSearchStats, "搜索词统计"},
+			{PermOpsContentTasks, "内容建设任务"},
 			{PermOpsAnalytics, "运营看板"},
 			{PermOpsLinkHealth, "链接健康"},
 			{PermOpsMCsrc, "MC 源码库"},
+			{PermOpsGrowth, "用户成长"},
+			{PermOpsJobs, "后台任务"},
+			{PermOpsAlerts, "运营告警"},
 		},
 	},
 }
 
 // AllPermissions 全部权限点（内置 admin 角色的权限集合）。
 func AllPermissions() []string {
-	out := make([]string, 0, 17)
+	out := make([]string, 0, 21)
 	for _, g := range PermissionGroups {
 		for _, p := range g.Permissions {
 			out = append(out, p.Key)

@@ -5,9 +5,13 @@
 import http from './http'
 import type { ApiResponse } from '@/types/api'
 import type {
+  McsrcClassBytecode,
+  McsrcClassMapping,
   McsrcClassPage,
   McsrcClassStructure,
   McsrcHierarchy,
+  McsrcReferenceQuery,
+  McsrcReferences,
   McsrcSide,
   McsrcStatus,
 } from '@/types/mcsrc'
@@ -85,17 +89,80 @@ export async function getClassHierarchy(
   return data.data
 }
 
-/**
- * 下载已缓存的 jar（公开只读）。
- * 这是本模块唯一的 GET 接口：二进制大文件下载需要 Range / ETag 语义；
- * 前端在浏览器内用 Vineflower（WASM）反编译，因此需要 jar 字节。
- */
-export async function fetchJarBlob(version: string, side: McsrcSide = 'client'): Promise<Blob> {
-  const { data } = await http.get<Blob>('/mcsrc/jar', {
-    params: { version, side },
-    responseType: 'blob',
-    // jar 可达数十 MB，默认 15s 超时不够。
-    timeout: 120_000,
+/** 查询单个类的字节码反汇编（ASM Textifier 风格文本） */
+export async function getClassBytecode(
+  version: string,
+  className: string,
+  side: McsrcSide = 'client',
+): Promise<McsrcClassBytecode> {
+  const { data } = await http.post<ApiResponse<McsrcClassBytecode>>('/mcsrc/classes/bytecode', {
+    version,
+    side,
+    class: className,
   })
-  return data
+  return data.data
+}
+
+/**
+ * 查找对某个类 / 方法 / 字段的引用。
+ * 首次调用需服务端扫描整个 jar 建反向引用索引（较慢），之后为毫秒级，故超时放宽。
+ */
+export async function getClassReferences(params: McsrcReferenceQuery): Promise<McsrcReferences> {
+  const { data } = await http.post<ApiResponse<McsrcReferences>>(
+    '/mcsrc/classes/references',
+    { side: 'client', kind: 'class', ...params },
+    { timeout: 120_000 },
+  )
+  return data.data
+}
+
+/**
+ * 查询类映射重命名（按版本 + jar 内类名反查已导入的映射）。
+ * 未导入映射或没有覆盖该类时返回 `available: false`（正常状态，非错误）。
+ */
+export async function getClassMapping(
+  version: string,
+  className: string,
+  side: McsrcSide = 'client',
+): Promise<McsrcClassMapping> {
+  const { data } = await http.post<ApiResponse<McsrcClassMapping>>('/mcsrc/classes/mapping', {
+    version,
+    side,
+    class: className,
+  })
+  return data.data
+}
+
+/** jar 摘要响应头：服务端回传官方 sha1，供前端做持久缓存键 */
+const JAR_SHA1_HEADER = 'x-mcsrc-jar-sha1'
+
+/** 下载结果：jar 字节 + 服务端回传的官方 sha1 */
+export interface McsrcJarBlob {
+  blob: Blob
+  /** 官方 sha1（响应头缺失时为空串） */
+  sha1: string
+}
+
+/**
+ * 下发已缓存的 jar（公开只读）。
+ *
+ * 与项目约定一致走 POST + JSON body，因此浏览器不会对响应做 HTTP 缓存；
+ * 几十 MB 的 jar 改由前端按响应头回传的 sha1 持久化到 IndexedDB
+ * （见 `@/mcsrc/jarStore`），跨刷新复用。
+ */
+export async function fetchJarBlob(
+  version: string,
+  side: McsrcSide = 'client',
+): Promise<McsrcJarBlob> {
+  const res = await http.post<Blob>(
+    '/mcsrc/jar',
+    { version, side },
+    {
+      responseType: 'blob',
+      // jar 可达数十 MB，默认 15s 超时不够。
+      timeout: 300_000,
+    },
+  )
+  const sha1 = String(res.headers?.[JAR_SHA1_HEADER] ?? '')
+  return { blob: res.data, sha1 }
 }

@@ -29,6 +29,8 @@ tags:
     description: 后台管理（需登录 + CSRF）
   - name: mcsrc
     description: MC 源码浏览器（jar 缓存与类索引；准备接口为管理员专属）
+  - name: growth
+    description: 用户成长（经验 / 等级 / 每日任务 / 成就；等级仅展示用）
 
 paths:
   /health:
@@ -1020,40 +1022,73 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
 
+  /user/captcha:
+    post:
+      tags: [user]
+      summary: 获取注册图形验证码
+      description: >-
+        签发一张图形验证码，返回一次性 `captcha_id` 与 PNG 图片（data URI）。
+        验证码一次性：无论校验成功与否，注册请求到达服务端后即失效，需重新获取。
+        服务端以 `CAPTCHA_ENABLED=false` 关闭时返回 503 `CAPTCHA_DISABLED`。
+      responses:
+        "200":
+          description: 签发成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/CaptchaChallenge" }
+        "503":
+          description: 验证码功能未启用（CAPTCHA_ENABLED=false）
   /user/register:
     post:
       tags: [user]
       summary: 注册普通用户（注册后需登录）
       description: >-
-        用户名 3-40 位、以字母开头，仅含字母/数字/下划线/连字符；密码至少 8 位。
+        用户名 3-40 位、以字母开头，仅含字母/数字/下划线/连字符；昵称 1-60 个字符；
+        邮箱必填且全局唯一（统一小写存储，可作为登录标识）；密码至少 8 位。
+        需携带图形验证码（`captcha_id` + `captcha_answer`）。
         密码使用 Argon2id 哈希存储，不保存明文。注册不自动登录。
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [username, nickname, email, password, captcha_id, captcha_answer]
               properties:
                 username: { type: string }
+                nickname: { type: string, maxLength: 60 }
+                email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
+                captcha_id: { type: string }
+                captcha_answer: { type: string }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
         "409":
-          description: 用户名已被占用
-        "422": { $ref: "#/components/responses/ValidationError" }
+          description: 用户名或邮箱已被占用（`USERNAME_TAKEN` / `EMAIL_TAKEN`）
+        "422":
+          description: 参数校验失败，或验证码错误/过期（`CAPTCHA_INVALID`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /user/login:
     post:
       tags: [user]
       summary: 用户登录
-      description: 成功时种下 HttpOnly 统一会话 Cookie（`SESSION_COOKIE_NAME`，默认 mc_session），并在响应中返回 csrf_token。
+      description: >-
+        `identifier` 支持用户名或邮箱（`username` 为兼容旧客户端的别名）。
+        成功时种下 HttpOnly 统一会话 Cookie（`SESSION_COOKIE_NAME`，默认 mc_session），
+        并在响应中返回 csrf_token。
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [identifier, password]
               properties:
-                username: { type: string }
+                identifier: { type: string, description: 用户名或邮箱 }
+                username: { type: string, description: 兼容字段；identifier 为空时回退使用 }
                 password: { type: string }
       responses:
         "200":
@@ -1066,7 +1101,7 @@ paths:
                   data: { $ref: "#/components/schemas/UserAccount" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429":
-          description: 登录尝试过多（按用户名 + IP 限流）
+          description: 登录尝试过多（按登录标识 + IP 限流）
   /user/logout:
     post:
       tags: [user]
@@ -1082,6 +1117,35 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/profile:
+    post:
+      tags: [user]
+      summary: 更新当前用户展示资料（昵称 / 头像，需 CSRF）
+      description: >
+        昵称 1-60 个字符；头像只能上传图片，以 data:image/{png,jpeg,webp,gif};base64,...
+        数据 URI 提交（留空表示清空），服务端校验真实图片类型与大小（≤512KB）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname]
+              properties:
+                nickname: { type: string, maxLength: 60 }
+                avatar_url: { type: string, description: 图片 data URI（仅上传图片） }
+      responses:
+        "200":
+          description: 更新后的账号展示资料
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/UserAccount" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /user/change-password:
     post:
       tags: [user]
@@ -1262,6 +1326,61 @@ paths:
         "204": { description: 已删除 }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /user/submissions/submit:
+    post:
+      tags: [user]
+      summary: 提交资源投稿（需登录 + CSRF）
+      description: |
+        提交结构化资源投稿，进入待审核队列（状态 pending）。审核通过后由管理员一键转为
+        resources 记录（默认草稿，需在资源管理中核验后发布），因此提交不会立即产生公开资源。
+
+        约束：名称 / 简介 / 资源类型 / 原始来源链接（http(s)）必填；`license_version` 必须等于
+        后端当前授权条款版本，否则 422；同一账号对同一 `source_url` 同时只能有一个待审核投稿
+        （重复返回 409），单账号待审核投稿上限 10 条（超限返回 429）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceSubmissionPayload" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: 该来源链接已有待审核投稿（SUBMISSION_DUPLICATE）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /user/submissions/list:
+    post:
+      tags: [user]
+      summary: 我的投稿列表（分页，含审核状态）
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 成功（含分页 meta）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ResourceSubmission" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /stats/event:
     post:
       tags: [public]
@@ -1348,6 +1467,251 @@ paths:
       responses:
         "204": { description: 修改成功 }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/auth/profile:
+    post:
+      tags: [admin-auth]
+      summary: 更新当前账号展示资料（昵称 / 头像，需 CSRF）
+      description: >
+        仅后台账号可用。昵称最多 60 个字符；头像只能上传图片，
+        以 data:image/{png,jpeg,webp,gif};base64,... 数据 URI 提交（留空表示清空），
+        服务端会校验真实图片类型与大小（≤512KB）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname: { type: string, maxLength: 60 }
+                avatar_url: { type: string, description: 图片 data URI（仅上传图片） }
+      responses:
+        "200":
+          description: 更新后的账号展示资料
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/auth/sessions/list:
+    post:
+      tags: [admin-auth]
+      summary: 列出当前后台账号的全部有效会话
+      description: >
+        返回会话指纹（SHA-256 前 12 位，不回显会话 ID 原文），
+        以及创建 / 最近活动 / 过期时间与是否为当前会话。
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      sessions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string, description: 会话指纹 }
+                            role: { type: string }
+                            created_at: { type: string, format: date-time }
+                            last_seen_at: { type: string, format: date-time }
+                            expires_at: { type: string, format: date-time }
+                            current: { type: boolean }
+                      total: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /admin/auth/sessions/revoke:
+    post:
+      tags: [admin-auth]
+      summary: 撤销当前后台账号的会话（需 CSRF）
+      description: >
+        scope=others 保留当前设备并退出其它设备；scope=all 退出全部设备（含当前），
+        响应会清除会话 Cookie，前端需回到登录页。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scope:
+                  type: string
+                  enum: [others, all]
+                  default: others
+      responses:
+        "200":
+          description: 撤销结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      scope: { type: string }
+                      revoked: { type: integer, description: "others 为实际撤销数；all 为 -1（表示全部）" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/auth/mfa/verify:
+    post:
+      tags: [admin-auth]
+      summary: 第二因子校验（TOTP 或一次性恢复码）
+      description: >
+        公开接口：凭证是登录阶段返回的 mfa_ticket + 验证码，不需要已有会话。
+        票据 5 分钟过期，允许 5 次错误重试，达到上限后作废；成功后种下会话 Cookie。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket, code]
+              properties:
+                ticket: { type: string }
+                code: { type: string, description: 6 位 TOTP 或格式为 XXXXX-XXXXX 的恢复码 }
+      responses:
+        "200":
+          description: 登录成功（同 /admin/auth/login 的成功响应）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminUser" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401":
+          description: 票据失效（MFA_TICKET_INVALID）或验证码错误（MFA_INVALID_CODE）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /admin/auth/mfa/status:
+    post:
+      tags: [admin-auth]
+      summary: 当前账号的 MFA 绑定状态
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 状态（不含任何密钥材料）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      pending: { type: boolean, description: 已生成 secret 但未完成首次验证 }
+                      recovery_codes_left: { type: integer }
+                      last_used_at: { type: string, format: date-time, nullable: true }
+                      configured: { type: boolean, description: 服务端是否已配置 MFA 加密密钥 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /admin/auth/mfa/setup:
+    post:
+      tags: [admin-auth]
+      summary: 生成 TOTP 绑定信息（需 CSRF）
+      description: >
+        生成新的 secret 并以「待启用」状态保存，返回 otpauth URI。
+        重复调用会覆盖尚未启用的旧 secret；已启用时返回 409，须先解绑。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 绑定信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      secret: { type: string, description: base32 无填充密钥，供手动录入认证器 }
+                      uri: { type: string, description: "otpauth:// URI" }
+        "409":
+          description: 已启用（MFA_ALREADY_ENABLED）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /admin/auth/mfa/enable:
+    post:
+      tags: [admin-auth]
+      summary: 用首次验证码确认绑定（需 CSRF）
+      description: >
+        成功后启用 MFA 并一次性返回 10 个恢复码明文；服务端只保存其 SHA-256 哈希。
+        恢复码可用于登录或解绑，每个只能用一次。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: 已启用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      recovery_codes:
+                        type: array
+                        items: { type: string }
+        "409":
+          description: 已启用 / 未初始化（MFA_ALREADY_ENABLED、MFA_NOT_SETUP）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /admin/auth/mfa/disable:
+    post:
+      tags: [admin-auth]
+      summary: 解绑 MFA（需 CSRF）
+      description: >
+        需要「当前密码 + 当前验证码 / 恢复码」双重证明，避免仅凭被劫持的会话关闭 MFA。
+        解绑不撤销既有会话（MFA 只影响登录）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string }
+                code: { type: string }
+      responses:
+        "204": { description: 已解绑 }
+        "401":
+          description: 密码错误（PASSWORD_MISMATCH）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /admin/admins/list:
     post: { tags: [admin], summary: 管理员账号列表（admin 专属）, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
@@ -1408,6 +1772,59 @@ paths:
       responses:
         "204": { description: 已重置 }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/admins/delete-preview:
+    post:
+      tags: [admin]
+      summary: 删除后台账号的影响预览（只读，不执行删除）
+      description: >
+        返回是否删除自己、是否最后一名启用 admin、活动会话数，
+        以及「物理删除不可恢复」等风险提示，供前端二次确认。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 影响预览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      admin_id: { type: string }
+                      username: { type: string }
+                      role: { type: string }
+                      is_active: { type: boolean }
+                      is_self: { type: boolean }
+                      is_last_admin: { type: boolean }
+                      active_sessions: { type: integer }
+                      reversible: { type: boolean }
+                      notes:
+                        type: array
+                        items: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/admins/mfa/reset:
+    post:
+      tags: [admin]
+      summary: 解绑指定后台账号的 MFA（账号恢复，需 CSRF）
+      description: >
+        用于管理员更换手机且恢复码丢失的场景。持有 accounts.admins 权限即可执行，
+        写审计（admin.mfa.reset）。解绑后该账号登录只需密码，建议通知本人尽快重新绑定。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已解绑 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/admins/delete:
     post:
       tags: [admin]
@@ -1422,6 +1839,29 @@ paths:
         "204": { description: 已删除 }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /admin/users/create:
+    post:
+      tags: [admin]
+      summary: 创建普通用户（需 accounts.users；密码 8–128 位；角色固定为普通用户）
+      description: |
+        创建一个普通用户账号，角色固定为 `user`，调用方无法指定后台角色。
+        用户名规则与前台注册一致（字母开头，3-40 位，字母/数字/下划线/连字符），
+        且在 `accounts` 中全局唯一（与后台账号一并查重）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 3, maxLength: 40 }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/users/list:
     post:
       tags: [admin]
@@ -1445,6 +1885,148 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PagedEnvelope" }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/users/detail:
+    post:
+      tags: [admin]
+      summary: 普通用户详情（需 accounts.users；含收藏 / 最近使用 / 常用种子明细）
+      description: |
+        返回账号基础信息与个人数据明细。明细列表受个人数据容量上限约束
+        （收藏 ≤500、最近使用 ≤50、常用种子 ≤200），因此一次性返回，不再分页。
+        仅作用于 `role = 'user'` 的账号，后台账号一律视为不存在（404）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/PlatformUserDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/users/update:
+    post:
+      tags: [admin]
+      summary: 启用 / 禁用普通用户（需 accounts.users；停用后该用户会话立即失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, is_active]
+              properties:
+                id: { type: string, format: uuid }
+                is_active: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/users/reset-password:
+    post:
+      tags: [admin]
+      summary: 重置普通用户密码（需 accounts.users；密码 8–128 位；成功后该用户会话全部失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, new_password]
+              properties:
+                id: { type: string, format: uuid }
+                new_password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        "204": { description: 已重置 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/users/delete-preview:
+    post:
+      tags: [admin]
+      summary: 删除普通用户的影响预览（只读，不执行删除）
+      description: >
+        返回将随账号一并清理的收藏 / 最近使用 / 常用种子 / 投稿数量与活动会话数。
+        删除为物理删除、不可恢复。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 影响预览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user_id: { type: string }
+                      username: { type: string }
+                      is_active: { type: boolean }
+                      favorites: { type: integer }
+                      recents: { type: integer }
+                      seeds: { type: integer }
+                      submissions: { type: integer }
+                      sessions: { type: integer }
+                      reversible: { type: boolean }
+                      notes:
+                        type: array
+                        items: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/users/delete:
+    post:
+      tags: [admin]
+      summary: 删除普通用户（需 accounts.users；个人数据由外键级联清除）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/users/export:
+    post:
+      tags: [admin]
+      summary: 导出普通用户 CSV（需 accounts.users；按当前筛选，不分页）
+      description: |
+        返回 `text/csv` 附件（带 UTF-8 BOM，便于 Excel 打开中文），列含用户名 / 状态 / 注册时间 / 最后登录 / 个人数据计数。
+        单次导出上限 10000 条，超出时响应头 `X-Export-Truncated: true`。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 用户名模糊匹配 }
+                status: { type: string, enum: [active, disabled], description: 省略表示不限 }
+      responses:
+        "200":
+          description: CSV 附件
+          headers:
+            X-Export-Truncated:
+              schema: { type: boolean }
+              description: 是否因超出单次导出上限被截断
+          content:
+            text/csv:
+              schema: { type: string }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/data-quality/overview:
     post:
@@ -1464,6 +2046,68 @@ paths:
                   data: { $ref: "#/components/schemas/DataQualityOverview" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/data-quality/assignees:
+    post:
+      tags: [admin]
+      summary: 可指派的数据质量负责人（启用中的管理员）
+      description: |
+        只返回 id 与展示名（昵称优先、回退用户名），
+        因此调用方只需要 `ops.dataquality` 权限，不要求 `accounts.admins`。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/data-quality/issues/update:
+    post:
+      tags: [admin]
+      summary: 新建 / 更新数据质量问题工单（分派 / 解决 / 忽略 / 重新打开）
+      description: |
+        以 `check_key` 为业务唯一键做 upsert；`status=assigned` 但未指定负责人时
+        会自动归一化为 `open`（避免「已指派但无人」的脏状态）。
+        `resolved` / `ignored` 记录 `resolved_at`，重新打开时清空。
+        写 `data_quality.issue.update` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [check_key, status]
+              properties:
+                check_key: { type: string, description: 检查项 key（概览接口返回） }
+                status: { type: string, enum: [open, assigned, resolved, ignored] }
+                assignee_id: { type: string, format: uuid, description: 空表示清除负责人 }
+                note: { type: string }
+                snapshot_count: { type: integer, description: 当前命中条数（用于对比处理进度） }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/QualityIssueState" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /admin/data-import-jobs/list:
     post:
       tags: [admin]
@@ -1686,6 +2330,198 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /admin/mcsrc/cache/list:
+    post:
+      tags: [admin]
+      summary: MC 源码缓存列表（需 ops.mcsrc 权限）
+      description: |
+        列出服务端已缓存的 MC 源码 jar（`version + side`）及其磁盘占用
+        （jar / 索引 / 元数据分项与合计）。jar 与索引均为**可重建的派生数据**，
+        清理不会影响业务数据，仅导致下次准备重新下载 / 建索引。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            version: { type: string }
+                            side: { type: string, enum: [client, server] }
+                            cached: { type: boolean }
+                            size: { type: integer, description: jar 字节数 }
+                            sha1: { type: string }
+                            indexed: { type: boolean }
+                            class_count: { type: integer }
+                            index_size: { type: integer }
+                            meta_size: { type: integer }
+                            total_size: { type: integer }
+                            fetched_at: { type: string, format: date-time, nullable: true }
+                            index_built_at: { type: string, format: date-time, nullable: true }
+                      usage:
+                        type: object
+                        properties:
+                          entries: { type: integer }
+                          jar_bytes: { type: integer }
+                          index_bytes: { type: integer }
+                          meta_bytes: { type: integer }
+                          total_bytes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: 源码库未启用（`MCSRC_ENABLED=false`） }
+  /admin/mcsrc/cache/preview:
+    post:
+      tags: [admin]
+      summary: 清理源码缓存的影响预览（需 ops.mcsrc 权限）
+      description: >
+        返回目标版本的 jar / 索引 / 元数据占用、预计释放空间、待删文件清单，
+        以及是否正在准备（下载 / 建索引）。只读计算，不执行删除、不写审计。
+        正在准备的版本清理会被拒绝（409 CACHE_BUSY）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+      responses:
+        "200":
+          description: 影响预览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      version: { type: string }
+                      side: { type: string }
+                      cached: { type: boolean }
+                      jar_bytes: { type: integer }
+                      index_bytes: { type: integer }
+                      meta_bytes: { type: integer }
+                      total_bytes: { type: integer }
+                      preparing: { type: boolean }
+                      rebuildable: { type: boolean }
+                      files:
+                        type: array
+                        items: { type: string }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { description: 源码库未启用（`MCSRC_ENABLED=false`） }
+  /admin/mcsrc/cache/purge:
+    post:
+      tags: [admin]
+      summary: 清理单个版本的源码缓存（需 ops.mcsrc 权限）
+      description: 删除指定 `version + side` 的 jar / 索引 / 元数据；未缓存该版本返回 404。属运维动作，写审计日志（含释放字节数）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server], default: client }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      version: { type: string }
+                      side: { type: string }
+                      freed_bytes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/mcsrc/cache/rebuild:
+    post:
+      tags: [admin]
+      summary: 重建单个版本的源码缓存（入队后台任务）
+      description: |
+        清理旧缓存 → 重新下载 jar → 重建类索引。该过程通常数十秒，
+        因此接口只入队并立即返回 `job_id`，进度与失败原因在「后台任务」页查看，
+        失败可直接重试。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server], default: client }
+      responses:
+        "201":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      job_id: { type: string, format: uuid }
+                      type: { type: string }
+                      version: { type: string }
+                      side: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503":
+          description: 后台任务服务未启用（JOBS_UNAVAILABLE）
+
+  /admin/mcsrc/cache/purge-all:
+    post:
+      tags: [admin]
+      summary: 清空全部源码缓存（需 ops.mcsrc 权限，破坏性）
+      description: |
+        删除全部已缓存的 jar / 索引 / 元数据。**破坏性运维动作**（前端需二次确认）：
+        所有访客下次访问源码浏览器时会重新触发下载与建索引。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      purged: { type: integer, description: 成功清理的条目数 }
+                      freed_bytes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /admin/modpacks/list:
     post:
       tags: [admin]
@@ -1907,10 +2743,63 @@ paths:
     post:
       tags: [admin]
       summary: 资源列表（含草稿/下架）
+      description: |
+        支持关键词、类型、状态、游戏版本、加载器、来源平台、标签筛选。
+        `status` 此前后端未接收（静默失效），已修复。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                type: { type: string }
+                status: { type: string, enum: [draft, published, hidden, offline, removed] }
+                game_version: { type: string }
+                loader: { type: string }
+                source_platform: { type: string }
+                tag: { type: string }
+                sort: { type: string, enum: [updated_desc, name_asc] }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
       responses:
         "200": { $ref: "#/components/responses/PagedEnvelope" }
+
+  /admin/resources/export:
+    post:
+      tags: [admin]
+      summary: 导出资源 CSV（按列表筛选，最多 5000 条）
+      description: |
+        与列表共用同一套筛选条件（`filteredQuery`），避免「页面看到的」与「导出的」不一致。
+        响应为 `text/csv`（UTF-8 BOM），`X-Export-Truncated: true` 表示超出上限被截断；
+        单元格经公式注入防护，导出动作写 `resource.export` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                type: { type: string }
+                status: { type: string }
+                game_version: { type: string }
+                loader: { type: string }
+                source_platform: { type: string }
+                tag: { type: string }
+                sort: { type: string, enum: [updated_desc, name_asc] }
+      responses:
+        "200":
+          description: CSV 文件
+          content:
+            text/csv:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /admin/resources/detail:
     post:
       tags: [admin]
@@ -2018,8 +2907,545 @@ paths:
                   data: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /admin/submissions/list:
+    post:
+      tags: [admin]
+      summary: 资源投稿审核列表（需 content.resources 权限）
+      description: 按状态 / 资源类型 / 关键词筛选，新→旧；默认由调用方传 `status=pending`。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [pending, approved, rejected] }
+                resource_type:
+                  type: string
+                  enum: [mod, modpack, resource_pack, shader, world, datapack, plugin]
+                q: { type: string, description: 匹配名称 / 简介 / 提交者 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/submissions/detail:
+    post:
+      tags: [admin]
+      summary: 资源投稿详情
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/submissions/review:
+    post:
+      tags: [admin]
+      summary: 审核资源投稿（通过则生成资源）
+      description: |
+        `status=approved`：按投稿字段调用资源创建链路生成一条 resources 记录，并回填
+        `resource_id`；`publish=false`（默认）生成草稿，`publish=true` 直接发布。
+        `status=rejected`：仅更新状态与备注，不生成资源。
+        投稿已审核时返回 409（SUBMISSION_REVIEWED）；审核人取自登录会话并写入审计日志。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmissionReviewPayload" }
+      responses:
+        "200":
+          description: 成功，返回审核后的投稿；通过时额外返回生成的资源
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      submission: { $ref: "#/components/schemas/ResourceSubmission" }
+                      resource: { $ref: "#/components/schemas/Resource" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 投稿已被审核（SUBMISSION_REVIEWED）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/jobs/types:
+    post:
+      tags: [admin]
+      summary: 已注册的后台任务类型
+      description: 前端据此渲染「新建任务」下拉；未注册的类型不允许入队。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 任务类型列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string }
+                        desc: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/jobs/list:
+    post:
+      tags: [admin]
+      summary: 分页查询后台任务
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
+                type: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminJob" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/jobs/detail:
+    post:
+      tags: [admin]
+      summary: 任务详情（含入参 / 结果 / 失败原因）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminJob" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/jobs/enqueue:
+    post:
+      tags: [admin]
+      summary: 入队一个后台任务
+      description: |
+        只做校验与落库，立即返回任务（状态 pending）；执行由服务端调度协程完成。
+        未知类型或非法 JSON 参数返回 422。入队写 `job.enqueue` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string }
+                payload: { type: object, description: 任务参数（结构由类型约定） }
+      responses:
+        "201":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminJob" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/jobs/retry:
+    post:
+      tags: [admin]
+      summary: 人工重试失败 / 已取消的任务
+      description: |
+        基于原任务新建一条 pending 任务并记录 `retry_of`，原始失败现场保留。
+        仅 failed / cancelled 可重试，其余状态返回 409（JOB_NOT_RETRYABLE）。
+        写 `job.retry` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "201":
+          description: 已重新入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminJob" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 当前状态不允许重试（JOB_NOT_RETRYABLE）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/jobs/cancel:
+    post:
+      tags: [admin]
+      summary: 取消排队中的任务
+      description: |
+        仅 pending 可取消；执行中的任务返回 409（JOB_NOT_CANCELLABLE），
+        因为 handler 可能已产生副作用，强行改状态会造成误导。写 `job.cancel` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminJob" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 当前状态不允许取消（JOB_NOT_CANCELLABLE）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/alerts/summary:
+    post:
+      tags: [admin]
+      summary: 未关闭告警计数（按状态 / 级别）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AlertSummary" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/alerts/list:
+    post:
+      tags: [admin]
+      summary: 分页查询运营告警（含已关闭历史）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, acked, resolved] }
+                severity: { type: string, enum: [warning, error] }
+                rule_key: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 告警列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/OpsAlert" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/alerts/evaluate:
+    post:
+      tags: [admin]
+      summary: 立即评估全部告警规则
+      description: |
+        定时评估默认每 5 分钟一次；该接口用于「马上看一眼」。
+        单条规则失败只记录在 errors 中，不影响其它规则。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 评估结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AlertEvaluateSummary" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/alerts/ack:
+    post:
+      tags: [admin]
+      summary: 确认告警（open → acked，表示已有人接手）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 已确认
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/OpsAlert" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 告警已关闭（ALERT_NOT_OPEN）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/alerts/resolve:
+    post:
+      tags: [admin]
+      summary: 关闭告警并记录原因
+      description: 关闭后的告警作为历史保留，不删除；写 `alert.resolve` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, format: uuid }
+                note: { type: string, description: 关闭原因（追加到 detail） }
+      responses:
+        "200":
+          description: 已关闭
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/OpsAlert" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 告警已关闭（ALERT_NOT_OPEN）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/submissions/batch-review:
+    post:
+      tags: [admin]
+      summary: 批量审核资源投稿（单次最多 50 条）
+      description: |
+        逐条独立执行 `approved` / `rejected`，返回每条结果；单条失败（如已被他人审核）
+        不影响其余记录。`publish=true` 时通过的投稿直接发布，默认生成草稿。
+        每条成功记录写一条 `resource_submission.review` 审计（与单条审核粒度一致）。
+        请求体超过 50 条或含非法 ID 返回 422。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, status]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string, format: uuid }
+                status: { type: string, enum: [approved, rejected] }
+                note: { type: string }
+                publish: { type: boolean, default: false }
+      responses:
+        "200":
+          description: 批量结果（逐条）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/BatchReviewResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/mods/batch-review:
+    post:
+      tags: [admin]
+      summary: 批量审核 Mod（单次最多 50 条）
+      description: 逐条独立执行，返回每条结果；每条成功记录写 `mod.review` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, review_status]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string, format: uuid }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string }
+      responses:
+        "200":
+          description: 批量结果（逐条）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/BatchReviewResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/modpacks/batch-review:
+    post:
+      tags: [admin]
+      summary: 批量审核整合包（单次最多 50 条）
+      description: 逐条独立执行，返回每条结果；每条成功记录写 `modpack.review` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, review_status]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string, format: uuid }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string }
+      responses:
+        "200":
+          description: 批量结果（逐条）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/BatchReviewResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/redstone/designs/batch-review:
+    post:
+      tags: [admin]
+      summary: 批量审核红石设计（单次最多 50 条）
+      description: 逐条独立执行，返回每条结果；每条成功记录写 `redstone_design.review` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, review_status]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string, format: uuid }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string }
+      responses:
+        "200":
+          description: 批量结果（逐条）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/BatchReviewResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /admin/tools/list:
-    post: { tags: [admin], summary: 工具列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+    post:
+      tags: [admin]
+      summary: 工具列表
+      description: 支持按分类、关键词、标签（走 tool_tags 关联表精确匹配）筛选。
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category: { type: string }
+                q: { type: string }
+                tag: { type: string, description: 按标签精确筛选（tool_tags 关联表） }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
   /admin/tools/detail:
     post:
       tags: [admin]
@@ -2050,7 +3476,22 @@ paths:
       responses: { "204": { description: 已下架 } }
 
   /admin/wiki/list:
-    post: { tags: [admin], summary: 百科列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+    post:
+      tags: [admin]
+      summary: 百科列表
+      description: 支持按关键词、标签（走 wiki_tags 关联表精确匹配）筛选。
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                tag: { type: string, description: 按标签精确筛选（wiki_tags 关联表） }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
   /admin/wiki/detail:
     post:
       tags: [admin]
@@ -2064,6 +3505,173 @@ paths:
     post: { tags: [admin], summary: 更新百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
   /admin/wiki/delete:
     post: { tags: [admin], summary: 软删除百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+
+  # ---- 内容历史版本与回滚（gj.md §15 / §16.2）----
+  # 权限与对应内容类型一致：resources→content.resources、tools→content.tools、wiki→content.wiki。
+  # 回滚通过追加一条 action=rollback 的新版本完成，不覆盖或删除历史。
+  /admin/revisions/resources/list:
+    post: { tags: [admin], summary: 资源历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/revisions/resources/diff:
+    post: { tags: [admin], summary: 资源版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/revisions/resources/rollback:
+    post: { tags: [admin], summary: 资源回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/revisions/tools/list:
+    post: { tags: [admin], summary: 工具历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/revisions/tools/diff:
+    post: { tags: [admin], summary: 工具版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/revisions/tools/rollback:
+    post: { tags: [admin], summary: 工具回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/revisions/wiki/list:
+    post: { tags: [admin], summary: 百科历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/revisions/wiki/diff:
+    post: { tags: [admin], summary: 百科版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/revisions/wiki/rollback:
+    post: { tags: [admin], summary: 百科回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+
+  /admin/content-tasks/list:
+    post:
+      tags: [admin]
+      summary: 内容建设任务列表（gj.md §8.3 搜索词闭环）
+      description: |
+        把「无结果搜索词」沉淀为可指派、可跟踪的运营任务。任务只保存归一化关键词与
+        聚合计数快照，不含 IP / 会话 / 用户标识。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, in_progress, done, ignored], description: 按处理状态筛选 }
+                q: { type: string, description: 关键词模糊过滤 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 成功（任务列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ContentTask" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/content-tasks/candidates:
+    post:
+      tags: [admin]
+      summary: 无结果词候选（达到阈值且尚无未完结任务）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: 成功（候选列表；task_id 非空表示该关键词已有未完结任务）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ContentTaskCandidate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/content-tasks/create:
+    post:
+      tags: [admin]
+      summary: 从关键词创建内容建设任务
+      description: 关键词按搜索词口径归一化；同一关键词只允许一个未完结任务（重复返回 409）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyword]
+              properties:
+                keyword: { type: string, maxLength: 64 }
+                note: { type: string }
+                assignee_id: { type: string, format: uuid, description: 负责人（后台账号）；展示名由服务端解析 }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: 该关键词已存在未完结任务 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/content-tasks/update:
+    post:
+      tags: [admin]
+      summary: 更新内容建设任务（状态 / 负责人 / 关联内容 / 备注）
+      description: 仅传入的字段生效；assignee_id / related_content_id 传空串表示清空。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContentTaskUpdateBody" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: 把任务改回未完结状态时与同关键词任务冲突 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/content-tasks/recheck:
+    post:
+      tags: [admin]
+      summary: 重新检测关键词的搜索结果
+      description: 只做检测、不改变任务状态；has_results=true 时可标记完成。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 成功（检测结果）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ContentTaskRecheck" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/content-tasks/delete:
+    post:
+      tags: [admin]
+      summary: 删除内容建设任务
+      description: 仅删除任务本身，不影响搜索统计；纠错用。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /admin/categories/list:
     post: { tags: [admin], summary: 分类列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
@@ -2094,6 +3702,43 @@ paths:
     post: { tags: [admin], summary: 更新标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
   /admin/tags/delete:
     post: { tags: [admin], summary: 删除标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+  /admin/tags/usage:
+    post:
+      tags: [admin]
+      summary: 标签使用统计（需 content.tags 权限）
+      description: |
+        按标签聚合资源 / 工具 / 百科的引用次数（数据来源为 `resource_tags` /
+        `tool_tags` / `wiki_tags` 关联表，由管理端保存内容时同步维护），
+        按总次数降序返回。只统计**实际被内容引用**的标签。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, default: 200, description: 返回条数上限 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag: { type: string }
+                        total: { type: integer }
+                        resource_count: { type: integer }
+                        tool_count: { type: integer }
+                        wiki_count: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /admin/feedback/list:
     post: { tags: [admin], summary: 反馈列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
@@ -2135,9 +3780,59 @@ paths:
     post:
       tags: [admin]
       summary: 审计日志分页查询（admin 专属）
+      description: |
+        支持按动作、对象类型、结果、来源 IP 过滤；`security=true` 时只返回
+        登录 / 改密 / MFA / 会话撤销等账号安全事件。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actor_id: { type: string, format: uuid }
+                action: { type: string }
+                object_type: { type: string }
+                result: { type: string, enum: [success, failure] }
+                source_ip: { type: string }
+                security: { type: boolean }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
       responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
+
+  /admin/audit-logs/export:
+    post:
+      tags: [admin]
+      summary: 导出审计日志 CSV（最多 5000 条）
+      description: |
+        按与列表相同的筛选条件导出（含 `security=true` 的安全事件视图）。
+        响应为 `text/csv`（UTF-8 BOM），`X-Export-Truncated: true` 表示超出上限被截断。
+        导出动作本身写 `audit.export` 审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actor_id: { type: string, format: uuid }
+                action: { type: string }
+                object_type: { type: string }
+                result: { type: string, enum: [success, failure] }
+                source_ip: { type: string }
+                security: { type: boolean, description: 只看账号安全事件 }
+      responses:
+        "200":
+          description: CSV 文件
+          content:
+            text/csv:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/roles/list:
     post:
@@ -2212,6 +3907,58 @@ paths:
         "200": { $ref: "#/components/responses/Envelope" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /admin/roles/impact:
+    post:
+      tags: [admin]
+      summary: 角色权限变更的影响预览（需 roles.manage 权限）
+      description: >
+        返回受影响账号数量、权限点增减与风险提示，供「修改角色」前二次确认。
+        只读计算，不写审计。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                permissions:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: 影响预览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      role: { type: string }
+                      label: { type: string }
+                      is_system: { type: boolean }
+                      affected_accounts: { type: integer }
+                      current_permissions:
+                        type: array
+                        items: { type: string }
+                      next_permissions:
+                        type: array
+                        items: { type: string }
+                      added:
+                        type: array
+                        items: { type: string }
+                      removed:
+                        type: array
+                        items: { type: string }
+                      notes:
+                        type: array
+                        items: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/roles/delete:
     post:
       tags: [admin]
@@ -2342,35 +4089,121 @@ paths:
           description: 该版本尚未建立类索引（`NEED_PREPARE`）
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /mcsrc/jar:
-    get:
+  /mcsrc/classes/bytecode:
+    post:
       tags: [mcsrc]
-      summary: 下载已缓存的 jar（公开只读）
+      summary: 类字节码反汇编（公开只读）
       description: |
-        以流式响应返回服务端已缓存的官方 jar，供前端在**浏览器内**用 Vineflower（WASM）
+        返回单个类的字节码反汇编文本（ASM Textifier 风格）：类头（版本 / 访问标志 / 修饰符 /
+        SOURCEFILE / SIGNATURE 等）、字段、方法，以及 `Code` 属性内的指令 / 标签 / 行号 /
+        局部变量表 / 异常表。纯 Go 解析 class 字节码，**不反编译、不依赖 JVM**，只读单个 class 条目。
+        首次调用与 jar 体积无关（仅读单个条目）。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, class]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                class: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { description: "该版本尚未缓存 jar（`NOT_FOUND`），或类不在 jar 中（`CLASS_NOT_FOUND`）" }
+        "413": { description: "class 条目超出解析上限（`CLASS_TOO_LARGE`）" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/classes/references:
+    post:
+      tags: [mcsrc]
+      summary: 查找引用（公开只读）
+      description: |
+        查找对某个类 / 方法 / 字段的引用。`kind` 取 `class`（默认）/ `method` / `field`；
+        `method` / `field` 需提供 `name` 与 `descriptor`。
+
+        首次调用需扫描本 jar 内全部 class 的常量池与指令建立**反向引用索引**
+        （按 jar 摘要缓存于内存），之后为毫秒级。只返回**目标类位于本 jar 内**的引用
+        （jar 外类无法跳转）。引用点按类名 / 成员排序并去重，`truncated=true` 表示引用点过多被截断。
+        该版本已缓存 jar 但未建类索引时返回 409 `NEED_PREPARE`。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, class]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                kind: { type: string, enum: [class, method, field], default: class }
+                class: { type: string }
+                name: { type: string, description: "成员名（kind 为 method / field 时必填）" }
+                descriptor: { type: string, description: "JVM 描述符（如 ()V 或 I）" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { description: "该版本尚未缓存 jar（`NOT_FOUND`），或目标类不在 jar 中（`CLASS_NOT_FOUND`）" }
+        "409": { description: "该版本尚未建立类索引（`NEED_PREPARE`）" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/classes/mapping:
+    post:
+      tags: [mcsrc]
+      summary: 类映射重命名（公开只读）
+      description: |
+        按 MC 版本 + jar 内类名反查已导入的版本映射，返回类与成员的可读名（映射重命名）。
+
+        与其它 mcsrc 接口不同，本接口**只读数据库中的映射数据**（不读 jar、不建索引），
+        因此不受「是否已建类索引」约束。该版本没有导入映射数据集、或没有数据集覆盖该类时
+        返回 `available=false`（正常状态，前端据此隐藏映射名），而非 404。
+
+        匹配顺序：先按 `obf_name`（jar 通常为混淆名），再回退 `named_name` / `mid_name`
+        （jar 若已反混淆或使用中间名也能命中）；类名同时尝试点分全限定名与内部名（`/` 分隔）。
+        多个数据集命中时按映射类型优先级选取（`mojang` > `tsrg` > `yarn` > `srg` > 其它）。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, class]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server] }
+                class: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mcsrc/jar:
+    post:
+      tags: [mcsrc]
+      summary: 下发已缓存的 jar（公开只读）
+      description: |
+        以二进制流返回服务端已缓存的官方 jar，供前端在**浏览器内**用 Vineflower（WASM）
         反编译源码——无需部署侧 JVM，也不把 jar 纳入仓库或数据库。
-        支持 `Range` 与条件请求（`ETag` 取 jar 的官方 sha1），便于浏览器缓存与断点续传。
-        **这是本模块唯一的 GET 接口**：二进制大文件下载无法用项目惯例的「POST + JSON body」表达。
+
+        与项目约定一致走 **POST + JSON body**（不再使用 GET + Range / ETag）：
+        代价是浏览器不再缓存响应，故响应头回传 jar 的官方 sha1
+        （`X-Mcsrc-Jar-Sha1`），前端据此把 jar 字节持久化到 IndexedDB，跨刷新复用；
+        摘要变化（服务端重新准备）时前端自动重新下载。
         该版本尚未缓存时返回 404，且**不会**触发下载。
-      parameters:
-        - name: version
-          in: query
-          required: true
-          schema: { type: string }
-        - name: side
-          in: query
-          required: false
-          schema: { type: string, enum: [client, server], default: client }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                side: { type: string, enum: [client, server], default: client }
       responses:
         "200":
-          description: "jar 字节流（`Content-Type: application/java-archive`，含 `ETag` 与 `Accept-Ranges`）"
+          description: "jar 字节流（`Content-Type: application/java-archive`，含 `Content-Length` 与 `X-Mcsrc-Jar-Sha1`）"
           content:
             application/java-archive:
               schema: { type: string, format: binary }
-        "206": { description: Range 请求返回的部分内容 }
-        "304": { description: "`If-None-Match` 命中 `ETag`（内容未变）" }
         "404": { description: 该版本尚未缓存 jar（`NOT_FOUND`） }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { description: 触发重接口限流（`RATE_LIMITED`） }
 
   /mcsrc/prepare:
     post:
@@ -2412,6 +4245,614 @@ paths:
           description: "自动准备额度用尽 / 已关闭（`AUTO_PREPARE_LIMIT` / `AUTO_PREPARE_DISABLED`），或并发上限冲突（`RATE_LIMITED`）"
         "502": { description: "上游下载失败或 sha1 校验不符（`JAR_CHECKSUM_MISMATCH`）" }
 
+  # ===== 用户成长（growth，jingyan.md）=====
+  /growth/overview:
+    post:
+      tags: [growth]
+      summary: 本人成长概览
+      description: |
+        返回当前有效经验、等级与称号、升级进度、今日任务完成数、今日经验与成就统计。
+        **等级仅用于展示，不参与任何权限判定**。所有数值由服务端依据经验账本计算。
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 成长概览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /growth/ledger:
+    post:
+      tags: [growth]
+      summary: 本人经验流水（分页，倒序）
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PageQuery" }
+      responses:
+        "200":
+          description: 经验流水（含分页 meta）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/GrowthLedgerItem" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /growth/daily-tasks:
+    post:
+      tags: [growth]
+      summary: 今日每日任务
+      description: 返回业务日期、时区与任务进度。达到目标即由服务端自动发奖，**没有领取接口**。
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 今日任务
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      date: { type: string, description: 业务日期（YYYY-MM-DD） }
+                      timezone: { type: string, description: 站点业务时区 }
+                      tasks:
+                        type: array
+                        items: { $ref: "#/components/schemas/GrowthDailyTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /growth/daily-tasks/history:
+    post:
+      tags: [growth]
+      summary: 历史每日任务记录（分页）
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PageQuery" }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /growth/achievements:
+    post:
+      tags: [growth]
+      summary: 成就目录（含本人解锁状态与进度）
+      description: 未解锁的隐藏成就只返回占位信息，不泄露名称、描述、条件与奖励。
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 成就目录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/GrowthAchievement" }
+                      total: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /public/users/detail:
+    post:
+      tags: [growth]
+      summary: 公开个人主页成长摘要
+      description: 仅返回等级 / 称号 / 当前经验 / 成就数，不含经验流水、登录时间与风险标记。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 公开摘要
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthPublicProfile" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /public/users/achievements:
+    post:
+      tags: [growth]
+      summary: 公开个人主页成就
+      description: 仅返回用户选择公开的成就快照。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 公开成就
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/GrowthUserAchievement" } }
+                      total: { type: integer }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/overview:
+    post:
+      tags: [growth]
+      summary: 后台成长概览（需 ops.growth）
+      description: |
+        统计口径：发放经验仅计正向流水；今日奖励笔数 = 今日正向流水条数；
+        冲正经验为 reversal 流水绝对值合计；人工调整笔数为 manual 流水条数。
+        不得将事件数量直接等同于奖励笔数。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 概览与等级分布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminGrowthOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/ledger/list:
+    post:
+      tags: [growth]
+      summary: 全局经验流水（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string, format: uuid }
+                rule_code: { type: string }
+                source_type: { type: string, enum: [rule, daily_task, achievement, manual, reversal] }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/adjust:
+    post:
+      tags: [growth]
+      summary: 人工调整经验（需 ops.growth，高风险）
+      description: 正负均可，必须填写原因；`request_key` 为客户端幂等键，重复提交不重复生效。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_user_id, delta_xp, reason]
+              properties:
+                target_user_id: { type: string, format: uuid }
+                delta_xp: { type: integer, description: 非 0，正负均可 }
+                reason: { type: string }
+                request_key: { type: string, description: 幂等键（可选） }
+      responses:
+        "200":
+          description: 生成的流水
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthLedgerItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/reverse:
+    post:
+      tags: [growth]
+      summary: 冲正经验流水（需 ops.growth）
+      description: 生成等额负向流水，原始流水永久保留；同一流水只能冲正一次。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, reason]
+              properties:
+                id: { type: string, format: uuid, description: 原流水 ID }
+                reason: { type: string }
+      responses:
+        "200":
+          description: 冲正流水
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthLedgerItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/audit/list:
+    post:
+      tags: [growth]
+      summary: 成长审计日志（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                operator_id: { type: string, format: uuid }
+                target_user_id: { type: string, format: uuid }
+                action: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/rules/list:
+    post:
+      tags: [growth]
+      summary: 经验规则列表（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/rules/create:
+    post:
+      tags: [growth]
+      summary: 新建经验规则（需 ops.growth）
+      description: 编码唯一；事件类型必须在服务端允许列表内。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrowthRuleInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/rules/update:
+    post:
+      tags: [growth]
+      summary: 更新经验规则（版本化，需 ops.growth）
+      description: 不原地改写历史含义，而是新建 `version+1` 的规则；历史流水的 rule_version 仍可追溯。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+                - $ref: "#/components/schemas/GrowthRuleInput"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/rules/toggle:
+    post:
+      tags: [growth]
+      summary: 启用 / 停用经验规则（需 ops.growth）
+      description: 按编码停用 / 启用其全部版本。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToggleBody" }
+      responses:
+        "204": { description: 已更新 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/growth/rules/delete:
+    post:
+      tags: [growth]
+      summary: 删除经验规则（需 ops.growth）
+      description: 删除某编码的全部版本；已被经验账本引用时拒绝（409）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /admin/growth/levels/list:
+    post:
+      tags: [growth]
+      summary: 等级阈值列表（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/levels/update:
+    post:
+      tags: [growth]
+      summary: 更新等级阈值 / 标题 / 启用状态（需 ops.growth）
+      description: 阈值必须全局唯一且按等级严格递增，Lv.1 固定为 0。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrowthLevel" }
+      responses:
+        "204": { description: 已更新 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/levels/recalculate:
+    post:
+      tags: [growth]
+      summary: 重算所有用户等级（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 返回被修正的用户数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      fixed: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/daily-tasks/list:
+    post:
+      tags: [growth]
+      summary: 每日任务定义列表（需 ops.growth，含停用项）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/daily-tasks/create:
+    post:
+      tags: [growth]
+      summary: 新建每日任务定义（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrowthTaskInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/daily-tasks/update:
+    post:
+      tags: [growth]
+      summary: 更新每日任务定义（需 ops.growth）
+      description: 原地更新并递增版本；已生成的当日进度保留快照，不会因编辑重复发奖。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+                - $ref: "#/components/schemas/GrowthTaskInput"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/daily-tasks/toggle:
+    post:
+      tags: [growth]
+      summary: 启用 / 停用每日任务定义（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToggleBody" }
+      responses:
+        "204": { description: 已更新 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/daily-tasks/delete:
+    post:
+      tags: [growth]
+      summary: 删除每日任务定义（需 ops.growth）
+      description: 已产生用户进度的任务拒绝删除（409），保证历史可追溯。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /admin/achievements/list:
+    post:
+      tags: [growth]
+      summary: 成就定义列表（需 ops.growth，含停用项）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/achievements/create:
+    post:
+      tags: [growth]
+      summary: 新建成就定义（需 ops.growth）
+      description: 条件类型必须在服务端允许列表内；图标仅允许 HTTPS 或站内 `/` 路径。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrowthAchievementInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/achievements/update:
+    post:
+      tags: [growth]
+      summary: 更新成就定义（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+                - $ref: "#/components/schemas/GrowthAchievementInput"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/achievements/toggle:
+    post:
+      tags: [growth]
+      summary: 启用 / 停用成就定义（需 ops.growth）
+      description: 停用不影响已解锁记录。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToggleBody" }
+      responses:
+        "204": { description: 已更新 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/achievements/recalculate:
+    post:
+      tags: [growth]
+      summary: 历史补算成就（需 ops.growth）
+      description: "`user_id` 为空时对全部有成长记录的用户执行，返回本次新解锁数。"
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 新解锁数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      unlocked: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -2429,11 +4870,214 @@ components:
       description: 登录/me 返回的 csrf_token，写操作必须与会话一致
 
   schemas:
+    QualityIssueState:
+      type: object
+      description: 数据质量问题的人工处理状态（检查结果实时计算，处理状态持久化）
+      required: [status, assignee_name, note, snapshot_count]
+      properties:
+        status: { type: string, enum: [open, assigned, resolved, ignored] }
+        assignee_id: { type: string, format: uuid }
+        assignee_name: { type: string, description: 负责人昵称快照 }
+        note: { type: string }
+        snapshot_count: { type: integer, description: 处理时的问题条数快照 }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
+    OpsAlert:
+      type: object
+      description: |
+        运营告警。同一规则未关闭期间只保留一条（指标持续异常只刷新 last_seen_at），
+        关闭后保留为历史。
+      required: [id, rule_key, severity, status, title, triggered_at]
+      properties:
+        id: { type: string, format: uuid }
+        rule_key: { type: string }
+        severity: { type: string, enum: [warning, error] }
+        status: { type: string, enum: [open, acked, resolved] }
+        title: { type: string }
+        detail: { type: string }
+        metric: { type: object, description: 触发时的指标快照 }
+        dedupe_key: { type: string }
+        triggered_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        acked_by: { type: string }
+        acked_at: { type: string, format: date-time, nullable: true }
+        resolved_by: { type: string }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AlertSummary:
+      type: object
+      properties:
+        open: { type: integer }
+        acked: { type: integer }
+        error: { type: integer, description: 未关闭且严重的告警数 }
+        warning: { type: integer }
+    AlertEvaluateSummary:
+      type: object
+      properties:
+        evaluated: { type: integer }
+        triggered: { type: integer, description: 本次新建的告警数 }
+        refreshed: { type: integer, description: 已存在并刷新的告警数 }
+        auto_closed: { type: integer, description: 指标恢复后自动关闭的告警数 }
+        errors:
+          type: array
+          items: { type: string }
+    AdminJob:
+      type: object
+      description: |
+        后台运维任务（gj.md 阶段二）。任务与 HTTP 请求解耦：接口只入队，
+        由服务端调度协程执行；失败先自动重试，仍失败保留 last_error 供人工重试。
+      required: [id, type, status, attempts, max_attempts]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, description: 任务类型（见 /admin/jobs/types） }
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        payload: { type: object, description: 任务入参 }
+        result: { type: object, description: 任务产出摘要（脱敏） }
+        attempts: { type: integer, description: 已执行次数（含自动重试） }
+        max_attempts: { type: integer, description: 自动重试上限 }
+        last_error: { type: string, description: 最近一次失败原因（已脱敏） }
+        retry_of: { type: string, format: uuid, description: 人工重试来源任务 ID }
+        created_by: { type: string }
+        next_run_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BatchItemResult:
+      type: object
+      description: 批量操作中单条记录的处理结果（逐条独立事务）
+      required: [id, ok]
+      properties:
+        id: { type: string, description: 记录 ID }
+        label: { type: string, description: 可读名称（资源名 / Mod 名等），失败时可能为空 }
+        ok: { type: boolean, description: 是否成功 }
+        error: { type: string, description: 失败原因（已脱敏，可直接展示） }
+    BatchReviewResult:
+      type: object
+      description: |
+        批量审核汇总。后端**逐条独立事务**：单条失败不影响其余记录，
+        因此必须展示 succeeded / failed 与 items 明细（部分成功是正常情况）。
+      required: [requested, succeeded, failed, items]
+      properties:
+        requested: { type: integer, description: 去重后的请求条数 }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BatchItemResult" }
     IdBody:
       type: object
       required: [id]
       properties:
         id: { type: string, format: uuid }
+    RevisionListBody:
+      type: object
+      required: [content_id]
+      properties:
+        content_id: { type: string, format: uuid, description: 内容对象 ID }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 50 }
+    RevisionTargetBody:
+      type: object
+      required: [content_id, revision_no]
+      properties:
+        content_id: { type: string, format: uuid }
+        revision_no: { type: integer, minimum: 1, description: 目标历史版本号 }
+        note: { type: string, description: 回滚备注（仅 rollback 使用） }
+    ContentTask:
+      type: object
+      description: 内容建设任务（gj.md §8.3 搜索词闭环 / §15 内容任务）
+      properties:
+        id: { type: string, format: uuid }
+        keyword: { type: string, description: 归一化搜索词（与 search_terms.term 同口径） }
+        search_term_id: { type: string, format: uuid, nullable: true, description: 关联的搜索词统计行 }
+        hits: { type: integer, description: 创建时搜索总次数快照 }
+        no_result_hits: { type: integer, description: 创建时无结果次数快照 }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [open, in_progress, done, ignored] }
+        assignee_id: { type: string, format: uuid, nullable: true, description: 负责人（后台账号） }
+        assignee_name: { type: string, description: 负责人展示名（冗余保存） }
+        related_content_type: { type: string, enum: ["", resource, tool, wiki] }
+        related_content_id: { type: string, format: uuid, nullable: true }
+        note: { type: string }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ContentTaskCandidate:
+      type: object
+      properties:
+        term: { type: string }
+        hits: { type: integer }
+        no_result_hits: { type: integer }
+        last_seen_at: { type: string, format: date-time }
+        task_id: { type: string, description: 该关键词已存在的未完结任务 ID；空串表示可直接创建 }
+    ContentTaskRecheck:
+      type: object
+      properties:
+        task_id: { type: string, format: uuid }
+        keyword: { type: string }
+        result_count: { type: integer }
+        has_results: { type: boolean, description: true 时可标记完成 }
+    ContentTaskUpdateBody:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [open, in_progress, done, ignored] }
+        assignee_id: { type: string, description: 后台账号 ID；空串表示清空。展示名由服务端解析 }
+        related_content_type: { type: string, enum: ["", resource, tool, wiki] }
+        related_content_id: { type: string, description: 内容 ID；空串表示清空 }
+        note: { type: string }
+    PlatformUserDetail:
+      type: object
+      description: 普通用户详情（管理端）
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        is_active: { type: boolean }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        favorite_count: { type: integer }
+        recent_count: { type: integer }
+        seed_count: { type: integer }
+        favorites:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string }
+              object_id: { type: string }
+              label: { type: string }
+              url: { type: string }
+              created_at: { type: string, format: date-time }
+        recents:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string }
+              object_id: { type: string }
+              label: { type: string }
+              url: { type: string }
+              visited_at: { type: string, format: date-time }
+        seeds:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              seed: { type: string }
+              note: { type: string }
+              created_at: { type: string, format: date-time }
+              updated_at: { type: string, format: date-time }
     PageMeta:
       type: object
       properties:
@@ -2466,6 +5110,12 @@ components:
       properties:
         id: { type: string, format: uuid }
         username: { type: string }
+        nickname:
+          type: string
+          description: 展示昵称，空串表示未设置（前端回退到 username）
+        avatar_url:
+          type: string
+          description: 头像图片 data URI（仅上传图片），空串表示未设置
         role: { type: string, enum: [admin, editor] }
         csrf_token: { type: string }
         expires_at: { type: string, format: date-time }
@@ -2475,8 +5125,104 @@ components:
       properties:
         id: { type: string, format: uuid }
         username: { type: string }
+        nickname:
+          type: string
+          description: 展示昵称（注册必填；空串时前端回退到 username）
+        avatar_url:
+          type: string
+          description: 头像图片 data URI（仅上传图片），空串表示未设置
+        email:
+          type: string
+          format: email
+          description: 注册邮箱（全局唯一，可作为登录标识）
         csrf_token: { type: string }
         expires_at: { type: string, format: date-time }
+    CaptchaChallenge:
+      description: 图形验证码挑战（一次性，校验后即失效）
+      type: object
+      properties:
+        captcha_id:
+          type: string
+          description: 一次性验证码 ID（校验时随注册请求回传）
+        image:
+          type: string
+          description: PNG 图片的 data URI，可直接用于 img src
+        expires_in:
+          type: integer
+          description: 有效期（秒）
+    ResourceSubmissionPayload:
+      description: 资源投稿请求体（结构化字段，与资源中心对齐）
+      type: object
+      required: [name, summary, resource_type, source_url, license_version]
+      properties:
+        name: { type: string, maxLength: 200 }
+        summary: { type: string, maxLength: 500 }
+        description: { type: string, description: 资源描述（审核通过后作为资源正文） }
+        resource_type:
+          type: string
+          enum: [mod, modpack, resource_pack, shader, world, datapack, plugin]
+        author_name: { type: string, maxLength: 160 }
+        source_platform: { type: string, maxLength: 100 }
+        source_url: { type: string, format: uri, maxLength: 2000, description: 资源原始来源链接（仅 http/https，≤2000 字符） }
+        license: { type: string, maxLength: 160 }
+        game_edition: { type: string, enum: [java, bedrock], default: java }
+        supported_versions: { type: array, items: { type: string } }
+        loader_types: { type: array, items: { type: string } }
+        install_guide: { type: string }
+        note: { type: string, maxLength: 2000, description: 给审核者的说明（不写入资源） }
+        license_version:
+          type: string
+          description: 投稿授权条款版本，须等于后端当前版本（见 domain.SubmissionLicenseVersion）
+    ResourceSubmission:
+      description: 资源投稿记录
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        submitter_name: { type: string, description: 提交者用户名快照 }
+        name: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        resource_type:
+          type: string
+          enum: [mod, modpack, resource_pack, shader, world, datapack, plugin]
+        author_name: { type: string }
+        source_platform: { type: string }
+        source_url: { type: string }
+        license: { type: string }
+        game_edition: { type: string, enum: [java, bedrock] }
+        supported_versions: { type: array, items: { type: string } }
+        loader_types: { type: array, items: { type: string } }
+        install_guide: { type: string }
+        note: { type: string }
+        license_version: { type: string }
+        license_accepted_at: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [pending, approved, rejected] }
+        reviewer: { type: string, description: 审核人用户名（留痕） }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        review_note: { type: string }
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 审核通过后生成的资源 ID（草稿，需核验后发布）
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SubmissionReviewPayload:
+      description: 资源投稿审核请求体
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [approved, rejected]
+          description: approved = 通过并生成资源；rejected = 驳回
+        note: { type: string, description: 审核备注（留痕） }
+        publish:
+          type: boolean
+          default: false
+          description: 通过时是否直接发布资源（默认生成草稿，需人工核验后发布）
     AdminAccount:
       description: 管理员账号（不含任何密码信息）
       type: object
@@ -3543,6 +6289,185 @@ components:
         finished_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
 
+    # ===== 用户成长（growth）=====
+    PageQuery:
+      type: object
+      properties:
+        page: { type: integer, minimum: 1, default: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+    ToggleBody:
+      type: object
+      required: [id, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        enabled: { type: boolean }
+
+    GrowthOverview:
+      type: object
+      properties:
+        current_xp: { type: integer, description: 当前有效经验 }
+        lifetime_earned_xp: { type: integer, description: 累计获得 }
+        lifetime_reversed_xp: { type: integer, description: 累计冲正 }
+        level: { type: integer, description: 等级（仅展示） }
+        level_title: { type: string }
+        next_level_xp: { type: integer, nullable: true, description: 满级为 null }
+        xp_to_next_level: { type: integer }
+        level_progress_percent: { type: integer, minimum: 0, maximum: 100 }
+        is_max_level: { type: boolean }
+        unlocked_achievements: { type: integer }
+        achievement_total: { type: integer }
+        today_tasks_completed: { type: integer }
+        today_tasks_total: { type: integer }
+        today_xp: { type: integer }
+
+    GrowthLedgerItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        delta_xp: { type: integer, description: 正负均可；冲正为负 }
+        balance_after: { type: integer }
+        source_type: { type: string, enum: [rule, daily_task, achievement, manual, reversal] }
+        source_id: { type: string }
+        rule_code: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+
+    GrowthDailyTask:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        progress: { type: integer }
+        target: { type: integer }
+        reward_xp: { type: integer }
+        status: { type: string, enum: [in_progress, completed, claimed] }
+        completed_at: { type: string, description: 未完成时为空串 }
+
+    GrowthAchievement:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        category: { type: string }
+        rarity: { type: string, enum: [common, rare, epic, legendary] }
+        icon_url: { type: string }
+        is_hidden: { type: boolean }
+        unlocked: { type: boolean }
+        unlocked_at: { type: string, format: date-time }
+        progress: { type: integer }
+        target: { type: integer }
+        reward_xp: { type: integer }
+
+    GrowthUserAchievement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        achievement_id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        definition_version: { type: integer }
+        unlocked_at: { type: string, format: date-time }
+        source_event_id: { type: string, format: uuid, nullable: true }
+        is_public: { type: boolean }
+
+    GrowthPublicProfile:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        username: { type: string }
+        nickname: { type: string }
+        avatar_url: { type: string }
+        level: { type: integer }
+        level_title: { type: string }
+        current_xp: { type: integer }
+        unlocked_achievements: { type: integer }
+
+    AdminGrowthOverview:
+      type: object
+      properties:
+        timezone: { type: string }
+        date: { type: string }
+        active_users: { type: integer, description: 有成长记录的用户数 }
+        xp_issued_today: { type: integer, description: 今日正向发放经验合计 }
+        xp_issued_7days: { type: integer, description: 近 7 日正向发放经验合计 }
+        ledger_today: { type: integer, description: 今日正向流水条数 }
+        reversed_total: { type: integer, description: 累计冲正经验（绝对值） }
+        manual_adjust_count: { type: integer, description: 累计人工调整笔数 }
+        unlocked_total: { type: integer }
+        achievement_count: { type: integer }
+        tasks_completed_today: { type: integer }
+        task_participants_today: { type: integer }
+        level_distribution:
+          type: array
+          items:
+            type: object
+            properties:
+              level: { type: integer }
+              count: { type: integer }
+        total_rules: { type: integer }
+        total_tasks: { type: integer }
+
+    GrowthRuleInput:
+      type: object
+      required: [name, event_type, xp_amount, enabled]
+      properties:
+        code: { type: string, description: 创建时必填；更新时忽略（沿用原编码） }
+        name: { type: string, maxLength: 150 }
+        event_type: { type: string, description: 必须在服务端允许列表内 }
+        xp_amount: { type: integer, minimum: 0 }
+        daily_limit: { type: integer, nullable: true, minimum: 1 }
+        per_subject_limit: { type: integer, nullable: true, minimum: 1 }
+        enabled: { type: boolean }
+        effective_from: { type: string, format: date-time, nullable: true }
+        effective_until: { type: string, format: date-time, nullable: true }
+
+    GrowthLevel:
+      type: object
+      required: [level, threshold_xp, title]
+      properties:
+        level: { type: integer, minimum: 1 }
+        threshold_xp: { type: integer, minimum: 0 }
+        title: { type: string, maxLength: 100 }
+        enabled: { type: boolean, default: true }
+
+    GrowthTaskInput:
+      type: object
+      required: [name, event_type, target_count, reward_xp, enabled]
+      properties:
+        code: { type: string, description: 创建时必填；更新时忽略 }
+        name: { type: string, maxLength: 150 }
+        description: { type: string }
+        event_type: { type: string, description: 必须在服务端允许列表内 }
+        target_count: { type: integer, minimum: 1 }
+        reward_xp: { type: integer, minimum: 0 }
+        enabled: { type: boolean }
+        sort_order: { type: integer }
+
+    GrowthAchievementInput:
+      type: object
+      required: [name, category, condition_type, target_value, enabled]
+      properties:
+        code: { type: string, description: 创建时必填；更新时忽略 }
+        name: { type: string, maxLength: 150 }
+        description: { type: string }
+        category: { type: string, maxLength: 50 }
+        rarity: { type: string, enum: [common, rare, epic, legendary] }
+        icon_url: { type: string, description: 空串、https:// 或站内 / 开头路径 }
+        condition_type: { type: string, enum: [event_count, distinct_subject_count, level_reached, daily_task_days] }
+        condition_event_type: { type: string, description: event_count / distinct_subject_count 时必填 }
+        condition_subject_type: { type: string }
+        target_value: { type: integer, minimum: 1 }
+        reward_xp: { type: integer, minimum: 0 }
+        is_hidden: { type: boolean }
+        enabled: { type: boolean }
+        sort_order: { type: integer }
+
   requestBodies:
     SearchQuery:
       required: true
@@ -3580,6 +6505,11 @@ components:
                   all 仅命中声明了通配的资源；不传表示不限版本。
               loader: { type: string }
               source_platform: { type: string }
+              tag:
+                type: string
+                description: |-
+                  按标签精确筛选（走 resource_tags 关联表，可走索引）；
+                  与 `tags::text LIKE` 的模糊匹配不同，这里只命中真正带有该标签的资源。
               sort: { type: string, enum: [updated_desc, name_asc] }
               page: { type: integer, minimum: 1 }
               page_size: { type: integer, minimum: 1, maximum: 50 }
@@ -3638,7 +6568,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     ServiceUnavailable:
-      description: 数据源未加载（503）
+      description: 依赖不可用（503）——数据源未加载，或共享会话存储不可用（安全失败，拒绝请求）
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

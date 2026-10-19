@@ -2,6 +2,7 @@
 // 对应后端 handler.ModAdminHandler：按审核状态 / 加载器筛选 + 审核留痕。
 import http, { toPaged } from './http'
 import type { ApiResponse } from '@/types/api'
+import type { BatchReviewResult } from '@/types/batch'
 import type { Mod, ModLoader, Modpack, ModReviewStatus } from '@/types/mods'
 
 /** 管理端 Mod / 整合包列表查询参数（对齐后端 modListRequest） */
@@ -48,6 +49,34 @@ export async function reviewModpack(
 ): Promise<Modpack> {
   const { data } = await http.post<ApiResponse<Modpack>>('/admin/modpacks/review', {
     id,
+    review_status: reviewStatus,
+    note,
+  })
+  return data.data
+}
+
+/** 批量审核 Mod（单次最多 50 条；逐条返回结果）。 */
+export async function batchReviewMods(
+  ids: string[],
+  reviewStatus: ModReviewStatus,
+  note = '',
+): Promise<BatchReviewResult> {
+  const { data } = await http.post<ApiResponse<BatchReviewResult>>('/admin/mods/batch-review', {
+    ids,
+    review_status: reviewStatus,
+    note,
+  })
+  return data.data
+}
+
+/** 批量审核整合包（单次最多 50 条；逐条返回结果）。 */
+export async function batchReviewModpacks(
+  ids: string[],
+  reviewStatus: ModReviewStatus,
+  note = '',
+): Promise<BatchReviewResult> {
+  const { data } = await http.post<ApiResponse<BatchReviewResult>>('/admin/modpacks/batch-review', {
+    ids,
     review_status: reviewStatus,
     note,
   })

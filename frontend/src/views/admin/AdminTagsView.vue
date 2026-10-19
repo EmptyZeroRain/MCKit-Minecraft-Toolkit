@@ -1,10 +1,14 @@
 <script setup lang="ts">
 // 标签管理（需求 6.3）
+// 左侧维护「标签注册表」（人工维护的名称 / slug），右侧展示标签的**实际使用统计**
+// （跨资源 / 工具 / 百科聚合，来自后端关联表，由内容保存时自动同步）。
 import { onMounted, reactive, ref } from 'vue'
 import FormField from '@/components/common/FormField.vue'
+import AdminTable from '@/components/admin/AdminTable.vue'
 import { useUiStore } from '@/stores/ui'
-import { listTags, createTag, updateTag, deleteTag } from '@/api/admin-meta'
-import type { Tag } from '@/types/category'
+import { listTags, createTag, updateTag, deleteTag, listTagUsage } from '@/api/admin-meta'
+import type { Tag, TagUsageRow } from '@/types/category'
+import type { AdminTableColumn } from '@/types/admin'
 import { ApiError } from '@/types/api'
 
 const ui = useUiStore()
@@ -14,6 +18,19 @@ const error = ref('')
 const editing = ref<Tag | null>(null)
 const form = reactive({ name: '', slug: '' })
 const submitting = ref(false)
+
+const usage = ref<TagUsageRow[]>([])
+const usageLoading = ref(false)
+const usageError = ref('')
+
+/** 使用统计表列定义（与后端 tagging.UsageRow 字段对应）。 */
+const usageColumns: AdminTableColumn[] = [
+  { key: 'tag', label: '标签' },
+  { key: 'resource_count', label: '资源', align: 'right', width: '90px' },
+  { key: 'tool_count', label: '工具', align: 'right', width: '90px' },
+  { key: 'wiki_count', label: '百科', align: 'right', width: '90px' },
+  { key: 'total', label: '合计', align: 'right', width: '90px' },
+]
 
 async function load() {
   loading.value = true
@@ -25,6 +42,18 @@ async function load() {
     error.value = err instanceof ApiError ? err.message : '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadUsage() {
+  usageLoading.value = true
+  usageError.value = ''
+  try {
+    usage.value = await listTagUsage()
+  } catch (err) {
+    usageError.value = err instanceof ApiError ? err.message : '加载失败'
+  } finally {
+    usageLoading.value = false
   }
 }
 
@@ -74,7 +103,10 @@ async function handleDelete(item: Tag) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadUsage()
+})
 </script>
 
 <template>
@@ -130,6 +162,39 @@ onMounted(load)
         </li>
       </ul>
       <div v-else-if="!loading" class="p-10 text-center text-sm text-text-muted">暂无标签。</div>
+    </div>
+
+    <div class="card overflow-hidden lg:col-span-2">
+      <div class="flex items-center justify-between border-b border-border-dark px-4 py-3">
+        <div>
+          <h2 class="font-semibold text-text-primary">标签使用统计</h2>
+          <p class="mt-0.5 text-xs text-text-muted">
+            来自资源 / 工具 / 百科的关联表聚合，只统计实际被内容引用的标签（内容保存时自动同步）。
+          </p>
+        </div>
+        <button
+          type="button"
+          class="rounded border border-border-light px-3 py-1.5 text-xs text-text-secondary hover:bg-ink-700"
+          :disabled="usageLoading"
+          @click="loadUsage"
+        >
+          {{ usageLoading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
+      <div v-if="usageError" role="alert" class="p-6 text-sm text-danger-mc">{{ usageError }}</div>
+      <AdminTable
+        v-else
+        :columns="usageColumns"
+        :rows="usage"
+        :loading="usageLoading"
+        row-key="tag"
+        plain
+        empty-text="暂无使用中的标签——在资源 / 工具 / 百科上填写标签后即会出现在这里。"
+      >
+        <template #cell-total="{ row }">
+          <span class="font-medium text-text-primary">{{ row.total }}</span>
+        </template>
+      </AdminTable>
     </div>
   </div>
 </template>

@@ -3,6 +3,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import FormField from '@/components/common/FormField.vue'
+import ContentRevisionsPanel from '@/components/admin/ContentRevisionsPanel.vue'
 import { useUiStore } from '@/stores/ui'
 import { getWiki, createWiki, updateWiki } from '@/api/admin-wiki'
 import type { WikiPayload } from '@/types/wiki'
@@ -206,5 +207,13 @@ async function handleSubmit() {
         </button>
       </div>
     </form>
+
+    <ContentRevisionsPanel
+      v-if="isEdit && !loading"
+      class="mt-5"
+      content-type="wiki"
+      :content-id="id"
+      @rolled-back="loadForEdit"
+    />
   </div>
 </template>

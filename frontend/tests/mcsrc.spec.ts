@@ -16,6 +16,9 @@ const mcsrcApi = vi.hoisted(() => ({
   listClasses: vi.fn(),
   getClassDetail: vi.fn(),
   getClassHierarchy: vi.fn(),
+  getClassBytecode: vi.fn(),
+  getClassReferences: vi.fn(),
+  getClassMapping: vi.fn(),
 }))
 vi.mock('@/api/mcsrc', () => mcsrcApi)
 
@@ -164,6 +167,7 @@ describe('MC 源码浏览器', () => {
     mcsrcApi.listClasses.mockResolvedValue({ items: CLASSES, total: 2, page: 1, page_size: 30 })
     mcsrcApi.getClassDetail.mockResolvedValue(structureOf())
     mcsrcApi.getClassHierarchy.mockResolvedValue(hierarchyOf())
+    mcsrcApi.getClassMapping.mockResolvedValue({ available: false, members: [], truncated: false })
     decompiler.decompileClass.mockResolvedValue({
       className: '',
       source: '',

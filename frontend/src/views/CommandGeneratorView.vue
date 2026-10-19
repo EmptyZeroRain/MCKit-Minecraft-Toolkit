@@ -3,12 +3,13 @@
 //
 // 表单化配置 → 校验 → 生成指令文本（一键复制）。
 // 按版本区分「旧式 NBT」与「新版数据组件」语法；本页不执行任何命令、不连接服务器。
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageContainer from '@/components/layout/PageContainer.vue'
 import Breadcrumbs from '@/components/layout/Breadcrumbs.vue'
 import FormField from '@/components/common/FormField.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
+import ShareButton from '@/components/common/ShareButton.vue'
 import VersionNotice from '@/components/common/VersionNotice.vue'
 import { useRecentToolsStore } from '@/stores/recent-tools'
 import { loadReleaseVersions } from '@/utils/mc-versions'
@@ -31,6 +32,7 @@ import {
   withSlash,
 } from '@/utils/command-generator'
 import { applyPageMeta } from '@/utils/seo'
+import { changedOnly, queryBool, queryString } from '@/utils/share'
 
 applyPageMeta({
   title: '可视化指令生成器',
@@ -41,6 +43,7 @@ applyPageMeta({
 
 useRecentToolsStore().record('command-generator', '指令生成器', '生成类')
 
+const route = useRoute()
 const router = useRouter()
 
 type TabKey = 'give' | 'summon' | 'effect' | 'setblock' | 'tp' | 'gamemode'
@@ -54,10 +57,18 @@ const tabs: Array<{ key: TabKey; label: string; icon: string; hint: string }> = 
   { key: 'gamemode', label: '/gamemode', icon: '🎮', hint: '切换游戏模式' },
 ]
 
-const activeTab = ref<TabKey>('give')
+const TAB_KEYS = tabs.map((t) => t.key)
+
+/** 解析 `tab` 查询参数（非法值回退 give）。 */
+function normalizeTab(raw: string): TabKey {
+  return (TAB_KEYS as string[]).includes(raw) ? (raw as TabKey) : 'give'
+}
+
+// URL 分享（TODO §14）：从查询参数恢复初始指令类型与版本，保证分享链接可复现。
+const activeTab = ref<TabKey>(normalizeTab(queryString(route.query.tab)))
 
 // ===== 版本 =====
-const version = ref('1.21')
+const version = ref(queryString(route.query.v, '1.21'))
 const releaseVersions = ref<string[]>([])
 
 onMounted(async () => {
@@ -128,6 +139,163 @@ const gamemode = reactive({
   mode: 'creative' as Gamemode,
   target: '',
 })
+
+// ===== URL 分享（TODO §14）=====
+// 把「指令类型 + 版本 + 该类型的表单」写入地址栏：分享链接打开即复现同一条指令。
+// 布尔值用 1 表示真、空串表示假；附魔 / 方块状态等数组以 JSON 编码。
+
+/** 布尔 → 查询值（真写 1，假写空串以便被 changedOnly 丢弃）。 */
+function boolParam(v: boolean): string {
+  return v ? '1' : ''
+}
+
+/** 当前指令类型的表单快照（扁平字符串，便于写入 URL）。 */
+function tabState(): Record<string, string> {
+  switch (activeTab.value) {
+    case 'give':
+      return {
+        target: give.target,
+        item: give.item,
+        count: give.count,
+        custom_name: give.customName,
+        unbreakable: boolParam(give.unbreakable),
+        damage: give.damage,
+        ench: give.enchantments.length ? JSON.stringify(give.enchantments) : '',
+      }
+    case 'summon':
+      return {
+        entity: summon.entity,
+        x: summon.pos.x,
+        y: summon.pos.y,
+        z: summon.pos.z,
+        custom_name: summon.customName,
+        no_ai: boolParam(summon.noAI),
+        no_gravity: boolParam(summon.noGravity),
+        silent: boolParam(summon.silent),
+        persistent: boolParam(summon.persistenceRequired),
+        glowing: boolParam(summon.glowing),
+      }
+    case 'effect':
+      return {
+        target: effect.target,
+        effect: effect.effect,
+        duration: effect.duration,
+        amplifier: effect.amplifier,
+        hide_particles: boolParam(effect.hideParticles),
+      }
+    case 'setblock':
+      return {
+        x: setblock.pos.x,
+        y: setblock.pos.y,
+        z: setblock.pos.z,
+        block: setblock.block,
+        states: setblock.states.length ? JSON.stringify(setblock.states) : '',
+        mode: setblock.mode,
+      }
+    case 'tp':
+      return {
+        target: tp.target,
+        mode: tp.mode,
+        x: tp.pos.x,
+        y: tp.pos.y,
+        z: tp.pos.z,
+        destination: tp.destination,
+        yaw: tp.yaw,
+        pitch: tp.pitch,
+      }
+    default:
+      return { mode: gamemode.mode, target: gamemode.target }
+  }
+}
+
+/** 解析 JSON 数组参数（非法值回退默认）。 */
+function listParam<T>(raw: string, fallback: T[]): T[] {
+  if (!raw) return fallback
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as T[]) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** 用 URL 查询参数覆盖当前指令类型的表单（缺失字段保持默认值）。 */
+function applyTabState() {
+  const q = route.query
+  const s = (key: string) => queryString(q[key])
+  const flag = (key: string) => queryBool(q[key])
+  switch (activeTab.value) {
+    case 'give':
+      give.target = s('target') || give.target
+      give.item = s('item') || give.item
+      give.count = s('count') || give.count
+      give.customName = s('custom_name')
+      give.unbreakable = flag('unbreakable')
+      give.damage = s('damage')
+      give.enchantments = listParam(s('ench'), give.enchantments)
+      break
+    case 'summon':
+      summon.entity = s('entity') || summon.entity
+      summon.pos.x = s('x') || summon.pos.x
+      summon.pos.y = s('y') || summon.pos.y
+      summon.pos.z = s('z') || summon.pos.z
+      summon.customName = s('custom_name')
+      summon.noAI = flag('no_ai')
+      summon.noGravity = flag('no_gravity')
+      summon.silent = flag('silent')
+      summon.persistenceRequired = flag('persistent')
+      summon.glowing = flag('glowing')
+      break
+    case 'effect':
+      effect.target = s('target') || effect.target
+      effect.effect = s('effect') || effect.effect
+      effect.duration = s('duration') || effect.duration
+      effect.amplifier = s('amplifier') || effect.amplifier
+      effect.hideParticles = flag('hide_particles')
+      break
+    case 'setblock':
+      setblock.pos.x = s('x') || setblock.pos.x
+      setblock.pos.y = s('y') || setblock.pos.y
+      setblock.pos.z = s('z') || setblock.pos.z
+      setblock.block = s('block') || setblock.block
+      setblock.states = listParam(s('states'), setblock.states)
+      if ((['replace', 'destroy', 'keep'] as string[]).includes(s('mode'))) {
+        setblock.mode = s('mode') as 'replace' | 'destroy' | 'keep'
+      }
+      break
+    case 'tp':
+      tp.target = s('target') || tp.target
+      if (s('mode') === 'entity' || s('mode') === 'coords') {
+        tp.mode = s('mode') as 'coords' | 'entity'
+      }
+      tp.pos.x = s('x') || tp.pos.x
+      tp.pos.y = s('y') || tp.pos.y
+      tp.pos.z = s('z') || tp.pos.z
+      tp.destination = s('destination') || tp.destination
+      tp.yaw = s('yaw')
+      tp.pitch = s('pitch')
+      break
+    default:
+      if ((GAMEMODES as readonly string[]).includes(s('mode'))) {
+        gamemode.mode = s('mode') as Gamemode
+      }
+      gamemode.target = s('target')
+  }
+}
+
+/** 把当前状态写回地址栏（只写与默认值不同的字段，URL 保持简洁可读）。 */
+function syncUrl() {
+  router.replace({
+    path: '/command-generator',
+    query: {
+      ...changedOnly({ tab: activeTab.value, v: version.value }, { tab: 'give', v: '1.21' }),
+      ...changedOnly(tabState()),
+    },
+  })
+}
+
+applyTabState()
+watch([activeTab, version, give, summon, effect, setblock, tp, gamemode], syncUrl, { deep: true })
 
 // ===== 生成 =====
 const result = computed<CommandResult>(() => {
@@ -276,12 +444,15 @@ function goTools() {
   <PageContainer maxWidth="max-w-6xl">
     <Breadcrumbs :items="[{ label: '工具中心', to: '/tools' }, { label: '指令生成器' }]" />
 
-    <div class="mb-6">
-      <h1 class="mb-2 text-2xl font-bold text-text-primary md:text-3xl">可视化指令生成器</h1>
-      <p class="text-text-secondary">
-        表单化配置常见指令，自动按版本区分旧式 NBT 与新版数据组件语法。
-        本页<strong class="text-text-primary">只生成文本</strong>，不执行命令、不连接你的服务器。
-      </p>
+    <div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 class="mb-2 text-2xl font-bold text-text-primary md:text-3xl">可视化指令生成器</h1>
+        <p class="text-text-secondary">
+          表单化配置常见指令，自动按版本区分旧式 NBT 与新版数据组件语法。
+          本页<strong class="text-text-primary">只生成文本</strong>，不执行命令、不连接你的服务器。
+        </p>
+      </div>
+      <ShareButton />
     </div>
 
     <div class="grid gap-6 lg:grid-cols-5">

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func newTestRouter(_ *gorm.DB) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recover)
 	api := chi.NewRouter()
-	registerRoutes(api, nil, nil)
+	registerRoutes(context.Background(), api, nil, nil)
 	api.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		response.NotFound(w, r)
 	})

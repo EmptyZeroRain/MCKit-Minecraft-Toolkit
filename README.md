@@ -13,7 +13,8 @@
 - **开发栏目**：开发文档知识库（NeoForge / Forge / Fabric / 原版数据，含关键接口速查）与**版本映射查询**（类 / 方法 / 字段的 obf / mid / named 三列对照；映射数据需自行导入，仓库不预置）。
 - **百科与资源**：中文 Wiki 条目抓取与浏览；资源导航（类型 / 版本 / 加载器筛选、来源跳转、失效链接检查）。
 - **全站搜索**：跨 **工具 / 资源 / 百科 / 物品 / 开发文档** 统一检索，支持类型与版本筛选、相关度 / 最近更新排序与无结果引导。
-- **用户与后台**：可选账号（收藏 / 最近使用 / 常用种子；公开工具免登录）；管理后台含内容 CRUD、投稿审核（红石 / Mod / 反馈）、链接健康复查、数据质量与导入历史、运营看板、审计日志。
+- **用户与后台**：可选账号（收藏 / 最近使用 / 常用种子；公开工具免登录）；**用户资源投稿**（结构化提交 → 人工审核 → 审核通过转为资源）；管理后台含内容 CRUD、投稿审核（红石 / Mod / 资源投稿 / 反馈）、链接健康复查、数据质量与导入历史、运营看板、审计日志。
+- **用户成长**：服务端判定的经验 / 等级（仅展示）/ 每日任务 / 成就体系；由已确认的业务事件驱动，经验账本只增不删、支持审计与人工冲正；后台可版本化维护规则与定义，并按 `ops.growth` 权限管理。
 
 ## 界面预览
 
@@ -78,6 +79,14 @@ docker compose -f deploy/compose.yaml up -d postgres
 
 # 2. 执行数据库迁移
 cd backend && go run ./cmd/migrate
+
+# 2b. 迁移回滚（可选）
+#     反向文件命名约定：<序号>_<名称>.sql 为正向，<序号>_<名称>.down.sql 为反向
+go run ./cmd/migrate --down 1          # 回退最近 1 个版本
+go run ./cmd/migrate --down 3          # 回退最近 3 个版本（按版本降序，逐版本单事务）
+go run ./cmd/migrate --to 20           # 前进 / 回退到指定版本（自动判断方向）
+go run ./cmd/migrate --dir migrations  # 显式指定迁移目录（默认 migrations）
+#     --to 与 --down 互斥；缺少反向文件时明确报错停止，不会静默跳过
 
 # 3. 初始化管理员（无默认密码，必须提供强密码）
 ADMIN_USERNAME=admin ADMIN_PASSWORD='你的强密码' go run ./cmd/create-admin
@@ -201,13 +210,19 @@ npm run build        # 类型检查 + 生产构建
 | POST | `/api/v1/versions`、`/api/v1/versions/detail` | MC 版本清单 / 版本详情（筛选下拉，服务端缓存） |
 | POST | `/api/v1/block-ids` | 物品 ID 对照表 |
 | POST | `/api/v1/seed/analyze`、`/api/v1/mc/*` | MC 种子与结构工具（种子分析 / 生成 / 查找 / 解析、结构、要塞、史莱姆区块、群系、能力探测） |
-| POST | `/api/v1/stats/event` | 匿名使用统计上报（工具访问 / 使用 / 失败） |
+| POST | `/api/v1/stats/event` | 匿名使用统计上报（工具访问 / 使用 / 失败；登录用户的「使用」同时驱动成长事件） |
+| POST | `/api/v1/growth/overview`、`/api/v1/growth/ledger`、`/api/v1/growth/daily-tasks`、`/api/v1/growth/daily-tasks/history`、`/api/v1/growth/achievements` | 用户成长中心（仅本人：经验概览 / 经验流水 / 每日任务 / 任务历史 / 成就目录；等级仅展示用） |
+| POST | `/api/v1/public/users/detail`、`/api/v1/public/users/achievements` | 公开个人主页成长摘要与公开成就（不含经验流水与登录信息） |
+| POST | `/api/v1/admin/growth/*` | 成长后台（需 `ops.growth`）：概览 / 规则版本化维护 / 等级阈值 / 全局流水 / 人工调整与冲正 / 成长审计 |
+| POST | `/api/v1/admin/daily-tasks/*`、`/api/v1/admin/achievements/*` | 每日任务与成就定义维护（含历史补算），需 `ops.growth` |
 | POST | `/api/v1/categories` | 分类列表 |
 | POST | `/api/v1/feedback` | 提交反馈/举报 |
+| POST | `/api/v1/user/submissions/submit`、`/api/v1/user/submissions/list` | 资源投稿（结构化提交 + 我的投稿，需登录 + CSRF） |
 | POST | `/api/v1/admin/auth/login` `logout` `me` `change-password` | 认证（change-password 成功后该账号全部会话失效） |
 | POST | `/api/v1/admin/admins/list|create|update|reset-password|delete` | 管理员账号管理（admin 专属，需登录 + CSRF） |
 | POST/PATCH/DELETE | `/api/v1/admin/resources|tools|wiki|...` | 后台 CRUD（需登录 + CSRF） |
 | POST | `/api/v1/admin/resources/releases/list`、`/api/v1/admin/resources/releases/replace` | 资源发布版本维护（需登录 + CSRF，整体替换幂等） |
+| POST | `/api/v1/admin/submissions/list`、`/detail`、`/review` | 资源投稿审核（`content.resources`）：通过按投稿字段生成资源（默认草稿，可 `publish=true` 直接发布） |
 | POST | `/api/v1/admin/audit-logs` | 审计日志（admin 专属） |
 | POST | `/api/v1/admin/data-quality/overview`、`/api/v1/admin/data-import-jobs/list` | 数据质量概览 / 导入任务（admin 专属） |
 | POST | `/api/v1/admin/search-terms/list` | 搜索词匿名统计（admin 专属；`kind=hot\|no_result\|failed`） |

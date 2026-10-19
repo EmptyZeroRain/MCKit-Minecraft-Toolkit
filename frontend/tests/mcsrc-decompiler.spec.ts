@@ -39,7 +39,8 @@ describe('mcsrc 反编译客户端', () => {
       tokens: [],
     }))
     wrapSpy.mockReturnValue({ decompileClass: decompileClassMock })
-    mcsrcApi.fetchJarBlob.mockResolvedValue(new Blob(['jar-bytes']))
+    // fetchJarBlob 契约：{ blob, sha1 }（sha1 为空表示未知摘要，jar 身份保持 <version>-<side>）。
+    mcsrcApi.fetchJarBlob.mockResolvedValue({ blob: new Blob(['jar-bytes']), sha1: '' })
   })
 
   it('同一版本只下载一次 jar，并把类名透传给 Worker', async () => {
@@ -76,7 +77,7 @@ describe('mcsrc 反编译客户端', () => {
     mcsrcApi.fetchJarBlob.mockRejectedValueOnce(new Error('网络异常'))
     await expect(getJar('1.21.4', 'client')).rejects.toThrow('网络异常')
 
-    mcsrcApi.fetchJarBlob.mockResolvedValueOnce(new Blob(['ok']))
+    mcsrcApi.fetchJarBlob.mockResolvedValueOnce({ blob: new Blob(['ok']), sha1: '' })
     await expect(getJar('1.21.4', 'client')).resolves.toBeInstanceOf(Blob)
     expect(mcsrcApi.fetchJarBlob).toHaveBeenCalledTimes(2)
   })

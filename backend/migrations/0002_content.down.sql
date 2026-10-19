@@ -1,0 +1,8 @@
+-- 0002 反向迁移：删除内容表（按依赖顺序）。
+DROP TABLE IF EXISTS feedback;
+DROP TABLE IF EXISTS commands;
+DROP TABLE IF EXISTS recipes;
+DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS wiki_entries;
+DROP TABLE IF EXISTS resources;
+DROP TABLE IF EXISTS tools;

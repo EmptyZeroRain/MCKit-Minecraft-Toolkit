@@ -36,3 +36,25 @@ export async function updateRole(payload: UpdateRolePayload): Promise<RoleRow> {
 export async function deleteRole(name: string): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/roles/delete', { name })
 }
+
+/** 角色权限变更的影响预览（只读） */
+export interface RoleImpact {
+  role: string
+  label: string
+  is_system: boolean
+  affected_accounts: number
+  current_permissions: string[]
+  next_permissions: string[]
+  added: string[]
+  removed: string[]
+  notes: string[]
+}
+
+/** 计算把角色权限调整为 permissions 后的影响 */
+export async function getRoleImpact(name: string, permissions: string[]): Promise<RoleImpact> {
+  const { data } = await http.post<ApiResponse<RoleImpact>>('/admin/roles/impact', {
+    name,
+    permissions,
+  })
+  return data.data
+}

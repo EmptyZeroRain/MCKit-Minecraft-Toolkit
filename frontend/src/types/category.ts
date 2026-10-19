@@ -26,3 +26,12 @@ export interface TagQuery {
   page?: number
   page_size?: number
 }
+
+/** 标签使用统计行（来自 resource_tags / tool_tags / wiki_tags 关联表聚合）。 */
+export interface TagUsageRow {
+  tag: string
+  total: number
+  resource_count: number
+  tool_count: number
+  wiki_count: number
+}

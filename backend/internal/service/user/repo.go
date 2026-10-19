@@ -19,10 +19,14 @@ import (
 // Repo 用户与个人数据仓储接口（消费端定义，便于测试替身）。
 type Repo interface {
 	FindByUsername(ctx context.Context, username string) (*domain.User, error)
+	// FindByEmail 按邮箱查询普通用户（邮箱统一小写存储）；不存在返回 (nil, nil)。
+	FindByEmail(ctx context.Context, email string) (*domain.User, error)
 	FindByID(ctx context.Context, id string) (*domain.User, error)
 	Create(ctx context.Context, u *domain.User) error
 	UpdateLastLogin(ctx context.Context, id string) error
 	ChangePassword(ctx context.Context, id, hash string) error
+	// UpdateProfile 更新展示资料（昵称 / 头像 URL），仅限白名单字段与普通用户。
+	UpdateProfile(ctx context.Context, id, nickname, avatarURL string) error
 	// DeleteUser 删除账号；个人数据由数据库外键 ON DELETE CASCADE 级联清除。
 	DeleteUser(ctx context.Context, id string) error
 
@@ -63,6 +67,24 @@ func (r *GormRepo) FindByUsername(ctx context.Context, username string) (*domain
 	return &u, nil
 }
 
+// FindByEmail 按邮箱查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
+func (r *GormRepo) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
+	if email == "" {
+		return nil, nil
+	}
+	var u domain.User
+	err := r.db.WithContext(ctx).
+		Where("email = ? AND role = ?", email, domain.RoleUser).
+		First(&u).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // FindByID 按 ID 查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
 func (r *GormRepo) FindByID(ctx context.Context, id string) (*domain.User, error) {
 	var u domain.User
@@ -89,11 +111,19 @@ func (r *GormRepo) UpdateLastLogin(ctx context.Context, id string) error {
 		Where("id = ?", id).Update("last_login_at", gorm.Expr("now()")).Error
 }
 
-// ChangePassword 更新密码哈希（仅普通用户，避免改到后台账号）。
+// ChangePassword 更新密码哈希（仅普通用户，避免改到后台账号），并清空强制改密标记。
 func (r *GormRepo) ChangePassword(ctx context.Context, id, hash string) error {
 	return r.db.WithContext(ctx).Model(&domain.User{}).
 		Where("id = ? AND role = ?", id, domain.RoleUser).
-		Update("password_hash", hash).Error
+		Updates(map[string]any{"password_hash": hash, "must_change_password": false}).Error
+}
+
+// UpdateProfile 更新展示资料（昵称 / 头像 URL；仅普通用户，避免改到后台账号）。
+// 仅写入白名单字段，避免把请求体其余键带入 UPDATE（防字段注入）。
+func (r *GormRepo) UpdateProfile(ctx context.Context, id, nickname, avatarURL string) error {
+	return r.db.WithContext(ctx).Model(&domain.User{}).
+		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Updates(map[string]any{"nickname": nickname, "avatar_url": avatarURL}).Error
 }
 
 // DeleteUser 删除普通用户账号（个人数据级联删除；仅普通用户）。

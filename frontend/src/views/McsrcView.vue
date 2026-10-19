@@ -15,23 +15,44 @@ import CopyButton from '@/components/common/CopyButton.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import Pagination from '@/components/common/Pagination.vue'
+import NotesEditor from '@/components/mcsrc/NotesEditor.vue'
+import ReferenceResults from '@/components/mcsrc/ReferenceResults.vue'
 import { listVersions } from '@/api/versions'
-import { getClassDetail, getClassHierarchy, getStatus, listClasses, prepare } from '@/api/mcsrc'
+import {
+  getClassBytecode,
+  getClassDetail,
+  getClassHierarchy,
+  getClassMapping,
+  getClassReferences,
+  getStatus,
+  listClasses,
+  prepare,
+} from '@/api/mcsrc'
 import { decompileClass } from '@/mcsrc/decompiler'
+import { classMappingName, mappingSourceLabel, memberMappingName } from '@/mcsrc/mapping'
 import { resolveDeclaration } from '@/mcsrc/navigation'
+import { notesRevision, readClassNote } from '@/mcsrc/notes'
 import { useUiStore } from '@/stores/ui'
 import { useRecentToolsStore } from '@/stores/recent-tools'
 import { ApiError } from '@/types/api'
 import {
+  MCSRC_BYTECODE_LANGUAGE,
   MCSRC_KIND_LABELS,
   MCSRC_SIDES,
   MCSRC_SIDE_LABELS,
   javaVersionLabel,
   memberSignature,
+  referenceTargetLabel,
   type McsrcClass,
+  type McsrcClassBytecode,
+  type McsrcClassMapping,
   type McsrcClassStructure,
   type McsrcHierarchy,
   type McsrcJumpTarget,
+  type McsrcReferenceKind,
+  type McsrcReferenceQuery,
+  type McsrcReferences,
+  type McsrcReferenceSite,
   type McsrcRevealTarget,
   type McsrcSide,
   type McsrcStatus,
@@ -104,13 +125,15 @@ const classesError = ref('')
 const needPrepare = ref(false)
 
 // ---- 标签页（VS Code 式：每个类一个标签，切换不丢内容）----
-type McsrcTabKind = 'source' | 'structure'
+type McsrcTabKind = 'source' | 'structure' | 'bytecode' | 'references'
 
 interface McsrcTab {
-  /** `${kind}:${className}` */
+  /** `${kind}:${suffix}`；引用标签的 suffix 含目标成员，故同一类可有多个引用标签 */
   key: string
   kind: McsrcTabKind
   className: string
+  /** 引用标签的目标（仅 kind === 'references' 使用） */
+  reference?: { kind: McsrcReferenceKind; name?: string; descriptor?: string }
 }
 
 /** 单个类的源码标签状态 */
@@ -121,6 +144,8 @@ interface SourceTabState {
   tokens: McsrcToken[]
   /** 打开后需要定位的成员（跳转落点） */
   reveal: McsrcRevealTarget | null
+  /** 是否展开类备注面板 */
+  noteOpen: boolean
 }
 
 /** 单个类的结构标签状态 */
@@ -129,12 +154,36 @@ interface StructureTabState {
   error: string
   structure: McsrcClassStructure | null
   hierarchy: McsrcHierarchy | null
+  /** 类映射重命名（未导入映射时为 available:false；请求失败时为 null） */
+  mapping: McsrcClassMapping | null
+  /** 是否展开类备注编辑面板 */
+  classNoteOpen: boolean
+  /** 当前展开备注编辑器的成员行键；null 表示无 */
+  noteMemberKey: string | null
+}
+
+/** 单个类的字节码标签状态 */
+interface BytecodeTabState {
+  loading: boolean
+  error: string
+  bytecode: McsrcClassBytecode | null
+}
+
+/** 单个引用标签状态（按标签键索引：同一类可查多个成员） */
+interface ReferencesTabState {
+  loading: boolean
+  error: string
+  result: McsrcReferences | null
+  /** 查询目标（版本 / 侧别在发起时补齐） */
+  query: McsrcReferenceQuery
 }
 
 const tabs = ref<McsrcTab[]>([])
 const activeKey = ref('')
 const sourceStates = reactive<Record<string, SourceTabState>>({})
 const structureStates = reactive<Record<string, StructureTabState>>({})
+const bytecodeStates = reactive<Record<string, BytecodeTabState>>({})
+const referencesStates = reactive<Record<string, ReferencesTabState>>({})
 
 const activeTab = computed(() => tabs.value.find((t) => t.key === activeKey.value) ?? null)
 const activeSource = computed(() =>
@@ -143,11 +192,34 @@ const activeSource = computed(() =>
 const activeStructure = computed(() =>
   activeTab.value?.kind === 'structure' ? structureStates[activeTab.value.className] : undefined,
 )
+const activeBytecode = computed(() =>
+  activeTab.value?.kind === 'bytecode' ? bytecodeStates[activeTab.value.className] : undefined,
+)
+const activeReferences = computed(() =>
+  activeTab.value?.kind === 'references' ? referencesStates[activeTab.value.key] : undefined,
+)
 
-/** 标签标题：取类简名 */
+/** 标签标题：源码取类简名，其余带类型后缀 */
 function tabLabel(tab: McsrcTab): string {
   const simple = tab.className.split('.').pop() ?? tab.className
-  return tab.kind === 'source' ? simple : `${simple} · 结构`
+  if (tab.kind === 'structure') return `${simple} · 结构`
+  if (tab.kind === 'bytecode') return `${simple} · 字节码`
+  if (tab.kind === 'references') {
+    const ref = tab.reference
+    const target = !ref || ref.kind === 'class' ? '类' : `${ref.name ?? ''}${ref.descriptor ?? ''}`
+    return `${simple}.${target} · 引用`
+  }
+  return simple
+}
+
+/** 引用标签的唯一键：目标成员参与键值，避免同类的不同引用互相覆盖 */
+function referencesTabKey(className: string, ref: NonNullable<McsrcTab['reference']>): string {
+  return `references:${className}:${ref.kind}:${ref.name ?? ''}:${ref.descriptor ?? ''}`
+}
+
+/** 结构视图成员行的唯一键（与备注存储键同构） */
+function memberRowKey(kind: 'method' | 'field', name: string, descriptor: string): string {
+  return `${kind}:${name}${descriptor}`
 }
 
 /** 面包屑：包路径逐级 + 类名 */
@@ -392,28 +464,73 @@ function onPageChange(p: number) {
 function ensureSourceState(className: string): SourceTabState {
   // 必须返回 reactive 代理（而不是新建的原始对象），否则后续赋值不触发重新渲染。
   if (!sourceStates[className]) {
-    sourceStates[className] = { loading: false, error: '', text: '', tokens: [], reveal: null }
+    sourceStates[className] = { loading: false, error: '', text: '', tokens: [], reveal: null, noteOpen: false }
   }
   return sourceStates[className]
 }
 
 function ensureStructureState(className: string): StructureTabState {
   if (!structureStates[className]) {
-    structureStates[className] = { loading: false, error: '', structure: null, hierarchy: null }
+    structureStates[className] = {
+      loading: false,
+      error: '',
+      structure: null,
+      hierarchy: null,
+      mapping: null,
+      classNoteOpen: false,
+      noteMemberKey: null,
+    }
   }
   return structureStates[className]
 }
 
+function ensureBytecodeState(className: string): BytecodeTabState {
+  if (!bytecodeStates[className]) {
+    bytecodeStates[className] = { loading: false, error: '', bytecode: null }
+  }
+  return bytecodeStates[className]
+}
+
+function ensureReferencesState(key: string, query: McsrcReferenceQuery): ReferencesTabState {
+  if (!referencesStates[key]) {
+    referencesStates[key] = { loading: false, error: '', result: null, query }
+  }
+  return referencesStates[key]
+}
+
 /** 打开（或激活）一个标签；首次打开会触发对应的数据加载 */
-function openTab(kind: McsrcTabKind, className: string) {
+function openTab(kind: McsrcTabKind, className: string, reference?: McsrcTab['reference']) {
   if (!selectedId.value || !className) return
-  const key = `${kind}:${className}`
+  const key = reference ? referencesTabKey(className, reference) : `${kind}:${className}`
   if (!tabs.value.some((t) => t.key === key)) {
-    tabs.value.push({ key, kind, className })
+    tabs.value.push({ key, kind, className, reference })
   }
   activeKey.value = key
   if (kind === 'source') void loadSource(className)
-  else void loadStructure(className)
+  else if (kind === 'structure') void loadStructure(className)
+  else if (kind === 'bytecode') void loadBytecode(className)
+  else {
+    // 引用标签：按目标成员建立状态并加载（键含目标，故同一类可有多个引用标签）。
+    ensureReferencesState(key, {
+      version: selectedId.value,
+      side: side.value,
+      kind: reference?.kind ?? 'class',
+      class: className,
+      name: reference?.name,
+      descriptor: reference?.descriptor,
+    })
+    void loadReferences(key)
+  }
+}
+
+/** 打开某个类的字节码标签 */
+function openBytecode(className: string) {
+  openTab('bytecode', className)
+}
+
+/** 打开查找引用标签：kind 为 class 时查整个类的引用 */
+function openReferences(kind: McsrcReferenceKind, className: string, name?: string, descriptor?: string) {
+  openTab('references', className, { kind, name, descriptor })
 }
 
 function closeTab(key: string) {
@@ -431,6 +548,8 @@ function closeAllTabs() {
   activeKey.value = ''
   Object.keys(sourceStates).forEach((k) => delete sourceStates[k])
   Object.keys(structureStates).forEach((k) => delete structureStates[k])
+  Object.keys(bytecodeStates).forEach((k) => delete bytecodeStates[k])
+  Object.keys(referencesStates).forEach((k) => delete referencesStates[k])
 }
 
 // ---- 源码标签：浏览器内 Vineflower/WASM 反编译（无需部署侧 JVM）----
@@ -443,7 +562,8 @@ async function loadSource(className: string) {
   state.loading = true
   state.error = ''
   try {
-    const res = await decompileClass(version, targetSide, className)
+    // 带上当前版本的官方摘要：jar 缓存与结果缓存据此判断是否需要重新下载 / 反编译。
+    const res = await decompileClass(version, targetSide, className, status.value?.sha1)
     // 期间可能已切换版本 / 侧别，丢弃过期结果。
     if (selectedId.value !== version || side.value !== targetSide) return
     state.text = res.source
@@ -488,7 +608,7 @@ async function onSourceJump(target: McsrcJumpTarget) {
   ensureSourceState(resolved.className).reveal = reveal
 }
 
-// ---- 结构标签：并行拉取结构视图与继承关系（继承关系失败不阻塞结构展示）----
+// ---- 结构标签：并行拉取结构视图、继承关系与映射重命名（后两者失败不阻塞结构展示）----
 async function loadStructure(className: string) {
   if (!selectedId.value) return
   const version = selectedId.value
@@ -497,9 +617,10 @@ async function loadStructure(className: string) {
   if (state.structure || state.loading) return
   state.loading = true
   state.error = ''
-  const [detailRes, hierRes] = await Promise.allSettled([
+  const [detailRes, hierRes, mapRes] = await Promise.allSettled([
     getClassDetail(version, className, targetSide),
     getClassHierarchy(version, className, targetSide),
+    getClassMapping(version, className, targetSide),
   ])
   if (selectedId.value !== version || side.value !== targetSide) return
   if (detailRes.status === 'fulfilled') {
@@ -510,6 +631,10 @@ async function loadStructure(className: string) {
   if (hierRes.status === 'fulfilled') {
     state.hierarchy = hierRes.value
   }
+  // 未导入映射时接口返回 available:false（正常态）；请求失败则保持 null（界面隐藏映射列内容）。
+  if (mapRes.status === 'fulfilled') {
+    state.mapping = mapRes.value
+  }
   state.loading = false
 }
 
@@ -519,7 +644,125 @@ function retryStructure(className: string) {
   state.error = ''
   state.structure = null
   state.hierarchy = null
+  state.mapping = null
   void loadStructure(className)
+}
+
+// ---- 字节码标签：服务端以 ASM Textifier 风格渲染反汇编文本 ----
+async function loadBytecode(className: string) {
+  if (!selectedId.value) return
+  const version = selectedId.value
+  const targetSide = side.value
+  const state = ensureBytecodeState(className)
+  if (state.bytecode || state.loading) return
+  state.loading = true
+  state.error = ''
+  try {
+    const res = await getClassBytecode(version, className, targetSide)
+    if (selectedId.value !== version || side.value !== targetSide) return
+    state.bytecode = res
+  } catch (err) {
+    if (selectedId.value !== version || side.value !== targetSide) return
+    state.error = err instanceof ApiError ? err.message : '加载字节码失败'
+  } finally {
+    state.loading = false
+  }
+}
+
+/** 字节码加载失败后重试 */
+function retryBytecode(className: string) {
+  const state = ensureBytecodeState(className)
+  state.error = ''
+  state.bytecode = null
+  void loadBytecode(className)
+}
+
+// ---- 引用标签：服务端扫描整份 jar 建反向索引后返回引用点 ----
+async function loadReferences(key: string) {
+  const state = referencesStates[key]
+  if (!state || !selectedId.value) return
+  if (state.result || state.loading) return
+  const version = selectedId.value
+  const targetSide = side.value
+  state.loading = true
+  state.error = ''
+  try {
+    const res = await getClassReferences({ ...state.query, version, side: targetSide })
+    if (selectedId.value !== version || side.value !== targetSide) return
+    state.result = res
+  } catch (err) {
+    if (selectedId.value !== version || side.value !== targetSide) return
+    state.error = err instanceof ApiError ? err.message : '查找引用失败'
+  } finally {
+    state.loading = false
+  }
+}
+
+/** 查找引用失败后重试 */
+function retryReferences(key: string) {
+  const state = referencesStates[key]
+  if (!state) return
+  state.error = ''
+  state.result = null
+  void loadReferences(key)
+}
+
+/** 点击引用点：跳到调用方所在类的源码，并定位到该成员 */
+function onReferenceOpen(site: McsrcReferenceSite) {
+  if (!selectedId.value) return
+  openTab('source', site.from_class)
+  ensureSourceState(site.from_class).reveal = {
+    type: site.from_kind,
+    name: site.from_name,
+    descriptor: site.from_descriptor,
+  }
+}
+
+// ---- 映射重命名（结构视图内展示）----
+const activeMapping = computed(() => activeStructure.value?.mapping ?? null)
+/** 类映射可读名（未导入映射 / 未命中时为空串） */
+const activeMappingClass = computed(() => classMappingName(activeMapping.value))
+/** 映射来源描述（如 `mojang · mojang-1.21.4`） */
+const activeMappingSource = computed(() => mappingSourceLabel(activeMapping.value))
+
+// ---- 备注（浏览器本地存储）----
+/** 当前标签类的备注文本；依赖 notesRevision，保存后即时刷新 */
+const activeClassNote = computed(() => {
+  void notesRevision.value
+  const tab = activeTab.value
+  if (!tab || !selectedId.value) return ''
+  return readClassNote({ version: selectedId.value, side: side.value, className: tab.className })
+})
+
+/** 引用标签的目标标签（标题展示用） */
+const activeReferenceLabel = computed(() => {
+  const tab = activeTab.value
+  if (!tab || tab.kind !== 'references') return ''
+  return referenceTargetLabel({
+    kind: tab.reference?.kind ?? 'class',
+    owner: tab.className,
+    name: tab.reference?.name,
+    descriptor: tab.reference?.descriptor,
+  })
+})
+
+/** 切换源码视图的类备注面板 */
+function toggleSourceNote() {
+  const state = activeSource.value
+  if (state) state.noteOpen = !state.noteOpen
+}
+
+/** 切换结构视图的类备注编辑面板 */
+function toggleClassNote() {
+  const state = activeStructure.value
+  if (state) state.classNoteOpen = !state.classNoteOpen
+}
+
+/** 切换某个成员行的备注编辑器（同一时刻只展开一个） */
+function toggleMemberNote(key: string) {
+  const state = activeStructure.value
+  if (!state) return
+  state.noteMemberKey = state.noteMemberKey === key ? null : key
 }
 
 // 版本列表筛选变化时重新拉取（保留选中版本）。
@@ -777,13 +1020,20 @@ onMounted(async () => {
                 <span class="block truncate text-[10px] text-text-muted">{{ c.pkg || '（默认包）' }}</span>
               </button>
               <span v-if="c.inner" class="shrink-0 rounded bg-ink-700 px-1 py-0.5 text-[9px] text-text-muted">内部类</span>
-              <span class="flex shrink-0 items-center gap-1">
+              <span class="flex shrink-0 flex-wrap items-center justify-end gap-1">
                 <button
                   type="button"
                   class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
                   @click="openTab('structure', c.name)"
                 >
                   查看结构
+                </button>
+                <button
+                  type="button"
+                  class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                  @click="openBytecode(c.name)"
+                >
+                  查看字节码
                 </button>
                 <button
                   type="button"
@@ -846,6 +1096,8 @@ onMounted(async () => {
             <span v-if="i < breadcrumbParts.length - 1" class="text-text-muted">›</span>
           </template>
           <span v-if="activeTab.kind === 'structure'" class="ml-2 text-text-muted">（结构视图）</span>
+          <span v-else-if="activeTab.kind === 'bytecode'" class="ml-2 text-text-muted">（字节码）</span>
+          <span v-else-if="activeTab.kind === 'references'" class="ml-2 text-text-muted">（查找引用）</span>
         </div>
 
         <!-- 内容区 -->
@@ -855,7 +1107,7 @@ onMounted(async () => {
             v-if="!activeTab"
             class="p-8"
             title="未打开文件"
-            description="从左侧列表选择类名即可打开源码；点「查看结构」可查看类结构与继承关系。"
+            description="从左侧列表选择类名即可打开源码；「查看结构」「查看字节码」可分别查看结构与反汇编，结构视图中还能查找引用与写备注。"
           />
 
           <!-- 源码标签 -->
@@ -872,12 +1124,34 @@ onMounted(async () => {
                 >
                   重新反编译
                 </button>
+                <button
+                  type="button"
+                  data-test="mcsrc-source-note-toggle"
+                  class="rounded border border-border-dark px-2 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                  @click="toggleSourceNote"
+                >
+                  {{ activeSource?.noteOpen ? '隐藏备注' : `备注${activeClassNote ? ' ●' : ''}` }}
+                </button>
                 <CopyButton tool="mcsrc" :text="activeTab.className" />
               </div>
             </div>
             <p class="shrink-0 px-3 py-1 text-[10px] text-text-muted" data-test="mcsrc-source-hint">
               Ctrl/⌘ + 点击（或 F12）类名与成员名可跳转：类跳类、字段与方法先定位到真正的声明类。
             </p>
+
+            <!-- 类备注（浏览器本地存储；在结构视图中编辑） -->
+            <div
+              v-if="activeSource?.noteOpen"
+              data-test="mcsrc-source-note"
+              class="shrink-0 border-b border-border-dark bg-ink-950/60 px-3 py-2"
+            >
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <span class="text-[11px] font-semibold text-text-secondary">类备注</span>
+                <span class="text-[10px] text-text-muted">仅保存在本机浏览器；可在结构视图中编辑</span>
+              </div>
+              <p v-if="activeClassNote" class="font-mono text-xs whitespace-pre-wrap text-text-primary">{{ activeClassNote }}</p>
+              <p v-else class="text-xs text-text-muted">暂无备注。</p>
+            </div>
 
             <!-- 关键：这一层必须 min-h-0 + flex-1，Monaco 才能拿到确定高度 -->
             <div class="min-h-0 flex-1 overflow-hidden">
@@ -899,8 +1173,73 @@ onMounted(async () => {
             </div>
           </div>
 
+          <!-- 字节码标签：服务端以 ASM Textifier 风格渲染的反汇编文本（纯 Go 解析，不执行代码） -->
+          <div v-else-if="activeTab.kind === 'bytecode'" data-test="class-bytecode" class="flex h-full flex-col">
+            <div class="flex shrink-0 items-center justify-between gap-2 border-b border-border-dark px-3 py-1">
+              <span class="truncate font-mono text-xs text-text-primary">{{ activeTab.className }}</span>
+              <div class="flex shrink-0 items-center gap-2">
+                <span v-if="activeBytecode?.bytecode" class="text-[10px] text-text-muted">
+                  {{ activeBytecode.bytecode.method_count }} 方法 · {{ activeBytecode.bytecode.instruction_count }} 指令
+                </span>
+                <button
+                  v-if="activeBytecode?.error"
+                  type="button"
+                  class="rounded border border-border-dark px-2 py-0.5 text-[10px] text-grass-300 transition hover:bg-ink-700"
+                  @click="retryBytecode(activeTab.className)"
+                >
+                  重新加载
+                </button>
+                <CopyButton tool="mcsrc" :text="activeTab.className" />
+              </div>
+            </div>
+            <p v-if="activeBytecode?.bytecode?.truncated" class="shrink-0 px-3 py-1 text-[10px] text-amber-mc">
+              反汇编文本过长，已截断。
+            </p>
+
+            <!-- 与源码视图一致：这一层必须 min-h-0 + flex-1，Monaco 才能拿到确定高度 -->
+            <div class="min-h-0 flex-1 overflow-hidden">
+              <div v-if="activeBytecode?.loading" role="status" aria-live="polite" class="p-3 text-sm text-text-muted">
+                加载字节码中…
+              </div>
+              <p v-else-if="activeBytecode?.error" role="alert" class="p-3 text-sm text-danger-mc">
+                {{ activeBytecode.error }}
+              </p>
+              <SourceViewer
+                v-else
+                :source="activeBytecode?.bytecode?.text ?? ''"
+                :language="MCSRC_BYTECODE_LANGUAGE"
+                class="h-full w-full"
+              />
+            </div>
+          </div>
+
+          <!-- 引用标签：服务端扫描整份 jar 得到的反向引用列表 -->
+          <div v-else-if="activeTab.kind === 'references'" data-test="class-references" class="flex h-full flex-col">
+            <div class="flex shrink-0 items-center justify-between gap-2 border-b border-border-dark px-3 py-1">
+              <span class="truncate font-mono text-xs text-text-primary">{{ activeReferenceLabel }}</span>
+              <div class="flex shrink-0 items-center gap-2">
+                <button
+                  v-if="activeReferences?.error"
+                  type="button"
+                  class="rounded border border-border-dark px-2 py-0.5 text-[10px] text-grass-300 transition hover:bg-ink-700"
+                  @click="retryReferences(activeTab.key)"
+                >
+                  重新查找
+                </button>
+              </div>
+            </div>
+            <div class="min-h-0 flex-1 overflow-y-auto">
+              <ReferenceResults
+                :result="activeReferences?.result ?? null"
+                :loading="activeReferences?.loading"
+                :error="activeReferences?.error"
+                @open="onReferenceOpen"
+              />
+            </div>
+          </div>
+
           <!-- 结构标签：结构视图 + 继承关系（均由后端解析 class 字节码得出） -->
-          <div v-else data-test="class-detail" class="h-full space-y-4 overflow-y-auto p-4">
+          <div v-else-if="activeTab.kind === 'structure'" data-test="class-detail" class="h-full space-y-4 overflow-y-auto p-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
@@ -918,8 +1257,12 @@ onMounted(async () => {
                 <p v-if="activeStructure?.structure" class="mt-1 break-all font-mono text-xs text-text-muted">
                   {{ [...activeStructure.structure.modifiers, activeStructure.structure.kind, activeStructure.structure.simple].join(' ') }}
                 </p>
+                <p v-if="activeMappingClass" class="mt-1 break-all text-xs text-text-secondary" data-test="mcsrc-mapping-class">
+                  映射名：<span class="font-mono text-text-primary">{{ activeMappingClass }}</span>
+                  <span v-if="activeMappingSource" class="ml-1 text-[10px] text-text-muted">（{{ activeMappingSource }}）</span>
+                </p>
               </div>
-              <div class="flex shrink-0 items-center gap-2">
+              <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
                   class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-grass-300 transition hover:bg-ink-700"
@@ -927,8 +1270,36 @@ onMounted(async () => {
                 >
                   查看源码
                 </button>
+                <button
+                  type="button"
+                  class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-text-secondary transition hover:bg-ink-700"
+                  @click="openBytecode(activeTab.className)"
+                >
+                  查看字节码
+                </button>
+                <button
+                  type="button"
+                  data-test="mcsrc-find-references"
+                  class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-text-secondary transition hover:bg-ink-700"
+                  @click="openReferences('class', activeTab.className)"
+                >
+                  查找引用
+                </button>
+                <button
+                  type="button"
+                  data-test="mcsrc-class-note-toggle"
+                  class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-text-secondary transition hover:bg-ink-700"
+                  @click="toggleClassNote"
+                >
+                  {{ activeStructure?.classNoteOpen ? '隐藏类备注' : `类备注${activeClassNote ? ' ●' : ''}` }}
+                </button>
                 <CopyButton tool="mcsrc" :text="activeTab.className" />
               </div>
+            </div>
+
+            <!-- 类备注编辑器（浏览器本地存储） -->
+            <div v-if="activeStructure?.classNoteOpen" data-test="mcsrc-class-note" class="max-w-2xl">
+              <NotesEditor :target="{ version: selectedId, side, className: activeTab.className }" label="类备注" />
             </div>
 
             <div v-if="activeStructure?.loading" role="status" aria-live="polite" class="text-sm text-text-muted">
@@ -1046,20 +1417,58 @@ onMounted(async () => {
                 </h4>
                 <p v-if="!activeStructure.structure.fields.length" class="text-xs text-text-muted">无字段。</p>
                 <div v-else class="overflow-x-auto">
-                  <table class="w-full min-w-[480px] text-left text-xs">
+                  <table class="w-full min-w-[640px] text-left text-xs">
                     <thead class="border-b border-border-dark text-text-muted">
                       <tr>
                         <th scope="col" class="px-2 py-1.5">修饰符</th>
                         <th scope="col" class="px-2 py-1.5">类型</th>
                         <th scope="col" class="px-2 py-1.5">名称</th>
+                        <th scope="col" class="px-2 py-1.5">映射名</th>
+                        <th scope="col" class="px-2 py-1.5">操作</th>
                       </tr>
                     </thead>
                     <tbody class="divide-y divide-border-dark">
-                      <tr v-for="f in activeStructure.structure.fields" :key="`${f.name}:${f.descriptor}`">
-                        <td class="px-2 py-1.5 font-mono text-text-muted">{{ f.modifiers.join(' ') || '—' }}</td>
-                        <td class="px-2 py-1.5 break-all font-mono text-text-secondary">{{ f.type || '?' }}</td>
-                        <td class="px-2 py-1.5 break-all font-mono text-text-primary">{{ f.name }}</td>
-                      </tr>
+                      <template v-for="f in activeStructure.structure.fields" :key="`${f.name}:${f.descriptor}`">
+                        <tr>
+                          <td class="px-2 py-1.5 font-mono text-text-muted">{{ f.modifiers.join(' ') || '—' }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-secondary">{{ f.type || '?' }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-primary">{{ f.name }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-secondary">
+                            {{ memberMappingName(activeMapping, 'field', f.name, f.descriptor) || '—' }}
+                          </td>
+                          <td class="px-2 py-1.5">
+                            <span class="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                                @click="openReferences('field', activeTab.className, f.name, f.descriptor)"
+                              >
+                                引用
+                              </button>
+                              <button
+                                type="button"
+                                class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                                @click="toggleMemberNote(memberRowKey('field', f.name, f.descriptor))"
+                              >
+                                备注
+                              </button>
+                            </span>
+                          </td>
+                        </tr>
+                        <tr v-if="activeStructure.noteMemberKey === memberRowKey('field', f.name, f.descriptor)">
+                          <td colspan="5" class="px-2 py-2">
+                            <NotesEditor
+                              :target="{
+                                version: selectedId,
+                                side,
+                                className: activeTab.className,
+                                member: { kind: 'field', name: f.name, descriptor: f.descriptor },
+                              }"
+                              label="字段备注"
+                            />
+                          </td>
+                        </tr>
+                      </template>
                     </tbody>
                   </table>
                 </div>
@@ -1076,20 +1485,58 @@ onMounted(async () => {
                 </div>
                 <p v-if="!visibleMethods.length" class="text-xs text-text-muted">无方法。</p>
                 <div v-else class="overflow-x-auto">
-                  <table class="w-full min-w-[560px] text-left text-xs">
+                  <table class="w-full min-w-[720px] text-left text-xs">
                     <thead class="border-b border-border-dark text-text-muted">
                       <tr>
                         <th scope="col" class="px-2 py-1.5">修饰符</th>
                         <th scope="col" class="px-2 py-1.5">签名</th>
                         <th scope="col" class="px-2 py-1.5">描述符</th>
+                        <th scope="col" class="px-2 py-1.5">映射名</th>
+                        <th scope="col" class="px-2 py-1.5">操作</th>
                       </tr>
                     </thead>
                     <tbody class="divide-y divide-border-dark">
-                      <tr v-for="m in visibleMethods" :key="`${m.name}:${m.descriptor}`">
-                        <td class="px-2 py-1.5 font-mono text-text-muted">{{ m.modifiers.join(' ') || '—' }}</td>
-                        <td class="px-2 py-1.5 break-all font-mono text-text-primary">{{ memberSignature(m) }}</td>
-                        <td class="px-2 py-1.5 break-all font-mono text-text-muted">{{ m.descriptor }}</td>
-                      </tr>
+                      <template v-for="m in visibleMethods" :key="`${m.name}:${m.descriptor}`">
+                        <tr>
+                          <td class="px-2 py-1.5 font-mono text-text-muted">{{ m.modifiers.join(' ') || '—' }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-primary">{{ memberSignature(m) }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-muted">{{ m.descriptor }}</td>
+                          <td class="px-2 py-1.5 break-all font-mono text-text-secondary">
+                            {{ memberMappingName(activeMapping, 'method', m.name, m.descriptor) || '—' }}
+                          </td>
+                          <td class="px-2 py-1.5">
+                            <span class="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                                @click="openReferences('method', activeTab.className, m.name, m.descriptor)"
+                              >
+                                引用
+                              </button>
+                              <button
+                                type="button"
+                                class="rounded border border-border-dark px-1.5 py-0.5 text-[10px] text-text-secondary transition hover:bg-ink-700"
+                                @click="toggleMemberNote(memberRowKey('method', m.name, m.descriptor))"
+                              >
+                                备注
+                              </button>
+                            </span>
+                          </td>
+                        </tr>
+                        <tr v-if="activeStructure.noteMemberKey === memberRowKey('method', m.name, m.descriptor)">
+                          <td colspan="5" class="px-2 py-2">
+                            <NotesEditor
+                              :target="{
+                                version: selectedId,
+                                side,
+                                className: activeTab.className,
+                                member: { kind: 'method', name: m.name, descriptor: m.descriptor },
+                              }"
+                              label="方法备注"
+                            />
+                          </td>
+                        </tr>
+                      </template>
                     </tbody>
                   </table>
                 </div>
@@ -1104,8 +1551,10 @@ onMounted(async () => {
         >
           <span class="truncate">
             <template v-if="activeTab?.kind === 'source'">源码由 Vineflower（WASM）在浏览器内反编译，仅供阅读参考</template>
-            <template v-else-if="activeTab">类结构由服务端解析 class 字节码得出，无需反编译</template>
-            <template v-else>选择左侧的类即可打开源码或结构视图</template>
+            <template v-else-if="activeTab?.kind === 'structure'">类结构由服务端解析 class 字节码得出，无需反编译</template>
+            <template v-else-if="activeTab?.kind === 'bytecode'">字节码由服务端以 ASM Textifier 风格渲染，仅解析不执行</template>
+            <template v-else-if="activeTab?.kind === 'references'">引用由服务端扫描整份 jar 得出（首次较慢，之后为毫秒级）</template>
+            <template v-else>选择左侧的类即可打开源码、结构、字节码或查找引用</template>
           </span>
           <span class="shrink-0 font-mono">
             {{ selectedId }} · {{ MCSRC_SIDE_LABELS[side] }}<template v-if="status?.indexed"> · {{ status.class_count }} 类</template>

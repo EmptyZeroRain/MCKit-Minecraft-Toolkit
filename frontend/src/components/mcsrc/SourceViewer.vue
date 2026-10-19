@@ -8,6 +8,7 @@
 //   3. 支持在打开的源码中定位并选中指定成员声明（跳转落点）。
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { monaco } from '@/mcsrc/monaco'
+import { BYTECODE_LANGUAGE, bytecodeTheme, registerBytecodeLanguage } from '@/mcsrc/bytecode'
 import { findDeclarationToken, findTokenAtOffset, offsetAtPosition, parseMemberFragment, tokenMemberFragment } from '@/mcsrc/tokens'
 import { toDottedClassName, toInternalClassName } from '@/mcsrc/names'
 import { useThemeStore } from '@/stores/theme'
@@ -38,8 +39,9 @@ let editor: monaco.editor.IStandaloneCodeEditor | null = null
 let decorations: monaco.editor.IEditorDecorationsCollection | null = null
 let disposables: monaco.IDisposable[] = []
 
-/** 站点明暗主题 → Monaco 主题 */
+/** 站点明暗主题 → Monaco 主题（字节码视图使用配套的高亮主题） */
 function monacoTheme(): string {
+  if (props.language === BYTECODE_LANGUAGE) return bytecodeTheme(theme.isDark)
   return theme.isDark ? 'vs-dark' : 'vs'
 }
 
@@ -137,6 +139,7 @@ function registerNavigation() {
 
 onMounted(() => {
   if (!host.value) return
+  registerBytecodeLanguage()
   editor = monaco.editor.create(host.value, {
     value: props.source,
     language: props.language ?? 'java',

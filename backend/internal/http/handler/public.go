@@ -76,6 +76,7 @@ func (h *PublicHandler) ListResources(w http.ResponseWriter, r *http.Request) {
 		GameVersion:    req.GameVersion,
 		Loader:         req.Loader,
 		SourcePlatform: req.SourcePlatform,
+		Tag:            req.Tag,
 		Sort:           req.Sort,
 		Page:           req.Page,
 		PageSize:       req.PageSize,
@@ -119,6 +120,7 @@ func (h *PublicHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	items, total, err := h.contentSvc.ListTools(r.Context(), content.ToolFilter{
 		Category:      req.Category,
 		Q:             req.Q,
+		Tag:           req.Tag,
 		PublishedOnly: true,
 		Page:          req.Page,
 		PageSize:      req.PageSize,

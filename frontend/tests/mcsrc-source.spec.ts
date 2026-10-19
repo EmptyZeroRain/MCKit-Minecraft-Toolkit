@@ -37,6 +37,9 @@ const mcsrcApi = vi.hoisted(() => ({
   listClasses: vi.fn(),
   getClassDetail: vi.fn(),
   getClassHierarchy: vi.fn(),
+  getClassBytecode: vi.fn(),
+  getClassReferences: vi.fn(),
+  getClassMapping: vi.fn(),
 }))
 vi.mock('@/api/mcsrc', () => mcsrcApi)
 
@@ -162,6 +165,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
     mcsrcApi.listClasses.mockResolvedValue({ items: CLASSES, total: 2, page: 1, page_size: 30 })
     mcsrcApi.getClassDetail.mockResolvedValue(structureOf())
     mcsrcApi.getClassHierarchy.mockResolvedValue(hierarchyOf())
+    mcsrcApi.getClassMapping.mockResolvedValue({ available: false, members: [], truncated: false })
     authApi.me.mockRejectedValue(new Error('未登录'))
     decompiler.decompileClass.mockResolvedValue({
       className: CLASS_NAME,
@@ -176,7 +180,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
     await rowButton(wrapper, 0, '查看源码')!.trigger('click')
     await flushPromises()
 
-    expect(decompiler.decompileClass).toHaveBeenCalledWith('1.21.4', 'client', CLASS_NAME)
+    expect(decompiler.decompileClass).toHaveBeenCalledWith('1.21.4', 'client', CLASS_NAME, 'abc')
     const panel = wrapper.find('[data-test="class-source"]')
     expect(panel.exists()).toBe(true)
     expect(panel.text()).toContain(CLASS_NAME)
@@ -230,7 +234,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
     await openSource!.trigger('click')
     await flushPromises()
 
-    expect(decompiler.decompileClass).toHaveBeenCalledWith('1.21.4', 'client', CLASS_NAME)
+    expect(decompiler.decompileClass).toHaveBeenCalledWith('1.21.4', 'client', CLASS_NAME, 'abc')
     // 结构标签保留在标签栏，只是不再是激活标签。
     expect(wrapper.findAll('[data-test="mcsrc-tab-close"]').length).toBe(2)
     expect(wrapper.find('[data-test="class-source"]').exists()).toBe(true)
@@ -265,7 +269,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
 
     // 类 token 不需要查询成员声明，直接反编译目标类。
     expect(mcsrcApi.getClassDetail).not.toHaveBeenCalled()
-    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME)
+    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME, 'abc')
     expect(wrapper.find('[data-test="class-source"]').text()).toContain(LEVEL_NAME)
     expect(wrapper.find('[data-test="stub-reveal"]').text()).toBe('')
   })
@@ -285,7 +289,7 @@ describe('MC 源码浏览器 - 查看源码', () => {
     await flushPromises()
 
     expect(mcsrcApi.getClassHierarchy).toHaveBeenCalledWith('1.21.4', CLASS_NAME, 'client')
-    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME)
+    expect(decompiler.decompileClass).toHaveBeenLastCalledWith('1.21.4', 'client', LEVEL_NAME, 'abc')
     // 跳转落点被带给查看器（stub-reveal 渲染 type:name）。
     expect(wrapper.find('[data-test="stub-reveal"]').text()).toBe('method:tick')
   })

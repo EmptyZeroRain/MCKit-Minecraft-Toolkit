@@ -2,12 +2,20 @@
 // Mod 与整合包内容审核（TODO §16，admin 专属）
 // 两个 tab：Mod / 整合包，均默认只看待审核项，逐条「通过 / 驳回」并留备注。
 // 仅 admin 角色可见（侧边栏过滤 + 后端 403 兜底）。
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import ListShell from '@/components/admin/list-shell.vue'
 import StatusBadge from '@/components/common/StatusBadge.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useUiStore } from '@/stores/ui'
-import { listModpacksAdmin, listModsAdmin, reviewMod, reviewModpack } from '@/api/admin-mods'
+import {
+  batchReviewModpacks,
+  batchReviewMods,
+  listModpacksAdmin,
+  listModsAdmin,
+  reviewMod,
+  reviewModpack,
+} from '@/api/admin-mods'
+import { describeBatchResult, MAX_BATCH_REVIEW } from '@/types/batch'
 import { ApiError } from '@/types/api'
 import {
   MOD_CATEGORY_LABELS,
@@ -83,6 +91,13 @@ async function load() {
       total.value = res.total
       totalPages.value = res.totalPages || Math.max(1, Math.ceil(res.total / filters.pageSize))
     }
+    // 刷新后只保留仍在待审核列表中的选择。
+    const stillPending = new Set(
+      (activeTab.value === 'mods' ? mods.value : modpacks.value)
+        .filter((i) => i.review_status === 'pending')
+        .map((i) => i.id),
+    )
+    selected.value = new Set([...selected.value].filter((id) => stillPending.has(id)))
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : '加载失败'
   } finally {
@@ -108,10 +123,79 @@ async function review(id: string, status: ModReviewStatus, name: string) {
   }
 }
 
+// ===== 批量审核 =====
+// 只允许勾选待审核记录；切换 tab 时清空选择，避免把 Mod 的 ID 提交到整合包接口。
+const selected = ref<Set<string>>(new Set())
+const batchNote = ref('')
+const batchBusy = ref(false)
+
+/** 当前 tab 的待审核记录（统一成 {id, name} 便于复用选择逻辑） */
+const pendingRows = computed(() => {
+  if (activeTab.value === 'mods') {
+    return mods.value
+      .filter((m) => m.review_status === 'pending')
+      .map((m) => ({ id: m.id, name: m.name_zh || m.slug }))
+  }
+  return modpacks.value
+    .filter((p) => p.review_status === 'pending')
+    .map((p) => ({ id: p.id, name: p.name_zh || p.slug }))
+})
+
+const allSelected = computed(
+  () => pendingRows.value.length > 0 && pendingRows.value.every((r) => selected.value.has(r.id)),
+)
+
+function toggleOne(id: string) {
+  const next = new Set(selected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selected.value = next
+}
+
+function toggleAll() {
+  selected.value = allSelected.value ? new Set() : new Set(pendingRows.value.map((r) => r.id))
+}
+
+async function batchReview(status: ModReviewStatus) {
+  if (batchBusy.value) return
+  const ids = [...selected.value]
+  if (!ids.length) {
+    ui.warning('请先勾选要审核的记录')
+    return
+  }
+  if (ids.length > MAX_BATCH_REVIEW) {
+    ui.error(`单次最多 ${MAX_BATCH_REVIEW} 条，请分批提交`)
+    return
+  }
+  if (status === 'rejected' && !window.confirm(`将驳回 ${ids.length} 条记录，确认继续？`)) return
+
+  batchBusy.value = true
+  try {
+    const note = batchNote.value.trim()
+    const result =
+      activeTab.value === 'mods'
+        ? await batchReviewMods(ids, status, note)
+        : await batchReviewModpacks(ids, status, note)
+    const action = status === 'published' ? '批量通过' : '批量驳回'
+    if (result.failed > 0) ui.warning(describeBatchResult(result, action))
+    else ui.success(describeBatchResult(result, action))
+    selected.value = new Set()
+    batchNote.value = ''
+    await load()
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '批量审核失败')
+  } finally {
+    batchBusy.value = false
+  }
+}
+
 function switchTab(tab: Tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
   filters.page = 1
+  // 选择绑定的是当前 tab 的记录，切换后必须清空。
+  selected.value = new Set()
+  batchNote.value = ''
   load()
 }
 
@@ -188,6 +272,43 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="pendingRows.length" class="card flex flex-wrap items-center gap-3 p-3 text-sm">
+      <label class="flex items-center gap-2 text-text-secondary">
+        <input
+          type="checkbox"
+          :checked="allSelected"
+          class="h-4 w-4 accent-grass-500"
+          @change="toggleAll"
+        />
+        全选本页待审核（{{ pendingRows.length }}）
+      </label>
+      <input
+        v-model="batchNote"
+        type="text"
+        placeholder="批量审核备注（可选，会写入每一条）"
+        class="h-8 w-64 rounded-md border border-border-dark bg-ink-800 px-2 text-xs text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none"
+      />
+      <button
+        type="button"
+        class="rounded border border-grass-500/50 bg-grass-500/10 px-3 py-1.5 text-xs text-grass-300 transition hover:bg-grass-500/20 disabled:opacity-40"
+        :disabled="batchBusy || selected.size === 0"
+        @click="batchReview('published')"
+      >
+        批量通过
+      </button>
+      <button
+        type="button"
+        class="rounded border border-danger-mc/50 bg-danger-mc/10 px-3 py-1.5 text-xs text-danger-mc transition hover:bg-danger-mc/20 disabled:opacity-40"
+        :disabled="batchBusy || selected.size === 0"
+        @click="batchReview('rejected')"
+      >
+        批量驳回
+      </button>
+      <span class="text-xs text-text-muted">
+        已选 {{ selected.size }} 条{{ batchBusy ? ' · 处理中…' : '' }}
+      </span>
+    </div>
+
     <ListShell title="审核列表" :loading="loading" :error="error" @retry="load">
       <!-- Mod tab -->
       <div v-if="activeTab === 'mods'" class="card overflow-hidden">
@@ -195,6 +316,9 @@ onMounted(load)
           <table class="w-full text-left text-sm">
             <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
               <tr>
+                <th scope="col" class="w-10 px-4 py-3 font-medium">
+                  <span class="sr-only">选择</span>
+                </th>
                 <th scope="col" class="px-4 py-3 font-medium">Mod</th>
                 <th scope="col" class="px-4 py-3 font-medium">加载器 / 类别</th>
                 <th scope="col" class="px-4 py-3 font-medium">适用版本</th>
@@ -205,6 +329,16 @@ onMounted(load)
             </thead>
             <tbody class="divide-y divide-border-dark">
               <tr v-for="item in mods" :key="item.id" class="align-top hover:bg-ink-800/60">
+                <td class="px-4 py-3">
+                  <input
+                    v-if="item.review_status === 'pending'"
+                    type="checkbox"
+                    :checked="selected.has(item.id)"
+                    class="mt-1 h-4 w-4 accent-grass-500"
+                    :aria-label="`选择 Mod ${item.name_zh || item.slug}`"
+                    @change="toggleOne(item.id)"
+                  />
+                </td>
                 <td class="px-4 py-3">
                   <div class="font-medium text-text-primary">{{ item.name_zh || '（未命名）' }}</div>
                   <div class="mt-0.5 font-mono text-xs text-text-muted">{{ item.slug }}</div>
@@ -280,6 +414,9 @@ onMounted(load)
           <table class="w-full text-left text-sm">
             <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
               <tr>
+                <th scope="col" class="w-10 px-4 py-3 font-medium">
+                  <span class="sr-only">选择</span>
+                </th>
                 <th scope="col" class="px-4 py-3 font-medium">整合包</th>
                 <th scope="col" class="px-4 py-3 font-medium">MC 版本</th>
                 <th scope="col" class="px-4 py-3 font-medium">加载器 / 作者</th>
@@ -290,6 +427,16 @@ onMounted(load)
             </thead>
             <tbody class="divide-y divide-border-dark">
               <tr v-for="item in modpacks" :key="item.id" class="align-top hover:bg-ink-800/60">
+                <td class="px-4 py-3">
+                  <input
+                    v-if="item.review_status === 'pending'"
+                    type="checkbox"
+                    :checked="selected.has(item.id)"
+                    class="mt-1 h-4 w-4 accent-grass-500"
+                    :aria-label="`选择整合包 ${item.name_zh || item.slug}`"
+                    @change="toggleOne(item.id)"
+                  />
+                </td>
                 <td class="px-4 py-3">
                   <div class="font-medium text-text-primary">{{ item.name_zh || '（未命名）' }}</div>
                   <div class="mt-0.5 font-mono text-xs text-text-muted">{{ item.slug }}</div>

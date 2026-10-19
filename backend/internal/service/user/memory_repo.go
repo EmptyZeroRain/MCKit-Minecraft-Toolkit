@@ -50,6 +50,22 @@ func (m *MemoryRepo) FindByUsername(_ context.Context, username string) (*domain
 	return nil, nil
 }
 
+// FindByEmail 按邮箱查询普通用户；邮箱统一小写，不存在返回 (nil, nil)。
+func (m *MemoryRepo) FindByEmail(_ context.Context, email string) (*domain.User, error) {
+	if email == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if u.Email == email && u.Role == domain.RoleUser {
+			cp := u
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
 // FindByID 按 ID 查询普通用户。
 func (m *MemoryRepo) FindByID(_ context.Context, id string) (*domain.User, error) {
 	m.mu.Lock()
@@ -97,6 +113,19 @@ func (m *MemoryRepo) ChangePassword(_ context.Context, id, hash string) error {
 	defer m.mu.Unlock()
 	if u, ok := m.users[id]; ok {
 		u.PasswordHash = hash
+		u.MustChangePassword = false
+		u.UpdatedAt = time.Now()
+		m.users[id] = u
+	}
+	return nil
+}
+
+// UpdateProfile 更新展示资料（昵称 / 头像 URL）。
+func (m *MemoryRepo) UpdateProfile(_ context.Context, id, nickname, avatarURL string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.users[id]; ok && u.Role == domain.RoleUser {
+		u.Nickname, u.AvatarURL = nickname, avatarURL
 		u.UpdatedAt = time.Now()
 		m.users[id] = u
 	}

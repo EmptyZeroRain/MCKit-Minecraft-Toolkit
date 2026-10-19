@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -70,7 +71,16 @@ func RequireAuth(svc AuthService) func(http.Handler) http.Handler {
 				return
 			}
 			session, err := svc.GetSession(r.Context(), cookie.Value)
-			if err != nil || session == nil {
+			if err != nil {
+				// 共享会话存储不可用：安全失败（503），绝不跳过认证（gj.md §3.4）。
+				if errors.Is(err, auth.ErrSessionStoreUnavailable) {
+					response.ServiceUnavailable(w, r, "会话服务暂时不可用，请稍后重试")
+					return
+				}
+				response.Unauthorized(w, r)
+				return
+			}
+			if session == nil {
 				response.Unauthorized(w, r)
 				return
 			}

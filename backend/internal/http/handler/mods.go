@@ -3,11 +3,15 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"mckit/backend/internal/audit"
+	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/service/catalog"
 )
@@ -187,6 +191,115 @@ func (h *ModAdminHandler) ReviewMod(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	response.OK(w, m)
+}
+
+// modBatchReviewRequest 批量审核 Mod / 整合包请求。
+type modBatchReviewRequest struct {
+	IDs          []string `json:"ids"`
+	ReviewStatus string   `json:"review_status"`
+	Note         string   `json:"note"`
+}
+
+// BatchReviewMods POST /api/v1/admin/mods/batch-review
+// 批量审核 Mod：逐条独立事务，返回逐条结果（部分成功是正常情况）。
+func (h *ModAdminHandler) BatchReviewMods(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeBatchReview(w, r, "Mod")
+	if !ok {
+		return
+	}
+	reviewer := actorName(r)
+	result, err := h.catalog.BatchReviewMods(r.Context(), req.IDs, req.ReviewStatus, reviewer, req.Note)
+	if err != nil {
+		writeBatchReviewError(w, r, err)
+		return
+	}
+	h.auditBatch(r, "mod.review", "mod", result, req)
+	response.OK(w, result)
+}
+
+// BatchReviewModpacks POST /api/v1/admin/modpacks/batch-review
+// 批量审核整合包：逐条独立事务，返回逐条结果。
+func (h *ModAdminHandler) BatchReviewModpacks(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeBatchReview(w, r, "整合包")
+	if !ok {
+		return
+	}
+	reviewer := actorName(r)
+	result, err := h.catalog.BatchReviewModpacks(r.Context(), req.IDs, req.ReviewStatus, reviewer, req.Note)
+	if err != nil {
+		writeBatchReviewError(w, r, err)
+		return
+	}
+	h.auditBatch(r, "modpack.review", "modpack", result, req)
+	response.OK(w, result)
+}
+
+// decodeBatchReview 解析并校验批量审核请求（条数上限 + 非空 ID）。
+func decodeBatchReview(w http.ResponseWriter, r *http.Request, label string) (modBatchReviewRequest, bool) {
+	var req modBatchReviewRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return req, false
+	}
+	if len(req.IDs) == 0 {
+		response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: "请至少选择一条" + label}})
+		return req, false
+	}
+	if len(req.IDs) > domain.MaxBatchReview {
+		response.Validation(w, r, []response.ErrorDetail{{
+			Field:   "ids",
+			Message: fmt.Sprintf("单次最多 %d 条，请分批提交", domain.MaxBatchReview),
+		}})
+		return req, false
+	}
+	for _, id := range req.IDs {
+		if _, err := uuid.Parse(strings.TrimSpace(id)); err != nil {
+			response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: "存在非法的记录 ID"}})
+			return req, false
+		}
+	}
+	return req, true
+}
+
+// auditBatch 为审核成功的每条记录写审计（与单条审核粒度一致）。
+func (h *ModAdminHandler) auditBatch(
+	r *http.Request,
+	action, objectType string,
+	result *domain.BatchReviewResult,
+	req modBatchReviewRequest,
+) {
+	if h.auditSvc == nil {
+		return
+	}
+	for _, item := range result.Items {
+		if !item.OK {
+			continue
+		}
+		h.auditSvc.Write(r, audit.Entry{
+			ActorAdminID: actorID(r),
+			Action:       action,
+			ObjectType:   objectType,
+			ObjectID:     item.ID,
+			After: map[string]any{
+				"review_status": req.ReviewStatus,
+				"reviewer":      actorName(r),
+				"note":          req.Note,
+				"batch":         true,
+			},
+		})
+	}
+}
+
+// writeBatchReviewError 映射批量审核的入参错误。
+func writeBatchReviewError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, catalog.ErrNoIDs):
+		response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: err.Error()}})
+	case errors.Is(err, catalog.ErrTooManyIDs):
+		response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: err.Error()}})
+	default:
+		writeReviewError(w, r, err)
+	}
 }
 
 // AdminModpacks POST /api/v1/admin/modpacks/list

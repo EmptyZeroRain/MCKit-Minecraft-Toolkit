@@ -154,12 +154,9 @@ func (s *Store) ClassStructure(version, side, className string) (*ClassStructure
 		return nil, ErrNotFound
 	}
 
-	zr, err := zip.OpenReader(s.jarPath(v, sd))
+	zr, err := s.openJar(v, sd)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("打开 jar 失败: %w", err)
+		return nil, err
 	}
 	defer func() { _ = zr.Close() }()
 
@@ -352,6 +349,13 @@ func (s *Store) relationsFor(ctx context.Context, version, side, sha1sum string)
 	return rels, nil
 }
 
+// dropRelations 失效某目标的内存关系索引缓存（缓存被清理后调用）。
+func (s *Store) dropRelations(version, side string) {
+	s.relMu.Lock()
+	delete(s.rel, version+"-"+side)
+	s.relMu.Unlock()
+}
+
 // buildRelations 扫描 jar 内全部 class 的父类 / 接口关系。
 // 单个条目损坏只跳过该条目，不影响整体（真实 jar 偶有异常条目）。
 func buildRelations(ctx context.Context, jarPath string) (*relations, error) {
@@ -437,6 +441,19 @@ func entryExists(zr *zip.ReadCloser, className string) bool {
 		}
 	}
 	return false
+}
+
+// openJar 打开已缓存的 jar；未缓存 / 文件缺失返回 ErrNotFound。
+// 结构视图与反汇编都只读单个类，故共用此入口（jar 内容来自上游，按不可信输入处理）。
+func (s *Store) openJar(v, sd string) (*zip.ReadCloser, error) {
+	zr, err := zip.OpenReader(s.jarPath(v, sd))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("打开 jar 失败: %w", err)
+	}
+	return zr, nil
 }
 
 // readClassEntry 读取指定类名的 class 字节。

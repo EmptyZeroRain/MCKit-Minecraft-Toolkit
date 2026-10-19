@@ -6,17 +6,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"mckit/backend/internal/auth"
+	"mckit/backend/internal/captcha"
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/service/user"
 )
 
 // newUserTestRouter 按 main.go 的接线方式搭建用户路由，用于鉴权 / CSRF 行为测试。
+// 固定验证码 "135790"（生产由随机生成，测试经 FixedCode 钩子绕过图片识别）。
+const testCaptchaCode = "135790"
+
 func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionStore) {
 	t.Helper()
 	repo := user.NewMemoryRepo()
@@ -24,10 +29,11 @@ func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionSto
 	svc := user.NewService(repo, sessions, 5, 900)
 	// 统一账号（迁移 0022）后管理员与普通用户共用会话 Cookie，处理器与中间件同名。
 	middleware.SetCookieName("mc_test_session")
-	h := NewUserHandler(svc, false)
+	h := NewUserHandler(svc, captcha.NewManager(captcha.Options{FixedCode: testCaptchaCode}), false)
 
 	r := chi.NewRouter()
 	r.Route("/user", func(ur chi.Router) {
+		ur.Post("/captcha", h.Captcha)
 		ur.Post("/register", h.Register)
 		ur.Post("/login", h.Login)
 		ur.Group(func(authed chi.Router) {
@@ -78,7 +84,9 @@ func TestUserRoutesRequireLogin(t *testing.T) {
 func TestUserWritesRequireCSRF(t *testing.T) {
 	r, svc, _ := newUserTestRouter(t)
 	ctx := context.Background()
-	u, err := svc.Register(ctx, "tester", "password123")
+	u, err := svc.Register(ctx, user.RegisterInput{
+		Username: "tester", Nickname: "测试者", Email: "tester@example.com", Password: "password123",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +126,106 @@ func TestUserWritesRequireCSRF(t *testing.T) {
 		t.Fatalf("读接口应返回 200，实际 %d", rec.Code)
 	}
 	_ = u
+}
+
+// TestUserCaptchaEndpoint 图形验证码签发：返回一次性 ID 与 PNG data URI。
+func TestUserCaptchaEndpoint(t *testing.T) {
+	r, _, _ := newUserTestRouter(t)
+
+	rec := doJSON(r, http.MethodPost, "/user/captcha", "", "", map[string]string{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("签发验证码期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			CaptchaID string `json:"captcha_id"`
+			Image     string `json:"image"`
+			ExpiresIn int    `json:"expires_in"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data.CaptchaID) != 32 {
+		t.Errorf("captcha_id 应为 32 位十六进制，实际 %q", resp.Data.CaptchaID)
+	}
+	if !strings.HasPrefix(resp.Data.Image, "data:image/png;base64,") {
+		t.Errorf("image 应为 PNG data URI，实际前缀 %q", resp.Data.Image[:min(24, len(resp.Data.Image))])
+	}
+	if resp.Data.ExpiresIn <= 0 {
+		t.Errorf("expires_in 应为正，实际 %d", resp.Data.ExpiresIn)
+	}
+}
+
+// TestUserRegisterRequiresCaptcha 注册必须携带正确验证码。
+func TestUserRegisterRequiresCaptcha(t *testing.T) {
+	r, _, _ := newUserTestRouter(t)
+
+	body := map[string]string{
+		"username": "captcha-user", "nickname": "验证码用户",
+		"email": "captcha-user@example.com", "password": "password123",
+	}
+
+	// 缺验证码 → 422 CAPTCHA_INVALID
+	rec := doJSON(r, http.MethodPost, "/user/register", "", "", body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺验证码期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "CAPTCHA_INVALID") {
+		t.Errorf("应返回 CAPTCHA_INVALID 错误码: %s", rec.Body.String())
+	}
+
+	// 错误验证码 → 422
+	bad := map[string]string{}
+	for k, v := range body {
+		bad[k] = v
+	}
+	bad["captcha_id"] = "whatever"
+	bad["captcha_answer"] = "000000"
+	rec = doJSON(r, http.MethodPost, "/user/register", "", "", bad)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("错误验证码期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 正确验证码 → 200，返回邮箱与昵称
+	ok := map[string]string{}
+	for k, v := range body {
+		ok[k] = v
+	}
+	ok["captcha_id"] = "whatever"
+	ok["captcha_answer"] = testCaptchaCode
+	rec = doJSON(r, http.MethodPost, "/user/register", "", "", ok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("正确验证码期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "captcha-user@example.com") {
+		t.Errorf("注册响应应包含邮箱: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "验证码用户") {
+		t.Errorf("注册响应应包含昵称: %s", rec.Body.String())
+	}
+}
+
+// TestUserLoginByEmail 用户名与邮箱均可登录。
+func TestUserLoginByEmail(t *testing.T) {
+	r, _, _ := newUserTestRouter(t)
+
+	rec := doJSON(r, http.MethodPost, "/user/register", "", "", map[string]string{
+		"username": "email-login", "nickname": "邮箱登录",
+		"email": "email-login@example.com", "password": "password123",
+		"captcha_id": "whatever", "captcha_answer": testCaptchaCode,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("注册期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	for _, id := range []string{"email-login", "email-login@example.com"} {
+		rec = doJSON(r, http.MethodPost, "/user/login", "", "",
+			map[string]string{"identifier": id, "password": "password123"})
+		if rec.Code != http.StatusOK {
+			t.Errorf("以 %q 登录期望 200，实际 %d（%s）", id, rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func TestUserRoutesRejectAdminSession(t *testing.T) {

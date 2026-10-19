@@ -76,3 +76,43 @@ func TestLoadRateLimitInvalid(t *testing.T) {
 		t.Fatal("RPS 为 0 应启动失败")
 	}
 }
+
+// TestLoadCaptchaDefaults 验证码默认启用、默认有效期 5 分钟、固定码默认空。
+func TestLoadCaptchaDefaults(t *testing.T) {
+	setBase(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("合法配置不应报错: %v", err)
+	}
+	if !cfg.CaptchaEnabled {
+		t.Error("CAPTCHA_ENABLED 默认应为 true")
+	}
+	if cfg.CaptchaTTL != 5*time.Minute {
+		t.Errorf("默认验证码有效期应为 5m，实际 %v", cfg.CaptchaTTL)
+	}
+	if cfg.CaptchaFixedCode != "" {
+		t.Errorf("默认固定码应为空，实际 %q", cfg.CaptchaFixedCode)
+	}
+}
+
+// TestLoadCaptchaFixedCodeProductionRejected 生产环境禁止固定码（失败关闭）。
+func TestLoadCaptchaFixedCodeProductionRejected(t *testing.T) {
+	setBase(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("CAPTCHA_FIXED_CODE", "135790")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("生产环境设置 CAPTCHA_FIXED_CODE 应启动失败")
+	}
+	if !strings.Contains(err.Error(), "CAPTCHA_FIXED_CODE") {
+		t.Fatalf("错误信息应包含 CAPTCHA_FIXED_CODE，实际 %q", err.Error())
+	}
+
+	// 非生产环境允许（自动化测试需要）。
+	setBase(t)
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("CAPTCHA_FIXED_CODE", "135790")
+	if _, err := Load(); err != nil {
+		t.Fatalf("测试环境允许固定码，实际 %v", err)
+	}
+}

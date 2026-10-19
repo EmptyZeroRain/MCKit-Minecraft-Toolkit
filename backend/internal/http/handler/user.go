@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"mckit/backend/internal/auth"
+	"mckit/backend/internal/captcha"
+	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/service/user"
@@ -21,16 +24,27 @@ import (
 //   - 会话 Cookie 与后台共用（SESSION_COOKIE_NAME），不再有独立 Cookie；
 //   - 写操作要求 CSRF（中间件校验会话绑定 token）；
 //   - 个人数据一律以当前会话账号 ID 过滤，无越权入口；
-//   - 登录失败按 (用户名, IP) 限流；注册与登录叠加全局限流。
+//   - 登录失败按 (用户名, IP) 限流；注册与登录叠加全局限流；
+//   - 注册要求图形验证码（captcha 为 nil 表示未启用，此时跳过校验）。
 type UserHandler struct {
-	svc    *user.Service
-	secure bool
+	svc     *user.Service
+	captcha *captcha.Manager
+	secure  bool
+	// growth 成长事件接收端（可选注入；未注入时成长事件为空操作）。
+	growth domain.GrowthEventSink
 }
 
 // NewUserHandler 创建用户处理器。
-// Cookie 名统一取 middleware.SessionCookieName()（与鉴权中间件同一来源）。
-func NewUserHandler(svc *user.Service, secure bool) *UserHandler {
-	return &UserHandler{svc: svc, secure: secure}
+// Cookie 名统一取 middleware.SessionCookieName()（与鉴权中间件同一来源）；
+// captcha 为 nil 表示未启用图形验证码（注册将不校验验证码）。
+func NewUserHandler(svc *user.Service, captchaMgr *captcha.Manager, secure bool) *UserHandler {
+	return &UserHandler{svc: svc, captcha: captchaMgr, secure: secure}
+}
+
+// WithGrowthSink 注入成长事件接收端（main 装配；链式调用）。
+func (h *UserHandler) WithGrowthSink(sink domain.GrowthEventSink) *UserHandler {
+	h.growth = sink
+	return h
 }
 
 // maxUserBody 用户接口请求体上限（远小于上传类接口）。
@@ -40,10 +54,18 @@ const maxUserBody = 8 << 10
 
 type userRegisterRequest struct {
 	Username string `json:"username"`
+	Nickname string `json:"nickname"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
+	// CaptchaID / CaptchaAnswer 图形验证码（未启用时忽略）。
+	CaptchaID     string `json:"captcha_id"`
+	CaptchaAnswer string `json:"captcha_answer"`
 }
 
 type userLoginRequest struct {
+	// Identifier 登录标识：用户名或邮箱。
+	Identifier string `json:"identifier"`
+	// Username 兼容旧客户端字段；Identifier 为空时回退使用。
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
@@ -51,6 +73,12 @@ type userLoginRequest struct {
 type userChangePasswordRequest struct {
 	OldPassword string `json:"old_password"`
 	NewPassword string `json:"new_password"`
+}
+
+// userProfileRequest 更新展示资料请求体（白名单字段）。
+type userProfileRequest struct {
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
 }
 
 type userDeleteRequest struct {
@@ -98,11 +126,19 @@ func writeUserError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Unauthorized(w, r)
 	case errors.Is(err, user.ErrUsernameTaken):
 		response.Error(w, r, http.StatusConflict, "USERNAME_TAKEN", err.Error(), nil)
+	case errors.Is(err, user.ErrEmailTaken):
+		response.Error(w, r, http.StatusConflict, "EMAIL_TAKEN", err.Error(), nil)
 	case errors.Is(err, user.ErrBadUsername),
+		errors.Is(err, user.ErrBadEmail),
+		errors.Is(err, user.ErrBadNickname),
 		errors.Is(err, user.ErrWeakPassword),
 		errors.Is(err, user.ErrBadKind),
 		errors.Is(err, user.ErrBadInput):
 		response.Validation(w, r, []response.ErrorDetail{{Message: err.Error()}})
+	case errors.Is(err, auth.ErrInvalidAvatar):
+		response.Validation(w, r, []response.ErrorDetail{
+			{Field: "avatar_url", Message: err.Error()},
+		})
 	default:
 		response.HandleError(w, r, err)
 	}
@@ -135,49 +171,94 @@ func (h *UserHandler) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
+// Captcha POST /api/v1/user/captcha
+// 签发一张图形验证码：返回一次性 captcha_id 与 data URI 形式的 PNG 图片。
+func (h *UserHandler) Captcha(w http.ResponseWriter, r *http.Request) {
+	if h.captcha == nil {
+		response.Error(w, r, http.StatusServiceUnavailable, "CAPTCHA_DISABLED", "验证码功能未启用", nil)
+		return
+	}
+	res, err := h.captcha.Issue(r.Context())
+	if err != nil {
+		response.HandleError(w, r, err)
+		return
+	}
+	response.OK(w, map[string]any{
+		"captcha_id": res.ID,
+		"image":      "data:image/png;base64," + base64.StdEncoding.EncodeToString(res.Image),
+		"expires_in": int(res.ExpiresIn.Seconds()),
+	})
+}
+
 // Register POST /api/v1/user/register
+// 注册需通过图形验证码（启用时）；昵称与邮箱必填，邮箱全局唯一并可作为后续登录标识。
 func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req userRegisterRequest
 	if !decodeBody(w, r, &req) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
-	u, err := h.svc.Register(r.Context(), req.Username, req.Password)
+	if h.captcha != nil && !h.captcha.Verify(req.CaptchaID, req.CaptchaAnswer) {
+		response.Error(w, r, http.StatusUnprocessableEntity, "CAPTCHA_INVALID",
+			"验证码错误或已过期，请重新获取", nil)
+		return
+	}
+	u, err := h.svc.Register(r.Context(), user.RegisterInput{
+		Username: req.Username,
+		Nickname: req.Nickname,
+		Email:    req.Email,
+		Password: req.Password,
+	})
 	if err != nil {
 		writeUserError(w, r, err)
 		return
 	}
+	// 成长事件：注册成功（服务端事实确认后投递，subject 为账号自身，终身只发一次）。
+	emitGrowth(r.Context(), h.growth, "user", domain.EventUserRegistered, u.ID.String(), "account", u.ID.String())
 	response.OK(w, map[string]any{
-		"id":       u.ID,
-		"username": u.Username,
+		"id":         u.ID,
+		"username":   u.Username,
+		"nickname":   u.Nickname,
+		"email":      u.Email,
+		"avatar_url": u.AvatarURL,
 	})
 }
 
 // Login POST /api/v1/user/login
+// identifier 支持用户名或邮箱；username 为兼容字段。
 func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req userLoginRequest
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || req.Password == "" {
+	identifier := strings.TrimSpace(req.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(req.Username)
+	}
+	if identifier == "" || req.Password == "" {
 		response.Validation(w, r, []response.ErrorDetail{
-			{Field: "username", Message: "用户名必填"},
+			{Field: "identifier", Message: "用户名或邮箱必填"},
 			{Field: "password", Message: "密码必填"},
 		})
 		return
 	}
-	result, err := h.svc.Login(r.Context(), req.Username, req.Password, clientIP(r))
+	result, err := h.svc.Login(r.Context(), identifier, req.Password, clientIP(r))
 	if err != nil {
 		writeUserError(w, r, err)
 		return
 	}
 	h.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	// 成长事件：登录成功（每日登录奖励与「每日登录」任务由成长侧按业务日期幂等处理）。
+	emitGrowth(r.Context(), h.growth, "user", domain.EventUserLoginSucceeded, result.User.ID.String(), "account", result.User.ID.String())
 	response.OK(w, map[string]any{
-		"id":         result.User.ID,
-		"username":   result.User.Username,
-		"csrf_token": result.CSRFToken,
-		"expires_at": result.ExpiresAt.Format(time.RFC3339),
+		"id":                   result.User.ID,
+		"username":             result.User.Username,
+		"nickname":             result.User.Nickname,
+		"email":                result.User.Email,
+		"avatar_url":           result.User.AvatarURL,
+		"must_change_password": result.User.MustChangePassword,
+		"csrf_token":           result.CSRFToken,
+		"expires_at":           result.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -197,10 +278,48 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 		response.Unauthorized(w, r)
 		return
 	}
+	// 昵称 / 邮箱随会话一并返回：会话只携带登录标识，展示资料需回查账号。
+	out := map[string]any{
+		"id":                   session.AccountID,
+		"username":             session.Username,
+		"must_change_password": session.MustChangePassword,
+		"csrf_token":           session.CSRFToken,
+	}
+	if u, err := h.svc.FindByID(r.Context(), session.AccountID); err == nil && u != nil {
+		out["nickname"] = u.Nickname
+		out["email"] = u.Email
+		out["avatar_url"] = u.AvatarURL
+	}
+	response.OK(w, out)
+}
+
+// UpdateProfile POST /api/v1/user/profile（CSRF）
+// 自助维护展示资料：昵称与头像（头像只能上传图片，以 data URI 提交）。
+func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	session := middleware.SessionFrom(r.Context())
+	if session == nil {
+		response.Unauthorized(w, r)
+		return
+	}
+	var req userProfileRequest
+	// 头像以 data URI 随请求体上传（前端已压缩），故上限放宽到 MaxAvatarDataURI + 余量。
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, auth.MaxAvatarDataURI+4096)).Decode(&req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	u, err := h.svc.UpdateProfile(r.Context(), session.AccountID, req.Nickname, req.AvatarURL)
+	if err != nil {
+		writeUserError(w, r, err)
+		return
+	}
+	// 成长事件：完善个人资料（subject 为账号自身，终身只发一次）。
+	emitGrowth(r.Context(), h.growth, "user", domain.EventUserProfileCompleted, session.AccountID, "account", session.AccountID)
 	response.OK(w, map[string]any{
-		"id":         session.AccountID,
-		"username":   session.Username,
-		"csrf_token": session.CSRFToken,
+		"id":         u.ID,
+		"username":   u.Username,
+		"nickname":   u.Nickname,
+		"email":      u.Email,
+		"avatar_url": u.AvatarURL,
 	})
 }
 
@@ -271,6 +390,11 @@ func (h *UserHandler) ToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeUserError(w, r, err)
 		return
+	}
+	// 成长事件：收藏资源（仅在「新收藏」时投递；取消收藏不奖励，
+	// 成长侧以「账号 + 目标对象」为幂等键，取消后重收藏也不会重复发奖）。
+	if favorited {
+		emitGrowth(r.Context(), h.growth, "user", domain.EventResourceFavorited, userID, strings.ToLower(strings.TrimSpace(req.Kind)), strings.TrimSpace(req.ObjectID))
 	}
 	response.OK(w, map[string]any{"favorited": favorited})
 }

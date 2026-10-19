@@ -33,8 +33,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "缺少 ADMIN_USERNAME")
 		os.Exit(1)
 	}
-	if len(password) < 12 {
-		fmt.Fprintln(os.Stderr, "ADMIN_PASSWORD 长度至少 12 位；禁止使用弱默认密码")
+	if err := auth.ValidatePassword(password, auth.DefaultAdminPolicy(), username); err != nil {
+		fmt.Fprintf(os.Stderr, "ADMIN_PASSWORD 不满足策略（%v）；禁止使用弱默认密码\n", err)
 		os.Exit(1)
 	}
 

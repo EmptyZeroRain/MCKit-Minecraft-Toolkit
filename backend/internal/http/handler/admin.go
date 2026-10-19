@@ -2,9 +2,13 @@
 package handler
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -130,6 +134,7 @@ func (h *AdminHandler) CreateResource(w http.ResponseWriter, r *http.Request) {
 		CompatibilityNote: req.CompatibilityNote,
 		Status:            req.Status,
 		CreatedBy:         actorID(r),
+		ActorName:         actorName(r),
 	})
 	if err != nil {
 		writeResourceError(w, r, err)
@@ -148,6 +153,8 @@ type listResourcesRequest struct {
 	GameVersion    string `json:"game_version"`
 	Loader         string `json:"loader"`
 	SourcePlatform string `json:"source_platform"`
+	Tag            string `json:"tag"`
+	Status         string `json:"status"`
 	Sort           string `json:"sort"`
 	Page           int    `json:"page"`
 	PageSize       int    `json:"page_size"`
@@ -166,6 +173,8 @@ func (h *AdminHandler) ListResources(w http.ResponseWriter, r *http.Request) {
 		GameVersion:    req.GameVersion,
 		Loader:         req.Loader,
 		SourcePlatform: req.SourcePlatform,
+		Tag:            req.Tag,
+		Status:         req.Status,
 		Sort:           req.Sort,
 		Page:           req.Page,
 		PageSize:       req.PageSize,
@@ -181,6 +190,78 @@ func (h *AdminHandler) ListResources(w http.ResponseWriter, r *http.Request) {
 		PageSize:   pageSize,
 		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
 	})
+}
+
+// ExportResources POST /api/v1/admin/resources/export
+//
+// 按与列表相同的筛选条件导出 CSV（不分页，最多 resource.ExportMax 条）。
+// 导出属于「批量内容处理」的低风险形态：只读、可审计、不引入写入放大，
+// 因此先于「批量在线编辑」落地（见 docs/批量编辑与CSV导入导出评估.md）。
+func (h *AdminHandler) ExportResources(w http.ResponseWriter, r *http.Request) {
+	var req listResourcesRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
+	}
+
+	items, truncated, err := h.resources.Export(r.Context(), resource.ListFilter{
+		Q:              req.Q,
+		ResourceType:   req.Type,
+		GameVersion:    req.GameVersion,
+		Loader:         req.Loader,
+		SourcePlatform: req.SourcePlatform,
+		Tag:            req.Tag,
+		Status:         req.Status,
+		Sort:           req.Sort,
+	})
+	if err != nil {
+		response.HandleError(w, r, err)
+		return
+	}
+
+	filename := "resources-" + time.Now().UTC().Format("20060102-150405") + ".csv"
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("X-Export-Truncated", strconv.FormatBool(truncated))
+	w.WriteHeader(http.StatusOK)
+
+	// 前置 UTF-8 BOM，保证 Excel 正确识别中文。
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{
+		"ID", "名称", "Slug", "类型", "状态", "游戏版本类型", "来源平台",
+		"加载器", "支持版本", "标签", "来源链接", "更新时间",
+	})
+	for _, it := range items {
+		_ = cw.Write([]string{
+			it.ID.String(),
+			csvSafe(it.Name),
+			csvSafe(it.Slug),
+			csvSafe(it.ResourceType),
+			csvSafe(it.Status),
+			csvSafe(it.GameEdition),
+			csvSafe(it.SourcePlatform),
+			csvSafe(strings.Join(it.LoaderTypes, "|")),
+			csvSafe(strings.Join(it.SupportedVersions, "|")),
+			csvSafe(strings.Join(it.Tags, "|")),
+			csvSafe(it.SourceURL),
+			it.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	cw.Flush()
+
+	if h.auditSvc != nil {
+		h.auditSvc.Write(r, audit.Entry{
+			ActorAdminID: actorID(r),
+			Action:       "resource.export",
+			ObjectType:   "resource_list",
+			After: map[string]any{
+				"count":     len(items),
+				"truncated": truncated,
+				"q":         req.Q,
+				"type":      req.Type,
+			},
+		})
+	}
 }
 
 // ResourceDetail POST /api/v1/admin/resources/:id
@@ -224,6 +305,7 @@ func (h *AdminHandler) UpdateResource(w http.ResponseWriter, r *http.Request) {
 		CompatibilityNote: strPtr(req.CompatibilityNote),
 		Status:            strPtr(req.Status),
 		UpdatedBy:         actorID(r),
+		ActorName:         actorName(r),
 	}
 	res, err := h.resources.Update(r.Context(), id, in)
 	if err != nil {
@@ -350,6 +432,8 @@ func (h *AdminHandler) CreateTool(w http.ResponseWriter, r *http.Request) {
 		IsFeatured:        req.IsFeatured,
 		SortOrder:         req.SortOrder,
 		Status:            req.Status,
+		ActorID:           actorID(r),
+		ActorName:         actorName(r),
 	})
 	if err != nil {
 		writeContentError(w, r, err)
@@ -363,6 +447,7 @@ func (h *AdminHandler) CreateTool(w http.ResponseWriter, r *http.Request) {
 type ListToolsRequest struct {
 	Category      string `json:"category"`
 	Q             string `json:"q"`
+	Tag           string `json:"tag"`
 	Page          int    `json:"page"`
 	PageSize      int    `json:"page_size"`
 	PublishedOnly bool   `json:"-"`
@@ -377,6 +462,7 @@ func (h *AdminHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	items, total, err := h.contentSvc.ListTools(r.Context(), content.ToolFilter{
 		Category:      req.Category,
 		Q:             req.Q,
+		Tag:           req.Tag,
 		PublishedOnly: false,
 		Page:          req.Page,
 		PageSize:      req.PageSize,
@@ -427,6 +513,8 @@ func (h *AdminHandler) UpdateTool(w http.ResponseWriter, r *http.Request) {
 		IsFeatured:        req.IsFeatured,
 		SortOrder:         req.SortOrder,
 		Status:            req.Status,
+		ActorID:           actorID(r),
+		ActorName:         actorName(r),
 	})
 	if err != nil {
 		writeContentError(w, r, err)
@@ -483,6 +571,7 @@ func (h *AdminHandler) CreateWiki(w http.ResponseWriter, r *http.Request) {
 		Tags:             req.Tags,
 		SourceReferences: req.SourceReferences,
 		Status:           req.Status,
+		ActorName:        actorName(r),
 	}, actorID(r))
 	if err != nil {
 		writeContentError(w, r, err)
@@ -500,6 +589,7 @@ func (h *AdminHandler) ListWiki(w http.ResponseWriter, r *http.Request) {
 	}
 	items, total, err := h.contentSvc.ListWiki(r.Context(), content.ToolFilter{
 		Q:             req.Q,
+		Tag:           req.Tag,
 		PublishedOnly: false,
 		Page:          req.Page,
 		PageSize:      req.PageSize,
@@ -548,6 +638,7 @@ func (h *AdminHandler) UpdateWiki(w http.ResponseWriter, r *http.Request) {
 		Tags:             req.Tags,
 		SourceReferences: req.SourceReferences,
 		Status:           req.Status,
+		ActorName:        actorName(r),
 	}, actorID(r))
 	if err != nil {
 		writeContentError(w, r, err)
@@ -645,6 +736,24 @@ func (h *AdminHandler) ListTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, items)
+}
+
+// TagUsage POST /api/v1/admin/tags/usage
+// 返回标签使用统计（跨资源 / 工具 / 百科，来自关联表聚合）。
+// body: {limit?}（默认 200，按使用次数降序）。
+func (h *AdminHandler) TagUsage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Limit int `json:"limit"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
+	}
+	rows, err := h.contentSvc.TagUsage(r.Context(), req.Limit)
+	if err != nil {
+		response.HandleError(w, r, err)
+		return
+	}
+	response.OK(w, rows)
 }
 
 // UpdateCategory POST /api/v1/admin/categories/update

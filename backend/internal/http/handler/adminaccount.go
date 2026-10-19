@@ -166,6 +166,38 @@ func (h *AdminAccountHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	response.NoContent(w)
 }
 
+// ResetMFA POST /api/v1/admin/admins/mfa/reset
+// 解绑指定后台账号的双因子认证（账号恢复：换手机且恢复码丢失）。
+// 高权限操作，写审计；不撤销该账号已有会话（MFA 只影响登录）。
+func (h *AdminAccountHandler) ResetMFA(w http.ResponseWriter, r *http.Request) {
+	id, ok := decodeID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.ResetMFA(r.Context(), id); err != nil {
+		writeAdminAccountError(w, r, err)
+		return
+	}
+	h.auditLog(r, "admin.mfa.reset", id, nil, nil)
+	response.NoContent(w)
+}
+
+// DeletePreview POST /api/v1/admin/admins/delete-preview
+// 返回删除该后台账号的影响预览（是否自己、是否最后一名启用 admin、活动会话数）。
+// 只读，不执行删除、不写审计。
+func (h *AdminAccountHandler) DeletePreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := decodeID(w, r)
+	if !ok {
+		return
+	}
+	preview, err := h.svc.DeletePreview(r.Context(), id, actorID(r))
+	if err != nil {
+		writeAdminAccountError(w, r, err)
+		return
+	}
+	response.OK(w, preview)
+}
+
 // invalidate 使指定管理员的所有会话失效；失败仅记录，不阻断主流程。
 func (h *AdminAccountHandler) invalidate(r *http.Request, adminID string) {
 	if h.sessions == nil {
