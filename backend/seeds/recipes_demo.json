@@ -1,0 +1,87 @@
+[
+  {
+    "recipe_key": "minecraft:crafting_table",
+    "recipe_type": "shaped",
+    "game_version": "1.21",
+    "result_item_id": "minecraft:crafting_table",
+    "result_count": 1,
+    "pattern": ["##", "##"],
+    "key_mapping": {"#": "minecraft:oak_planks"},
+    "ingredients": [
+      {"item_id": "minecraft:oak_planks", "count": 4}
+    ],
+    "requires_crafting_table": false,
+    "supported_versions": ["1.20", "1.21", "1.21.1"],
+    "source_url": "https://minecraft.wiki/w/Crafting_Table",
+    "data_version": "demo-2026-01",
+    "last_verified_at": "2026-01-15T00:00:00Z"
+  },
+  {
+    "recipe_key": "minecraft:stick",
+    "recipe_type": "shaped",
+    "game_version": "1.21",
+    "result_item_id": "minecraft:stick",
+    "result_count": 4,
+    "pattern": ["#", "#"],
+    "key_mapping": {"#": "minecraft:oak_planks"},
+    "ingredients": [
+      {"item_id": "minecraft:oak_planks", "count": 2}
+    ],
+    "requires_crafting_table": true,
+    "supported_versions": ["1.20", "1.21", "1.21.1"],
+    "source_url": "https://minecraft.wiki/w/Stick",
+    "data_version": "demo-2026-01",
+    "last_verified_at": "2026-01-15T00:00:00Z"
+  },
+  {
+    "recipe_key": "minecraft:furnace",
+    "recipe_type": "shaped",
+    "game_version": "1.21",
+    "result_item_id": "minecraft:furnace",
+    "result_count": 1,
+    "pattern": ["###", "# #", "###"],
+    "key_mapping": {"#": "minecraft:cobblestone"},
+    "ingredients": [
+      {"item_id": "minecraft:cobblestone", "count": 8}
+    ],
+    "requires_crafting_table": true,
+    "supported_versions": ["1.20", "1.21", "1.21.1"],
+    "source_url": "https://minecraft.wiki/w/Furnace",
+    "data_version": "demo-2026-01",
+    "last_verified_at": "2026-01-15T00:00:00Z"
+  },
+  {
+    "recipe_key": "minecraft:stone_from_cobblestone",
+    "recipe_type": "smelting",
+    "game_version": "1.21",
+    "result_item_id": "minecraft:stone",
+    "result_count": 1,
+    "pattern": [],
+    "key_mapping": {},
+    "ingredients": [
+      {"item_id": "minecraft:cobblestone", "count": 1}
+    ],
+    "requires_crafting_table": false,
+    "supported_versions": ["1.20", "1.21", "1.21.1"],
+    "source_url": "https://minecraft.wiki/w/Stone",
+    "data_version": "demo-2026-01",
+    "last_verified_at": "2026-01-15T00:00:00Z"
+  },
+  {
+    "recipe_key": "minecraft:iron_ingot_from_smelting",
+    "recipe_type": "smelting",
+    "game_version": "1.21",
+    "result_item_id": "minecraft:iron_ingot",
+    "result_count": 1,
+    "pattern": [],
+    "key_mapping": {},
+    "ingredients": [
+      {"item_id": "minecraft:raw_iron", "count": 1}
+    ],
+    "requires_crafting_table": false,
+    "supported_versions": ["1.20", "1.21", "1.21.1"],
+    "source_url": "https://minecraft.wiki/w/Iron_Ingot",
+    "data_version": "demo-2026-01",
+    "last_verified_at": "2026-01-15T00:00:00Z"
+  }
+]

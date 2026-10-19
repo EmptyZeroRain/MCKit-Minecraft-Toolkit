@@ -1,0 +1,21 @@
+# 开发环境 Caddy 配置：本地反代，前端静态文件 + 后端 API 转发。
+# 生产环境将 localhost:80 替换为实际域名并配置 HTTPS。
+
+:80 {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8080 {
+			# 大文件（.mca 区域文件，上限 64MiB）流式转发；
+			# Caddy 默认无请求体上限，这里仅放宽超时，避免解析超时中断。
+			transport http {
+				read_timeout 120s
+				write_timeout 120s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+}

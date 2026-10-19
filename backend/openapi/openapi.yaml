@@ -1,0 +1,3342 @@
+openapi: 3.1.0
+info:
+  title: MC 工具站 API
+  version: 0.2.0
+  description: |
+    Minecraft Java 版工具与资源导航站后端 API。
+
+    ## 通用约定
+    - 前缀 `/api/v1`；请求/响应 JSON（UTF-8）。
+    - **所有查询、搜索、列表接口统一使用 `POST`**，参数放 JSON 请求体。
+    - 例外：`robots.txt` / `sitemap.xml` 为 `GET`（爬虫协议要求）。
+    - 统一成功结构 `{ "data": ..., "meta": ... }`；错误 `{ "error": {...}, "request_id": "..." }`。
+    - 分页 `page` 从 1 开始，`page_size` 默认 20、最大 50（后台列表最大 100）。
+    - 管理接口使用 Cookie 会话；写操作需 `X-CSRF-Token` 头（登录/`me` 返回的 `csrf_token`）。
+servers:
+  - url: /api/v1
+tags:
+  - name: public
+    description: 公开接口
+  - name: mc
+    description: Minecraft 工具（结构/种子/区块）
+  - name: meta
+    description: MC 版本信息与物品对照表（移植自 CreeperCode）
+  - name: admin-auth
+    description: 管理员认证
+  - name: user
+    description: 普通用户账号与个人数据（需登录，写操作 + CSRF）
+  - name: admin
+    description: 后台管理（需登录 + CSRF）
+
+paths:
+  /health:
+    post:
+      tags: [public]
+      summary: 健康检查
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /search:
+    post:
+      tags: [public]
+      summary: 全站搜索（工具/资源/百科/物品）
+      description: |
+        相关度权重：标题 > 命名空间 ID > 别名 > slug > 摘要（TODO §5）。
+        关键词上限 80 字符，超长返回 422；查询超时 3 秒。
+        无结果时 meta.suggestions 返回可尝试的关键词（基于已记录搜索词的字面关系）。
+        搜索词以匿名聚合形式记录（关键词 + 次数，不含任何用户标识）。
+      requestBody:
+        $ref: "#/components/requestBodies/SearchQuery"
+      responses:
+        "200":
+          description: 成功（含分页 meta 与可选 suggestions）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchResult" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /resources:
+    post:
+      tags: [public]
+      summary: 资源列表（仅已发布）
+      requestBody:
+        $ref: "#/components/requestBodies/ResourceListQuery"
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+  /resources/{slug}:
+    post:
+      tags: [public]
+      summary: 资源详情
+      description: |
+        返回资源本体 + 发布版本 + 兼容性结论（TODO §6）。
+        兼容性结论由资源级字段与发布版本实时推导；两者均无数据时 verified=false 并返回 unverified_hint，
+        界面必须展示「未验证」，不得当作兼容。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ResourceDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tools:
+    post:
+      tags: [public]
+      summary: 工具列表（仅已发布）
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+  /tools/{slug}:
+    post:
+      tags: [public]
+      summary: 工具详情
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /items:
+    post:
+      tags: [public]
+      summary: 物品查询
+      description: 按中文名 / 英文名 / 标准 ID / 别名检索统一物品资料库（TODO §1）。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（中文名 / 英文名 / ID / 别名） }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（物品列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Item" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /items/{item_id}:
+    post:
+      tags: [public]
+      summary: 物品详情（item_id 含冒号，需 URL 编码）
+      description: 返回物品资料、生成式获取指令，以及数据驱动的关联配方（产出 / 作为材料）。
+      parameters: [{ name: item_id, in: path, required: true, schema: { type: string, example: "minecraft%3Astone" } }]
+      responses:
+        "200":
+          description: 成功（物品详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ItemDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /recipes:
+    post:
+      tags: [public]
+      summary: 合成配方查询
+      description: 每项配方附带 resolved_items（TODO §3）：仅包含确实已收录的物品。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                item_id: { type: string }
+                game_version:
+                  type: string
+                  description: 按游戏版本筛选（正式版清单精确匹配；TODO §6-C）
+                recipe_type: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（配方列表，含关联物品摘要）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipeListEnvelope" }
+
+  /potions:
+    post:
+      tags: [public]
+      summary: 药水列表与筛选（TODO §9A）
+      description: |
+        按名称 / 别名、类别与游戏版本检索药水。版本筛选使用**精确版本语义**：
+        目标 1.20 可命中声明「1.8+」的药水，但不会命中「1.21+」。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名） }
+                category:
+                  type: string
+                  description: 药水类别
+                  enum: [water, base, positive, negative, mixed, other]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（药水列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Potion" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /potions/rules:
+    post:
+      tags: [public]
+      summary: 通用酿造规则（红石延长 / 萤石增强 / 火药喷溅 / 龙息滞留）
+      description: 规则存于数据库（brewing_recipes 中 input / result 均为空的条目），前端不硬编码。
+      responses:
+        "200":
+          description: 成功（规则列表 + 原料摘要）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/BrewingRules" }
+  /potions/{slug}:
+    post:
+      tags: [public]
+      summary: 药水详情（本体 + 酿造步骤 + 关联物品）
+      description: 返回药水本体、酿出该药水的步骤、以该药水为输入的后续步骤，以及确实已收录的原料物品摘要。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: potion-of-healing } }]
+      responses:
+        "200":
+          description: 成功（药水详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/PotionDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /villagers:
+    post:
+      tags: [public]
+      summary: 村民职业列表与筛选（TODO §9B）
+      description: |
+        按名称 / 别名、职业类别与游戏版本检索村民职业。版本筛选使用 versioning 的**精确版本语义**：
+        目标 1.20 可命中声明「1.14+」的职业，但不会命中声明「1.21+」的条目。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名 / 工作站名） }
+                kind:
+                  type: string
+                  description: 职业类别
+                  enum: [normal, wandering, non_trading]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（村民职业列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/VillagerProfession" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /villagers/levels:
+    post:
+      tags: [public]
+      summary: 村民职业等级通用规则（新手 → 大师）
+      description: 等级定义存于数据库（villager_trade_levels），前端不硬编码。
+      responses:
+        "200":
+          description: 成功（等级列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/VillagerTradeLevel" } }
+  /villagers/{slug}:
+    post:
+      tags: [public]
+      summary: 村民职业详情（本体 + 等级规则 + 分组交易 + 关联物品）
+      description: 返回职业本体、全部等级定义、按等级（或收购/特殊/普通）分组的交易，以及确实已收录的物品摘要。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: armorer } }]
+      responses:
+        "200":
+          description: 成功（职业详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/VillagerProfessionDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /mobs:
+    post:
+      tags: [public]
+      summary: 生物列表与筛选（TODO §9C）
+      description: |
+        按名称 / 别名、生物类别与游戏版本检索生物。版本筛选使用 versioning 的**精确版本语义**：
+        目标 1.20 可命中声明「1.14+」的生物，但不会命中声明「1.21+」的条目。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名） }
+                category:
+                  type: string
+                  description: 生物类别
+                  enum: [passive, neutral, hostile, boss, utility, other]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（生物列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Mob" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /mobs/{slug}:
+    post:
+      tags: [public]
+      summary: 生物详情（本体 + 掉落 + 关联物品）
+      description: 返回生物本体、掉落清单（含数量区间与概率），以及确实已收录的掉落物摘要；未收录物品回退为纯文本 ID。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: cow } }]
+      responses:
+        "200":
+          description: 成功（生物详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/MobDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /redstone/components:
+    post:
+      tags: [public]
+      summary: 红石元件列表与筛选（TODO §15）
+      description: |
+        按名称 / 别名、元件类别与游戏版本检索红石元件。版本筛选使用 versioning 的**精确版本语义**：
+        目标 1.20 可命中声明「1.14+」的元件，但不会命中声明「1.21+」的条目。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名） }
+                category:
+                  type: string
+                  description: 元件类别
+                  enum: [source, transmission, logic, actuator, sensor, other]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（红石元件列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/RedstoneComponent" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /redstone/components/{slug}:
+    post:
+      tags: [public]
+      summary: 红石元件详情
+      description: 返回红石元件本体（核心工作机制与信号说明、适用版本、来源与核验时间）。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: redstone_dust } }]
+      responses:
+        "200":
+          description: 成功（红石元件详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/RedstoneComponent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /redstone/designs:
+    post:
+      tags: [public]
+      summary: 机器设计列表与筛选（TODO §15）
+      description: |
+        按名称 / 别名、用途、难度与游戏版本检索机器设计。
+        **仅返回 review_status = published 的记录**（内容审核流程：未审核内容不对公开接口可见）。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名 / 作者） }
+                purpose:
+                  type: string
+                  description: 设计用途
+                  enum: [farm, sorter, transport, door, logic, utility, other]
+                difficulty:
+                  type: string
+                  description: 难度
+                  enum: [easy, medium, hard]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（机器设计列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/RedstoneDesign" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /redstone/designs/{slug}:
+    post:
+      tags: [public]
+      summary: 机器设计详情（本体 + 材料 + 关联物品）
+      description: 返回设计本体、材料清单（含数量区间）与确实已收录的物品摘要；未收录材料回退为纯文本。仅返回已发布设计。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: sugar_cane_farm } }]
+      responses:
+        "200":
+          description: 成功（机器设计详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/RedstoneDesignDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /mods:
+    post:
+      tags: [public]
+      summary: Mod 列表与筛选（TODO §16）
+      description: |
+        按名称 / 别名、加载器、类别与游戏版本检索 Mod。版本筛选使用 versioning 的**精确版本语义**：
+        目标 1.20 可命中声明「1.14+」的 Mod，但不会命中声明「1.21+」的条目。
+        **仅返回 review_status = published 的记录**（内容审核流程：未审核内容不对公开接口可见）。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名） }
+                loader:
+                  type: string
+                  description: 加载器
+                  enum: [fabric, forge, neoforge, quilt]
+                category:
+                  type: string
+                  description: 功能类别
+                  enum: [ui, optimization, technology, magic, world, adventure, library, storage, decoration, other]
+                version: { type: string, description: 目标游戏版本（如 1.20 / 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（Mod 列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Mod" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /mods/{slug}:
+    post:
+      tags: [public]
+      summary: Mod 详情（本体 + 发布版本 + 依赖与冲突 + 反向依赖）
+      description: |
+        返回 Mod 本体、发布版本、**已记录**的依赖与冲突（逐条标注 source_url 与 verified）以及反向依赖。
+        本站只呈现已记录关系，不做自动冲突分析。仅返回已发布 Mod。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: fabric-api } }]
+      responses:
+        "200":
+          description: 成功（Mod 详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ModDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /modpacks:
+    post:
+      tags: [public]
+      summary: 整合包列表与筛选（TODO §16）
+      description: |
+        按名称 / 别名、加载器与目标游戏版本检索整合包。目标版本为**精确匹配**。
+        **仅返回 review_status = published 的记录**。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名 / 别名 / 作者） }
+                loader:
+                  type: string
+                  description: 加载器
+                  enum: [fabric, forge, neoforge, quilt]
+                version: { type: string, description: 目标游戏版本（精确匹配，如 1.21.1） }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（整合包列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Modpack" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /modpacks/{slug}:
+    post:
+      tags: [public]
+      summary: 整合包详情（本体 + 包内 Mod 清单）
+      description: 返回整合包本体与包内 Mod 清单；已收录清单项解析为可跳转引用，未收录回退为纯文本（不生成死链）。仅返回已发布整合包。
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string, example: fabulously-optimized } }]
+      responses:
+        "200":
+          description: 成功（整合包详情）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ModpackDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /dev-docs:
+    post:
+      tags: [public]
+      summary: 开发文档列表与筛选（TODO §21）
+      description: |
+        按名称 / 主题关键词、平台（加载器）与游戏版本检索开发文档。
+        版本筛选使用 versioning 的**精确版本语义**：目标 1.21 可命中声明「1.20.1+」的条目，
+        但不会命中声明「1.22+」的条目；声明为 all 的条目对任何版本都命中。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中英文标题 / 摘要 / 标签 / 接口 / 正文） }
+                loader:
+                  type: string
+                  description: 平台 / 加载器（匹配主平台或兼容平台集合）
+                  enum: [neoforge, forge, fabric, vanilla, tooling, multi]
+                category:
+                  type: string
+                  description: 主题分类
+                  enum: [getting_started, events, registry, networking, datagen, resources, rendering, serialization, api_reference, mapping, toolchain]
+                version: { type: string, description: 目标游戏版本（如 1.21.1）或 all }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（开发文档列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/DevDocSummary" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+  /dev-docs/facets:
+    post:
+      tags: [public]
+      summary: 开发文档筛选维度统计（平台 / 主题计数）
+      description: 前端据此渲染筛选项与计数，避免把枚举硬编码在页面里。
+      responses:
+        "200":
+          description: 成功（平台与主题计数）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DevDocFacets" }
+  /dev-docs/{slug}:
+    post:
+      tags: [public]
+      summary: 开发文档详情（含同平台相关条目）
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: "neoforge-events" }
+      responses:
+        "200":
+          description: 成功（文档详情 + 相关条目）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DevDocDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /mappings/sets:
+    post:
+      tags: [public]
+      summary: 已导入的映射数据集列表（TODO §21）
+      description: |
+        返回由 `cmd/import-mappings` 导入的数据集（版本 + 映射类型 + 渠道）。
+        本站不预置映射数据，列表为空时前端展示导入指引。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                mc_version: { type: string }
+                mapping_type:
+                  type: string
+                  enum: [mojang, srg, tsrg, yarn, parchment, mixed]
+      responses:
+        "200":
+          description: 成功（数据集列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      sets: { type: array, items: { $ref: "#/components/schemas/MappingSet" } }
+  /mappings/search:
+    post:
+      tags: [public]
+      summary: 映射查询：类 / 方法 / 字段
+      description: |
+        同一关键词同时匹配 obf（第一命名空间）/ mid（中间命名空间）/ named（可读命名空间）三列。
+        结果按类聚合：类名命中优先，仅成员命中的类排在其后；命中的成员以预览形式附带。
+        响应未使用通用分页 meta，而是把 truncated（命中集是否被扫描上限截断）与分页字段一并放在 data 中。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 类名或成员名关键词；为空时按数据集顺序浏览 }
+                set_id: { type: string, format: uuid, description: 数据集 ID；为空表示跨数据集查询 }
+                mc_version: { type: string }
+                mapping_type:
+                  type: string
+                  enum: [mojang, srg, tsrg, yarn, parchment, mixed]
+                kind:
+                  type: string
+                  description: 查询范围
+                  enum: [all, class, method, field]
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（类命中列表 + 分页与截断标记）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/MappingSearchResult" }
+  /mappings/class/{id}:
+    post:
+      tags: [public]
+      summary: 类映射详情与成员列表
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { type: string, enum: [method, field, param] }
+                q: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功（类映射 + 成员列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/MappingClassDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /commands:
+    post:
+      tags: [public]
+      summary: 指令列表与搜索
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+  /commands/{slug}:
+    post:
+      tags: [public]
+      summary: 指令详情
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /wiki/{slug}:
+    post:
+      tags: [public]
+      summary: 百科详情
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /categories:
+    post:
+      tags: [public]
+      summary: 分类列表
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+
+  /feedback:
+    post:
+      tags: [public]
+      summary: 提交反馈/举报/投稿（TODO §17）
+      description: |
+        投稿类型（data_correction 资料纠错 / resource_supplement 资源补充信息）
+        须携带当前授权条款版本 license_version，否则返回 422；
+        同一来源在 24 小时内重复提交相同内容返回 409；
+        related_url 仅接受 http/https 且不得指向本机或内网地址。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [feedback_type, title, content]
+              properties:
+                feedback_type: { type: string, enum: [bug, resource_broken, infringement, data_correction, resource_supplement, other] }
+                title: { type: string, maxLength: 200 }
+                content: { type: string, maxLength: 5000 }
+                related_url: { type: string, description: 仅接受 http/https 外链 }
+                contact: { type: string, maxLength: 200 }
+                target_kind: { type: string, enum: [resource, item, dev_doc, mob, villager, potion, tool, other], default: other }
+                target_ref: { type: string, maxLength: 200, description: 关联资料标识（slug / item_id） }
+                license_version: { type: string, description: 投稿类型必填，当前版本为 2026-10-18 }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "409":
+          description: 重复提交（反垃圾）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /versions:
+    post:
+      tags: [meta]
+      summary: MC 版本清单（Mojang manifest，磁盘缓存 7 天）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, enum: [release, snapshot, old_beta, old_alpha, all], default: all }
+                q: { type: string, description: 按版本 id 模糊搜索 }
+      responses:
+        "200":
+          description: 版本清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      latest: { $ref: "#/components/schemas/LatestVersions" }
+                      versions:
+                        type: array
+                        items: { $ref: "#/components/schemas/VersionEntry" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /versions/detail:
+    post:
+      tags: [meta]
+      summary: 版本详情（下载地址、启动命令、Java 要求、运行库）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, example: "1.21.8" }
+      responses:
+        "200":
+          description: 版本详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/VersionDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /block-ids:
+    post:
+      tags: [meta]
+      summary: 物品 ID 对照表
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                kind: { type: string, enum: [same, different, variant, overlay, special, none, item, other, all] }
+      responses:
+        "200":
+          description: 对照表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      entries:
+                        type: array
+                        items: { $ref: "#/components/schemas/BlockIdEntry" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /seed/analyze:
+    post:
+      tags: [mc]
+      summary: 种子分析（史莱姆区块 + 结构理论候选坐标）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seed]
+              properties:
+                seed: { type: string, description: 数字或文本种子 }
+                version: { type: string }
+                radius: { type: integer, minimum: 1, maximum: 32, default: 8, description: 区块半径 }
+                include_structures: { type: boolean, default: true }
+                include_biomes: { type: boolean, default: false, description: 是否返回 1.18+ 群系采样（cubiomes 移植） }
+      responses:
+        "200":
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/SeedAnalysis" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mc/structures:
+    post:
+      tags: [mc]
+      summary: 结构理论坐标（指定种子与 region 范围）
+      description: >-
+        返回理论候选坐标；1.18+ 附群系可行性（feasible）。响应含 usable 标注：
+        available（该结构是否在版本生成）、placement_supported（分布算法是否与实现一致，
+        1.12 及更早为 false）、supported 为二者与。单次计算限时 3s。
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /mc/structures/types:
+    post:
+      tags: [mc]
+      summary: 支持的结构类型清单与参数描述（版本、维度、频率门槛、群系约束）
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/capabilities:
+    post:
+      tags: [mc]
+      summary: 世界分析工具各能力的版本支持矩阵
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/biome:
+    post:
+      tags: [mc]
+      summary: 生物群系查询（仅 1.18+；其他版本返回 supported=false 与说明）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seed, x, z]
+              properties:
+                seed: { type: string }
+                x: { type: integer, description: 方块 X 坐标 }
+                z: { type: integer, description: 方块 Z 坐标 }
+                version: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /mc/strongholds:
+    post:
+      tags: [mc]
+      summary: 要塞位置估算
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/slime-chunks:
+    post:
+      tags: [mc]
+      summary: 史莱姆区块查询（仅 Java 版；单次计算限时 3s）
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /mc/seeds/generate:
+    post:
+      tags: [mc]
+      summary: 生成随机种子
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/seeds/find:
+    post:
+      tags: [mc]
+      summary: 按结构位置搜索种子
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/seeds/parse:
+    post:
+      tags: [mc]
+      summary: 解析种子文本为数值
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /mc/region/inspect:
+    post:
+      tags: [mc]
+      summary: 解析上传的 .mca 区域文件，返回区块清单、统计与只读诊断
+      description: >-
+        仅内存解析、不落盘（上限 64MiB）。响应含 stats（文件/扇区/压缩/时间戳统计）与
+        diagnosis（区分确定错误 error 与警告 warning；只读检查，不含自动修复）。
+        逐区块 NBT 解析超过 5s 时提前结束并置 timed_out=true。
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /mc/region/chunk:
+    post:
+      tags: [mc]
+      summary: 返回指定区块的顶层 NBT 字段
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+                local_x: { type: integer }
+                local_z: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /mc/level/parse:
+    post:
+      tags: [mc]
+      summary: 解析 level.dat，返回世界基础信息与只读诊断
+      description: >-
+        仅内存解析、不落盘（上限 64MiB，解压输出上限 16MiB）。解析 gzip 压缩或未压缩的 NBT；
+        返回 world（世界名称、种子、版本、出生点、游戏规则等）与 warnings（告警，非确定错误）。
+        不修改存档、不提供自动修复。
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /user/register:
+    post:
+      tags: [user]
+      summary: 注册普通用户（注册后需登录）
+      description: >-
+        用户名 3-40 位、以字母开头，仅含字母/数字/下划线/连字符；密码至少 8 位。
+        密码使用 Argon2id 哈希存储，不保存明文。注册不自动登录。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "409":
+          description: 用户名已被占用
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /user/login:
+    post:
+      tags: [user]
+      summary: 用户登录
+      description: 成功时种下 HttpOnly 会话 Cookie（默认 mc_user_session），并在响应中返回 csrf_token。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: 登录成功（种下会话 Cookie，返回用户信息与 csrf_token）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/UserAccount" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: 登录尝试过多（按用户名 + IP 限流）
+  /user/logout:
+    post:
+      tags: [user]
+      summary: 退出登录
+      security: [{ cookieAuth: [] }]
+      responses:
+        "204": { description: 已退出 }
+  /user/me:
+    post:
+      tags: [user]
+      summary: 当前用户信息（含 csrf_token）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/change-password:
+    post:
+      tags: [user]
+      summary: 修改密码（需 CSRF；成功后全部会话失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string }
+                new_password: { type: string, minLength: 8 }
+      responses:
+        "204": { description: 已修改，需重新登录 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /user/delete:
+    post:
+      tags: [user]
+      summary: 删除账号及其全部个人数据（需 CSRF + 密码确认）
+      description: 级联删除收藏、最近使用与常用种子，操作不可恢复。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "204": { description: 账号已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/favorites/list:
+    post:
+      tags: [user]
+      summary: 收藏列表（按发布时间倒序）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/favorites/toggle:
+    post:
+      tags: [user]
+      summary: 收藏 / 取消收藏（需 CSRF）
+      description: 幂等切换；kind 取值 tool / item / resource / wiki。上限 500 条。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, object_id]
+              properties:
+                kind: { type: string, enum: [tool, item, resource, wiki] }
+                object_id: { type: string }
+                label: { type: string }
+                url: { type: string }
+      responses:
+        "200":
+          description: 操作后的收藏状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      favorited: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /user/favorites/remove:
+    post:
+      tags: [user]
+      summary: 取消收藏（需 CSRF，幂等）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, object_id]
+              properties:
+                kind: { type: string, enum: [tool, item, resource, wiki] }
+                object_id: { type: string }
+      responses:
+        "204": { description: 已取消 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/recents/list:
+    post:
+      tags: [user]
+      summary: 最近使用列表（最多保留最近 50 条）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/recents/record:
+    post:
+      tags: [user]
+      summary: 记录一次最近使用（需 CSRF，重复对象自动前置）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, object_id]
+              properties:
+                kind: { type: string, enum: [tool, item, resource, wiki] }
+                object_id: { type: string }
+                label: { type: string }
+                url: { type: string }
+      responses:
+        "204": { description: 已记录 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/recents/clear:
+    post:
+      tags: [user]
+      summary: 清空最近使用（需 CSRF）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "204": { description: 已清空 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/seeds/list:
+    post:
+      tags: [user]
+      summary: 常用种子列表（上限 200 条）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /user/seeds/save:
+    post:
+      tags: [user]
+      summary: 新建 / 更新常用种子（需 CSRF）
+      description: id 为空表示新建，否则更新本人对应的记录；种子以字符串保存，避免大整数丢精度。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, seed]
+              properties:
+                id: { type: string }
+                name: { type: string }
+                seed: { type: string }
+                note: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /user/seeds/delete:
+    post:
+      tags: [user]
+      summary: 删除常用种子（需 CSRF，限本人）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /stats/event:
+    post:
+      tags: [public]
+      summary: 匿名使用统计上报（TODO §13）
+      description: |
+        公开、匿名、尽力而为的使用统计上报：只接收「对象标识 + 动作」，
+        **不接收** IP、会话、用户标识、User-Agent 或自由文本；对象须通过白名单校验
+        （内置工具清单 / 工具表 / 资源表），避免任意字符串污染统计。
+        成功返回 204；非法入参或未知对象返回 422。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope, id, action]
+              properties:
+                scope: { type: string, enum: [tool, resource] }
+                id:
+                  type: string
+                  description: 工具 slug / 资源 slug（1-180 个 [A-Za-z0-9._:+-] 字符）
+                action:
+                  type: string
+                  enum: [visit, use, fail]
+                  description: 资源仅允许 visit；工具允许 visit / use / fail
+      responses:
+        "204": { description: 已记录 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/auth/login:
+    post:
+      tags: [admin-auth]
+      summary: 管理员登录
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: 登录成功（种下会话 Cookie，返回 csrf_token）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: 登录尝试过多
+  /admin/auth/logout:
+    post:
+      tags: [admin-auth]
+      summary: 退出登录
+      security: [{ cookieAuth: [] }]
+      responses:
+        "204": { description: 已退出 }
+  /admin/auth/me:
+    post:
+      tags: [admin-auth]
+      summary: 当前管理员信息（含 csrf_token）
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /admin/auth/change-password:
+    post:
+      tags: [admin-auth]
+      summary: 修改密码（需 CSRF；成功后会话失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string }
+                new_password: { type: string, minLength: 8 }
+      responses:
+        "204": { description: 修改成功 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/admins/list:
+    post: { tags: [admin], summary: 管理员账号列表（admin 专属）, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/admins/create:
+    post:
+      tags: [admin]
+      summary: 创建管理员账号（admin 专属，密码 ≥12 位）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: { type: string, maxLength: 80 }
+                password: { type: string, minLength: 12 }
+                role: { type: string, enum: [admin, editor] }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/admins/update:
+    post:
+      tags: [admin]
+      summary: 更新管理员角色/启用状态（admin 专属；改角色或停用后会话失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, format: uuid }
+                role: { type: string, enum: [admin, editor] }
+                is_active: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/admins/reset-password:
+    post:
+      tags: [admin]
+      summary: 重置管理员密码（admin 专属，密码 ≥12 位；成功后该账号会话全部失效）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, new_password]
+              properties:
+                id: { type: string, format: uuid }
+                new_password: { type: string, minLength: 12 }
+      responses:
+        "204": { description: 已重置 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/admins/delete:
+    post:
+      tags: [admin]
+      summary: 删除管理员账号（admin 专属；不可删除自己或最后一名 admin）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/data-quality/overview:
+    post:
+      tags: [admin]
+      summary: 数据质量概览（admin 专属，TODO §4）
+      description: 返回客观检查项：字段缺失、版本格式非法、配方结果物品悬空引用等。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DataQualityOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/data-import-jobs/list:
+    post:
+      tags: [admin]
+      summary: 数据导入任务列表（admin 专属，TODO §4）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data_type: { type: string, enum: [items, recipes, commands, tools] }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/link-health/run:
+    post:
+      tags: [admin]
+      summary: 后台批量复查资源链接（admin 专属，TODO §6）
+      description: |
+        受限并发（LINK_CHECK_MAX_CONCURRENCY，1–16）检查资源来源链接可达性，带超时与重定向上限；
+        结果落库并同步资源链接状态。出网任务，服务端对操作者限流。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resource_id: { type: string, description: 非空时只复查该资源 }
+                only_pending: { type: boolean, description: 跳过已确认可用 / 已忽略的资源，默认 true }
+                limit: { type: integer, minimum: 0, description: 最多检查条数，0 表示不限 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/LinkHealthRunSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /admin/link-health/list:
+    post:
+      tags: [admin]
+      summary: 链接复核列表（admin 专属，TODO §6）
+      description: 默认只返回失败项（broken / blocked / error），最近检查在前。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                review_state:
+                  type: string
+                  enum: [pending, confirmed_broken, confirmed_ok, ignored]
+                status:
+                  type: string
+                  enum: [unchecked, ok, redirected, broken, blocked, error]
+                failed_only: { type: boolean, default: true }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/link-health/{id}/confirm:
+    post:
+      tags: [admin]
+      summary: 人工确认链接结论（admin 专属，TODO §6）
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum: [confirm_broken, confirm_ok, ignore]
+                note: { type: string, description: 确认备注 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/LinkHealthItem" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/redstone/designs/list:
+    post:
+      tags: [admin]
+      summary: 机器设计审核列表（admin 专属，TODO §15）
+      description: 按审核状态筛选机器设计（不过滤发布态，供审核使用）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 作者） }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                purpose:
+                  type: string
+                  enum: [farm, sorter, transport, door, logic, utility, other]
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/redstone/designs/review:
+    post:
+      tags: [admin]
+      summary: 审核机器设计（admin 专属，TODO §15）
+      description: 更新审核状态并留痕；审核人取自登录会话，并写入审计日志。仅 published 对公开接口可见。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, review_status]
+              properties:
+                id: { type: string, description: 设计 ID }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string, description: 审核备注 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/RedstoneDesign" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/mods/list:
+    post:
+      tags: [admin]
+      summary: Mod 审核列表（admin 专属，TODO §16）
+      description: 按审核状态与加载器筛选 Mod（不过滤发布态，供审核使用）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 英文名） }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                loader:
+                  type: string
+                  enum: [fabric, forge, neoforge, quilt]
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/mods/review:
+    post:
+      tags: [admin]
+      summary: 审核 Mod（admin 专属，TODO §16）
+      description: 更新审核状态并留痕；审核人取自登录会话，并写入审计日志。仅 published 对公开接口可见。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, review_status]
+              properties:
+                id: { type: string, description: Mod ID }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string, description: 审核备注 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Mod" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/modpacks/list:
+    post:
+      tags: [admin]
+      summary: 整合包审核列表（admin 专属，TODO §16）
+      description: 按审核状态与加载器筛选整合包（不过滤发布态，供审核使用）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 关键词（slug / 中文名 / 作者） }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                loader:
+                  type: string
+                  enum: [fabric, forge, neoforge, quilt]
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/modpacks/review:
+    post:
+      tags: [admin]
+      summary: 审核整合包（admin 专属，TODO §16）
+      description: 更新审核状态并留痕；审核人取自登录会话，并写入审计日志。仅 published 对公开接口可见。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, review_status]
+              properties:
+                id: { type: string, description: 整合包 ID }
+                review_status: { type: string, enum: [pending, published, rejected] }
+                note: { type: string, description: 审核备注 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Modpack" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/search-terms/list:
+    post:
+      tags: [admin]
+      summary: 搜索词统计列表（admin 专属，TODO §5）
+      description: |
+        匿名化聚合统计：仅关键词与计数，不含 IP、会话或用户标识。
+        kind=hot 按搜索次数、no_result 按无结果次数、failed 按查询失败次数。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { type: string, enum: [hot, no_result, failed], default: hot }
+                q: { type: string, description: 关键词模糊过滤 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 成功（搜索词统计列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchTerm" }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/analytics/overview:
+    post:
+      tags: [admin]
+      summary: 运营概览（admin 专属，TODO §13）
+      description: |
+        按时间范围聚合的使用统计概览：工具访问/使用/失败、资源详情访问、搜索总量与
+        无结果/失败、关键 API 请求量/错误率/限流与近似 P95 延迟、当前失效链接总数。
+        数据为按天聚合计数，不含任何个人身份信息。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsRange" }
+      responses:
+        "200":
+          description: 成功（运营概览）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/UsageOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/analytics/tools:
+    post:
+      tags: [admin]
+      summary: 工具使用明细（admin 专属，TODO §13）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsRange" }
+      responses:
+        "200":
+          description: 成功（按访问+使用总量降序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ToolUsageStat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/analytics/resources:
+    post:
+      tags: [admin]
+      summary: 资源详情访问明细（admin 专属，TODO §13）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsRange" }
+      responses:
+        "200":
+          description: 成功（按访问量降序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ResourceUsageStat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/analytics/api:
+    post:
+      tags: [admin]
+      summary: 关键 API 指标（admin 专属，TODO §13）
+      description: |
+        按**路由模板**聚合的请求量、错误率、限流触发次数与延迟（平均 / 最大 / 近似 P95）。
+        只保存路由模板（如 /api/v1/resources/{slug}），不含具体参数值。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsRange" }
+      responses:
+        "200":
+          description: 成功（按请求量降序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiUsageStat" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/analytics/trend:
+    post:
+      tags: [admin]
+      summary: 按天趋势（admin 专属，TODO §13）
+      description: 区间内每一天都存在（缺失日期补零），便于前台绘制连续折线。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyticsRange" }
+      responses:
+        "200":
+          description: 成功（按日期升序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/UsageTrendPoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/resources/list:
+    post:
+      tags: [admin]
+      summary: 资源列表（含草稿/下架）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+  /admin/resources/detail:
+    post:
+      tags: [admin]
+      summary: 资源详情
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /admin/resources/create:
+    post:
+      tags: [admin]
+      summary: 创建资源
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+  /admin/resources/update:
+    post:
+      tags: [admin]
+      summary: 更新资源（白名单字段）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /admin/resources/delete:
+    post:
+      tags: [admin]
+      summary: 软删除/下架资源
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+  /admin/resources/check-link:
+    post:
+      tags: [admin]
+      summary: 检查资源来源链接（内置 SSRF 防护）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /admin/resources/releases/list:
+    post:
+      tags: [admin]
+      summary: 发布版本列表（TODO §6）
+      description: 请求体 `{ id }`，返回该资源的发布版本列表（发布时间降序，未知时间排后）。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
+  /admin/resources/releases/replace:
+    post:
+      tags: [admin]
+      summary: 整体替换发布版本（TODO §6）
+      description: |
+        请求体 `{ id, releases: [...] }`。以完整列表为准整体替换（幂等），空数组表示清空。
+        版本标签必填且资源内唯一、发布页链接必填且为 http(s)、至多一条 is_latest；
+        违反返回 422。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, releases]
+              properties:
+                id: { type: string, format: uuid }
+                releases: { type: array, items: { $ref: "#/components/schemas/ResourceReleaseInput" } }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/tools/list:
+    post: { tags: [admin], summary: 工具列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/tools/detail:
+    post:
+      tags: [admin]
+      summary: 工具详情
+      security: [{ cookieAuth: [] }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /admin/tools/create:
+    post:
+      tags: [admin]
+      summary: 创建工具
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+  /admin/tools/update:
+    post:
+      tags: [admin]
+      summary: 更新工具
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /admin/tools/delete:
+    post:
+      tags: [admin]
+      summary: 下架工具
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses: { "204": { description: 已下架 } }
+
+  /admin/wiki/list:
+    post: { tags: [admin], summary: 百科列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/wiki/detail:
+    post:
+      tags: [admin]
+      summary: 百科详情
+      security: [{ cookieAuth: [] }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /admin/wiki/create:
+    post: { tags: [admin], summary: 创建百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+  /admin/wiki/update:
+    post: { tags: [admin], summary: 更新百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/wiki/delete:
+    post: { tags: [admin], summary: 软删除百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+
+  /admin/categories/list:
+    post: { tags: [admin], summary: 分类列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/categories/create:
+    post: { tags: [admin], summary: 创建分类, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+  /admin/categories/update:
+    post:
+      tags: [admin]
+      summary: 更新分类
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+  /admin/categories/delete:
+    post:
+      tags: [admin]
+      summary: 删除分类
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses: { "204": { description: 已删除 } }
+
+  /admin/tags/list:
+    post: { tags: [admin], summary: 标签列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/tags/create:
+    post: { tags: [admin], summary: 创建标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+  /admin/tags/update:
+    post: { tags: [admin], summary: 更新标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+  /admin/tags/delete:
+    post: { tags: [admin], summary: 删除标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+
+  /admin/feedback/list:
+    post: { tags: [admin], summary: 反馈列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
+  /admin/feedback/update:
+    post:
+      tags: [admin]
+      summary: 审核反馈/投稿（更新状态 + 审核备注，记录审核人与变更历史）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, status]
+              properties:
+                id: { type: string, format: uuid }
+                status: { type: string, enum: [new, processing, resolved, ignored] }
+                note: { type: string, maxLength: 500, description: 审核备注，写入审核历史 }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /admin/feedback/reviews:
+    post:
+      tags: [admin]
+      summary: 审核变更历史（TODO §17：记录审核人、审核结果和变更历史）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string, format: uuid, description: 反馈 id }
+      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+
+  /admin/audit-logs/list:
+    post:
+      tags: [admin]
+      summary: 审计日志分页查询（admin 专属）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: mc_admin_session
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+      description: 登录/me 返回的 csrf_token，写操作必须与会话一致
+
+  schemas:
+    IdBody:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+    PageMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        total_pages: { type: integer }
+        suggestions:
+          type: array
+          items: { type: string }
+          description: 无结果搜索时可尝试的关键词（仅 /search 返回，TODO §5）
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+        request_id: { type: string }
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        role: { type: string, enum: [admin, editor] }
+        csrf_token: { type: string }
+        expires_at: { type: string, format: date-time }
+    UserAccount:
+      description: 普通用户账号（不含任何密码信息）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        csrf_token: { type: string }
+        expires_at: { type: string, format: date-time }
+    AdminAccount:
+      description: 管理员账号（不含任何密码信息）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        role: { type: string, enum: [admin, editor] }
+        is_active: { type: boolean }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    LatestVersions:
+      type: object
+      properties:
+        release: { type: string }
+        snapshot: { type: string }
+    VersionEntry:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [release, snapshot, old_beta, old_alpha] }
+        url: { type: string }
+        time: { type: string, format: date-time }
+        releaseTime: { type: string, format: date-time }
+        sha1: { type: string }
+    VersionDetail:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        releaseTime: { type: string }
+        mainClass: { type: string }
+        java:
+          type: object
+          properties:
+            component: { type: string }
+            majorVersion: { type: integer }
+        downloads:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              url: { type: string }
+              size: { type: integer }
+              sha1: { type: string }
+        libraries:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              url: { type: string }
+              size: { type: integer }
+              sha1: { type: string }
+              platforms: { type: string }
+        startupCommand: { type: string }
+        startupNotes: { type: array, items: { type: string } }
+        clientLaunch:
+          type: object
+          properties:
+            mainClass: { type: string }
+            command: { type: string }
+            gameArgs: { type: array, items: { type: object } }
+            jvmArgs: { type: array, items: { type: object } }
+            defaultUserJVM: { type: array, items: { type: object } }
+    BlockIdEntry:
+      type: object
+      properties:
+        name: { type: string }
+        id: { type: string }
+        form: { type: string }
+        kind: { type: string, enum: [same, different, variant, overlay, special, none, item, other] }
+        refId: { type: string }
+    SearchResult:
+      description: 全站搜索结果条目（url 为前端详情页路径）
+      type: object
+      properties:
+        type: { type: string, enum: [tool, resource, wiki, item] }
+        id: { type: string }
+        slug: { type: string }
+        item_id: { type: string, description: 仅物品结果返回 }
+        title: { type: string }
+        summary: { type: string }
+        url: { type: string, example: "/items/minecraft:stone" }
+        updated_at: { type: string, format: date-time }
+    Item:
+      description: 统一物品资料（TODO §1）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        item_id: { type: string, example: "minecraft:stone" }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        aliases: { type: array, items: { type: string } }
+        description: { type: string }
+        item_category:
+          type: string
+          description: 资料类别，决定可选属性（如耐久度）的适用范围
+          enum: [block, item, tool, weapon, armor, food, material, other]
+        stack_size: { type: integer, nullable: true }
+        durability: { type: integer, nullable: true, description: 仅工具 / 武器 / 防具适用 }
+        obtain_method: { type: string, description: 获取方式 }
+        usage: { type: string, description: 用途 }
+        image_url: { type: string, nullable: true }
+        game_edition: { type: string, enum: [java, bedrock] }
+        supported_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（单版本、范围，或通配 all；all 必须独占）
+        source_url: { type: string, nullable: true }
+        data_version: { type: string, nullable: true }
+        last_verified_at: { type: string, format: date-time, nullable: true, description: 资料最后校验时间 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ItemRecipeLinks:
+      type: object
+      description: 数据驱动的物品关联配方（无关联时为空数组，不伪造）
+      properties:
+        produced: { type: array, items: { type: object }, description: 产出该物品的配方 }
+        used_as: { type: array, items: { type: object }, description: 以该物品为材料的配方 }
+        resolved_items:
+          type: object
+          description: |
+            上述配方引用到的、确实已收录的物品摘要（键为 item_id，TODO §3）。
+            未收录物品不会出现在映射中，前端需回退为纯文本 ID，避免断链。
+          additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    ItemRef:
+      type: object
+      description: 关联展示用的物品摘要（仅在后端确认物品已收录时返回，TODO §3）
+      properties:
+        item_id: { type: string, example: "minecraft:stone" }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        item_category:
+          type: string
+          enum: [block, item, tool, weapon, armor, food, material, other]
+        url: { type: string, example: "/items/minecraft:stone" }
+    RecipeListEnvelope:
+      description: 配方列表（每项附带 resolved_items 关联物品摘要）
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/Recipe"
+              - type: object
+                properties:
+                  resolved_items:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+    Recipe:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        recipe_key: { type: string }
+        recipe_type: { type: string }
+        game_version: { type: string }
+        supported_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（单版本、范围，或通配 all；TODO §2）
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        result_item_id: { type: string }
+        result_count: { type: integer }
+        pattern: { type: array, items: { type: string } }
+        key_mapping: { type: object }
+        ingredients:
+          type: array
+          items:
+            type: object
+            properties:
+              item_id: { type: string }
+              count: { type: integer }
+        requires_crafting_table: { type: boolean }
+        source_url: { type: string }
+        data_version: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SearchTerm:
+      type: object
+      description: 搜索词匿名聚合统计（TODO §5；不含任何用户标识）
+      properties:
+        id: { type: string, format: uuid }
+        term: { type: string, description: 归一化关键词（小写、折叠空白） }
+        hits: { type: integer, description: 被搜索总次数 }
+        no_result_hits: { type: integer, description: 其中无结果的次数 }
+        failed_hits: { type: integer, description: 查询本身失败的次数（超时 / 服务错误） }
+        last_result_count: { type: integer, description: 最近一次的结果数（0 表示无结果） }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+    AnalyticsRange:
+      type: object
+      description: |
+        运营看板时间范围。只给 days 表示最近 N 天（含当天，默认 30，上限 366）；
+        同时给出 from/to 时以 from/to 为准（YYYY-MM-DD，含首尾）。
+      properties:
+        from: { type: string, description: 起始日期 YYYY-MM-DD }
+        to: { type: string, description: 结束日期 YYYY-MM-DD }
+        days: { type: integer, minimum: 1, maximum: 366 }
+        limit: { type: integer, minimum: 1, maximum: 500, description: 明细列表条数上限 }
+    UsageOverview:
+      type: object
+      description: 运营概览（TODO §13；全部为聚合计数与比率，不含个人身份信息）
+      properties:
+        from: { type: string }
+        to: { type: string }
+        tool_visits: { type: integer }
+        tool_uses: { type: integer }
+        tool_failures: { type: integer }
+        tool_failure_rate: { type: number, description: failures / uses（无使用量时为 0） }
+        active_tools: { type: integer }
+        resource_views: { type: integer }
+        active_resources: { type: integer }
+        broken_links: { type: integer, description: 当前失效链接总数（实时查询） }
+        search_queries: { type: integer }
+        search_zero_result: { type: integer }
+        search_failed: { type: integer }
+        api_total: { type: integer }
+        api_errors: { type: integer, description: 5xx }
+        api_client_errors: { type: integer, description: 4xx（不含 429） }
+        api_rate_limited: { type: integer, description: 限流触发（429） }
+        api_error_rate: { type: number }
+        avg_latency_ms: { type: number }
+        p95_latency_ms: { type: integer, description: 由固定分桶近似的 P95（桶上界） }
+    ToolUsageStat:
+      type: object
+      properties:
+        slug: { type: string }
+        visits: { type: integer }
+        uses: { type: integer }
+        failures: { type: integer }
+        fail_rate: { type: number }
+    ResourceUsageStat:
+      type: object
+      properties:
+        slug: { type: string }
+        views: { type: integer }
+    ApiUsageStat:
+      type: object
+      description: 路由模板级指标（TODO §13），route 为 chi 路由模板而非具体路径
+      properties:
+        route: { type: string, example: "/api/v1/resources/{slug}" }
+        method: { type: string }
+        total: { type: integer }
+        errors: { type: integer }
+        client_errors: { type: integer }
+        rate_limited: { type: integer }
+        avg_ms: { type: number }
+        max_ms: { type: integer }
+        p95_ms: { type: integer }
+    UsageTrendPoint:
+      type: object
+      description: 某一天的合并趋势点（缺失日期补零）
+      properties:
+        date: { type: string }
+        tool_visits: { type: integer }
+        tool_uses: { type: integer }
+        tool_failures: { type: integer }
+        resource_views: { type: integer }
+        search_queries: { type: integer }
+        api_total: { type: integer }
+        api_errors: { type: integer }
+        api_rate_limited: { type: integer }
+    ResourceDependencyType:
+      type: string
+      description: 依赖关系类型（TODO §6）
+      enum: [dependency, prerequisite, conflict]
+    ResourceDependency:
+      type: object
+      description: 依赖项（TODO §6）。历史数据缺少 type 时按 dependency 处理。
+      required: [name, type]
+      properties:
+        name: { type: string, maxLength: 160 }
+        type: { $ref: "#/components/schemas/ResourceDependencyType" }
+        resource_url: { type: string, nullable: true, description: 可选，必须为 http(s) 链接 }
+        required: { type: boolean, description: 冲突项恒为 false }
+        note: { type: string, nullable: true, maxLength: 300 }
+    ResourceRelease:
+      type: object
+      description: 同一资源的不同发布版本（TODO §6）
+      properties:
+        id: { type: string, format: uuid }
+        resource_id: { type: string, format: uuid }
+        version_label: { type: string, maxLength: 120, description: 资源内唯一 }
+        game_versions:
+          type: array
+          items: { type: string }
+          description: 该发布适用的游戏版本（单版本、范围，或通配 all）
+        loader_types:
+          type: array
+          items: { type: string }
+          enum: [forge, neoforge, fabric, quilt, vanilla, paper, spigot, purpur, other]
+        source_url: { type: string, description: 该版本的发布页 / 下载页（http(s)） }
+        released_at: { type: string, format: date-time, nullable: true, description: 为空表示时间未知，不做猜测 }
+        notes: { type: string }
+        is_latest: { type: boolean, description: 同一资源至多一条 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ResourceReleaseInput:
+      type: object
+      description: 发布版本写入载荷（管理端整体替换）
+      required: [version_label, source_url]
+      properties:
+        version_label: { type: string, maxLength: 120 }
+        game_versions: { type: array, items: { type: string } }
+        loader_types: { type: array, items: { type: string } }
+        source_url: { type: string }
+        released_at: { type: string, nullable: true, description: RFC3339 或 YYYY-MM-DD；留空表示未知 }
+        notes: { type: string, maxLength: 500 }
+        is_latest: { type: boolean }
+    ResourceCompatibility:
+      type: object
+      description: |
+        兼容性结论（TODO §6）。结论不落库，由资源级字段与发布版本实时推导；
+        verified=false 表示缺少可靠数据依据，界面必须展示「未验证」，不得当作兼容。
+      properties:
+        verified: { type: boolean }
+        game_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（含通配 all 时为 ["all"]）
+        loader_types: { type: array, items: { type: string } }
+        sources:
+          type: array
+          items: { type: string, enum: [resource, releases] }
+          description: 结论依据来源
+        all_versions:
+          type: boolean
+          description: |
+            是否声明了「所有版本」通配（game_versions 含 all，TODO §6-C）。
+            前端据此展示「全部 MC 版本」并按官方正式版清单展开完整列表。
+        note: { type: string, description: 人工核验备注（resources.compatibility_note） }
+        unverified_hint: { type: string, description: 仅 verified=false 时返回 }
+    Resource:
+      type: object
+      description: 资源（TODO §6 统一字段）
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        resource_type:
+          type: string
+          enum: [mod, modpack, resource_pack, shader, world, datapack, plugin]
+        cover_image_url: { type: string, nullable: true }
+        author_name: { type: string, nullable: true }
+        source_platform: { type: string, nullable: true }
+        source_url: { type: string }
+        license: { type: string, nullable: true }
+        game_edition: { type: string, enum: [java, bedrock] }
+        supported_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（单版本、范围，或通配 all；all 必须独占）
+        loader_types:
+          type: array
+          items: { type: string }
+          enum: [forge, neoforge, fabric, quilt, vanilla, paper, spigot, purpur, other]
+        dependencies: { type: array, items: { $ref: "#/components/schemas/ResourceDependency" } }
+        install_guide: { type: string }
+        tags: { type: array, items: { type: string } }
+        compatibility_note: { type: string, description: 人工核验备注（TODO §6） }
+        status: { type: string, enum: [draft, published, hidden, removed] }
+        link_status: { type: string, enum: [unchecked, ok, redirected, broken, blocked, error] }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        published_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ResourceDetail:
+      description: 资源详情（资源本体 + 发布版本 + 兼容性结论，TODO §6）
+      allOf:
+        - $ref: "#/components/schemas/Resource"
+        - type: object
+          properties:
+            releases: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
+            compatibility: { $ref: "#/components/schemas/ResourceCompatibility" }
+    ItemDetail:
+      description: 物品详情（物品本体 + 关联配方 + 生成式获取指令）
+      allOf:
+        - $ref: "#/components/schemas/Item"
+        - type: object
+          properties:
+            related_recipes: { $ref: "#/components/schemas/ItemRecipeLinks" }
+            obtain_command: { type: string, example: "/give @s minecraft:stone 1" }
+    PotionEffect:
+      type: object
+      description: 药水单条效果（普通 / 延长 / 增强各一条，TODO §9A）
+      properties:
+        variant: { type: string, enum: [normal, extended, enhanced] }
+        effect_id: { type: string, example: "minecraft:speed" }
+        name_zh: { type: string }
+        name_en: { type: string }
+        amplifier: { type: integer, minimum: 1, description: "等级：1 表示 I 级" }
+        duration_seconds: { type: integer, minimum: 0, description: 0 表示瞬间效果 }
+        description: { type: string }
+    Potion:
+      description: 药水资料（TODO §9A）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, example: potion-of-healing }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        aliases: { type: array, items: { type: string } }
+        category: { type: string, enum: [water, base, positive, negative, mixed, other] }
+        summary: { type: string }
+        effect_note: { type: string, description: 效果补充说明（如版本差异、特殊用途） }
+        is_brewable: { type: boolean, description: 是否可通过酿造获得 }
+        is_extendable: { type: boolean, description: 能否用红石粉延长 }
+        is_enhanceable: { type: boolean, description: 能否用荧石粉增强 }
+        effects: { type: array, items: { $ref: "#/components/schemas/PotionEffect" } }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（「自某版本起」如 1.8+，或范围 / all）
+        source_url: { type: string, nullable: true }
+        data_version: { type: string, nullable: true }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PotionRef:
+      type: object
+      description: 关联展示用的药水摘要
+      properties:
+        slug: { type: string }
+        name_zh: { type: string }
+        category: { type: string, enum: [water, base, positive, negative, mixed, other] }
+        url: { type: string, example: "/potions/potion-of-healing" }
+    BrewingStep:
+      type: object
+      description: 酿造步骤（TODO §9A）
+      properties:
+        id: { type: string, format: uuid }
+        recipe_key: { type: string }
+        step_kind: { type: string, enum: [base, effect, corrupt, modifier, form] }
+        input_potion_slug: { type: string, nullable: true, description: 为空表示从水瓶起步（或通用规则） }
+        ingredient_item_id: { type: string, example: "minecraft:nether_wart" }
+        ingredient_name_zh: { type: string }
+        result_potion_slug: { type: string, nullable: true, description: 为空表示通用修饰 / 形态规则 }
+        note: { type: string }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions: { type: array, items: { type: string } }
+        source_url: { type: string, nullable: true }
+        sort_order: { type: integer }
+        input_potion: { $ref: "#/components/schemas/PotionRef" }
+        result_potion: { $ref: "#/components/schemas/PotionRef" }
+    BrewingRules:
+      type: object
+      description: 通用酿造规则（红石延长 / 萤石增强 / 火药喷溅 / 龙息滞留）
+      properties:
+        rules: { type: array, items: { $ref: "#/components/schemas/BrewingStep" } }
+        ingredient_items:
+          type: object
+          description: 规则原料中确实已收录的物品摘要（键为 item_id）
+          additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    PotionDetail:
+      description: 药水详情（本体 + 酿造步骤 + 通用规则 + 关联物品，TODO §9A）
+      allOf:
+        - $ref: "#/components/schemas/Potion"
+        - type: object
+          properties:
+            produced_by: { type: array, items: { $ref: "#/components/schemas/BrewingStep" } }
+            follow_ups: { type: array, items: { $ref: "#/components/schemas/BrewingStep" } }
+            rules: { type: array, items: { $ref: "#/components/schemas/BrewingStep" } }
+            ingredient_items:
+              type: object
+              description: 步骤原料中确实已收录的物品摘要（键为 item_id）；未收录者前端回退为纯文本 ID
+              additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    VillagerProfession:
+      description: 村民职业资料（TODO §9B）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string, example: armorer }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        aliases: { type: array, items: { type: string } }
+        kind: { type: string, enum: [normal, wandering, non_trading] }
+        workstation_item_id: { type: string, nullable: true, example: "minecraft:blast_furnace" }
+        workstation_name_zh: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        trade_note: { type: string, description: 交易机制说明（价格浮动、随机附魔等） }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions: { type: array, items: { type: string } }
+        source_url: { type: string, nullable: true }
+        data_version: { type: string, nullable: true }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        sort_order: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    VillagerTradeLevel:
+      description: 村民职业等级定义（通用规则，TODO §9B）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        level: { type: integer, minimum: 1, maximum: 5 }
+        slug: { type: string, example: journeyman }
+        name_zh: { type: string, example: 老手 }
+        name_en: { type: string, nullable: true }
+        required_experience: { type: integer, description: 升级所需累计交易经验 }
+        badge_note: { type: string }
+    VillagerCostItem:
+      type: object
+      description: 交易中「村民想要」的单条物品（数量为区间，固定数量时 min == max）
+      properties:
+        item_id: { type: string, example: "minecraft:emerald" }
+        name_zh: { type: string }
+        count_min: { type: integer, minimum: 1 }
+        count_max: { type: integer, minimum: 1 }
+    VillagerTrade:
+      description: 一条村民交易（TODO §9B）
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        trade_key: { type: string }
+        profession_slug: { type: string }
+        level: { type: integer, description: 0 表示不分等级（流浪商人） }
+        trade_group: { type: string, enum: [level, purchase, special, ordinary] }
+        cost_items: { type: array, items: { $ref: "#/components/schemas/VillagerCostItem" } }
+        result_item_id: { type: string }
+        result_item_name_zh: { type: string }
+        result_count: { type: integer }
+        max_uses: { type: integer, description: 交易库存（补货前可交易次数） }
+        villager_experience: { type: integer }
+        price_multiplier: { type: number, description: 价格浮动系数 }
+        variant_note: { type: string, description: 颜色 / 生物群系变体说明 }
+        note: { type: string }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions: { type: array, items: { type: string } }
+        source_url: { type: string, nullable: true }
+        sort_order: { type: integer }
+        cost_item_refs:
+          type: object
+          description: 本条交易成本物品中确实已收录的物品摘要（键为 item_id）
+          additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    VillagerTradeGroup:
+      type: object
+      description: 按（等级 / 分组）聚合的交易集合
+      properties:
+        level: { type: integer }
+        level_slug: { type: string }
+        level_name_zh: { type: string }
+        required_experience: { type: integer }
+        trade_group: { type: string, enum: [level, purchase, special, ordinary] }
+        trades: { type: array, items: { $ref: "#/components/schemas/VillagerTrade" } }
+    VillagerProfessionDetail:
+      description: 村民职业详情（本体 + 等级规则 + 分组交易 + 关联物品，TODO §9B）
+      allOf:
+        - $ref: "#/components/schemas/VillagerProfession"
+        - type: object
+          properties:
+            levels: { type: array, items: { $ref: "#/components/schemas/VillagerTradeLevel" } }
+            groups: { type: array, items: { $ref: "#/components/schemas/VillagerTradeGroup" } }
+            trades: { type: array, items: { $ref: "#/components/schemas/VillagerTrade" } }
+            workstation_item: { $ref: "#/components/schemas/ItemRef" }
+            resolved_items:
+              type: object
+              description: 全部交易引用到的、确实已收录的物品摘要（键为 item_id）；未收录者前端回退为纯文本 ID
+              additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    Mob:
+      type: object
+      description: 生物资料（TODO §9C）
+      properties:
+        id: { type: string }
+        slug: { type: string, example: cow }
+        name_zh: { type: string, example: 牛 }
+        name_en: { type: string, example: Cow }
+        aliases: { type: array, items: { type: string } }
+        category: { type: string, enum: [passive, neutral, hostile, boss, utility, other] }
+        health: { type: number, nullable: true, description: Java 版生命值（1 点 = 半颗心），未知为 null }
+        attack_note: { type: string, description: 攻击伤害的文字说明（难度 / 版本差异较大，不写死数值） }
+        behavior_note: { type: string }
+        spawn_note: { type: string, description: 生成条件 }
+        taming_note: { type: string, description: 驯服方式 }
+        breeding_note: { type: string, description: 繁殖方式 }
+        dimensions: { type: array, items: { type: string, enum: [overworld, nether, end] } }
+        biomes_note: { type: string }
+        summary: { type: string }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions: { type: array, items: { type: string } }
+        source_url: { type: string }
+        data_version: { type: string }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        sort_order: { type: integer }
+    MobDrop:
+      type: object
+      description: 生物掉落（数量区间 + 概率，TODO §9C）
+      properties:
+        id: { type: string }
+        drop_key: { type: string }
+        mob_slug: { type: string }
+        item_id: { type: string, example: "minecraft:raw_beef" }
+        item_name_zh: { type: string, example: 生牛肉 }
+        count_min: { type: integer }
+        count_max: { type: integer }
+        chance: { type: number, minimum: 0, maximum: 1, description: 掉落概率，1 表示必定掉落 }
+        conditions: { type: string, description: 触发条件（如「被玩家击杀」「用刷子刷取」） }
+        note: { type: string }
+        sort_order: { type: integer }
+    MobDetail:
+      description: 生物详情（本体 + 掉落 + 关联物品，TODO §9C）
+      allOf:
+        - $ref: "#/components/schemas/Mob"
+        - type: object
+          properties:
+            drops:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/MobDrop"
+                  - type: object
+                    properties:
+                      item_ref:
+                        description: 该掉落物在物品库中的摘要；未收录时为 null，前端回退为纯文本 ID
+                        nullable: true
+                        allOf: [{ $ref: "#/components/schemas/ItemRef" }]
+            resolved_items:
+              type: object
+              description: 全部掉落引用到的、确实已收录的物品摘要（键为 item_id）
+              additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    RedstoneComponent:
+      type: object
+      description: 红石元件资料（TODO §15）
+      properties:
+        id: { type: string }
+        slug: { type: string, example: redstone_dust }
+        name_zh: { type: string, example: 红石粉 }
+        name_en: { type: string, example: Redstone Dust }
+        aliases: { type: array, items: { type: string } }
+        category: { type: string, enum: [source, transmission, logic, actuator, sensor, other] }
+        mechanism_note: { type: string, description: 核心工作机制说明（信号强度 / 延迟等不确定数值以文字描述） }
+        signal_note: { type: string, description: 信号相关说明（强度、衰减、充能规则等） }
+        summary: { type: string }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        supported_versions: { type: array, items: { type: string } }
+        source_url: { type: string }
+        data_version: { type: string }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        sort_order: { type: integer }
+    RedstoneMaterial:
+      type: object
+      description: 机器设计材料条目（数量区间，TODO §15）
+      properties:
+        item_id: { type: string, description: 物品库 ID；空串表示未收录物品，此时 name_zh 必填 }
+        name_zh: { type: string, description: 未收录物品的中文名（已收录时可为空） }
+        count_min: { type: integer, minimum: 0 }
+        count_max: { type: integer, minimum: 0, description: 缺省等于 count_min }
+    RedstoneDesign:
+      type: object
+      description: 机器设计资料（TODO §15；仅 review_status = published 对公开接口可见）
+      properties:
+        id: { type: string }
+        slug: { type: string, example: sugar_cane_farm }
+        name_zh: { type: string, example: 甘蔗农场 }
+        name_en: { type: string }
+        aliases: { type: array, items: { type: string } }
+        purpose: { type: string, enum: [farm, sorter, transport, door, logic, utility, other] }
+        difficulty: { type: string, enum: [easy, medium, hard] }
+        summary: { type: string }
+        steps_md: { type: string, description: 搭建步骤（Markdown） }
+        materials: { type: array, items: { $ref: "#/components/schemas/RedstoneMaterial" } }
+        author: { type: string }
+        author_url: { type: string }
+        screenshot_url: { type: string }
+        video_url: { type: string }
+        world_download_url: { type: string, description: 存档下载地址；非空时 license 必填（版权红线） }
+        world_download_note: { type: string }
+        license: { type: string, description: 存档授权协议；world_download_url 非空时必填 }
+        license_note: { type: string }
+        supported_versions: { type: array, items: { type: string } }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        source_url: { type: string }
+        data_version: { type: string }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        review_status: { type: string, enum: [pending, published, rejected] }
+        reviewer: { type: string }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        review_note: { type: string }
+        sort_order: { type: integer }
+    RedstoneDesignDetail:
+      description: 机器设计详情（本体 + 材料 + 关联物品，TODO §15）
+      allOf:
+        - $ref: "#/components/schemas/RedstoneDesign"
+        - type: object
+          properties:
+            materials:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/RedstoneMaterial"
+                  - type: object
+                    properties:
+                      item_ref:
+                        description: 该材料在物品库中的摘要；未收录（或 item_id 为空）时为 null，前端回退为纯文本
+                        nullable: true
+                        allOf: [{ $ref: "#/components/schemas/ItemRef" }]
+            resolved_items:
+              type: object
+              description: 全部材料引用到的、确实已收录的物品摘要（键为 item_id）
+              additionalProperties: { $ref: "#/components/schemas/ItemRef" }
+    ModRef:
+      type: object
+      description: 关联展示用的 Mod 摘要（已收录才存在，TODO §16）
+      properties:
+        slug: { type: string, example: cloth-config }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        loaders: { type: array, items: { type: string, enum: [fabric, forge, neoforge, quilt] } }
+        url: { type: string, description: 由后端统一生成的 Mod 详情页路径 }
+    ModVersion:
+      type: object
+      description: 同一 Mod 的一个发布版本（TODO §16）
+      properties:
+        id: { type: string }
+        mod_id: { type: string }
+        version: { type: string, example: 0.92.2+1.20.1 }
+        release_type: { type: string, enum: [release, beta, alpha] }
+        mc_versions: { type: array, items: { type: string } }
+        loaders: { type: array, items: { type: string, enum: [fabric, forge, neoforge, quilt] } }
+        download_url:
+          type: string
+          nullable: true
+          description: 仅官方 / 作者授权分发入口；非空时所属 Mod 的 license 或 license_note 必填（版权红线），本站不镜像分发
+        download_note: { type: string, description: 无授权下载入口时的文字说明 }
+        file_name: { type: string }
+        published_at: { type: string, format: date-time, nullable: true }
+        source_url: { type: string, nullable: true }
+        verified: { type: boolean, description: 是否已核验该版本的来源与下载入口 }
+        verify_note: { type: string }
+        sort_order: { type: integer }
+    Mod:
+      type: object
+      description: Mod 父条目（TODO §16；仅 review_status = published 对公开接口可见）
+      properties:
+        id: { type: string }
+        slug: { type: string, example: fabric-api }
+        name_zh: { type: string, example: Fabric API }
+        name_en: { type: string, nullable: true }
+        aliases: { type: array, items: { type: string } }
+        summary: { type: string }
+        description: { type: string }
+        categories:
+          type: array
+          items: { type: string, enum: [ui, optimization, technology, magic, world, adventure, library, storage, decoration, other] }
+        loaders: { type: array, items: { type: string, enum: [fabric, forge, neoforge, quilt] } }
+        mc_versions: { type: array, items: { type: string }, description: 适用游戏版本声明（单版本 / 区间 / 开上界，如 1.14+） }
+        homepage_url: { type: string, nullable: true }
+        source_url: { type: string, nullable: true, description: 官方仓库 / 主页，作为可核验锚点 }
+        license: { type: string, nullable: true }
+        license_note: { type: string }
+        game_edition: { type: string, enum: [java, bedrock, both] }
+        data_version: { type: string, nullable: true }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        review_status: { type: string, enum: [pending, published, rejected] }
+        reviewer: { type: string, nullable: true }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        review_note: { type: string }
+        sort_order: { type: integer }
+    ModDependency:
+      type: object
+      description: 一条已记录的依赖 / 冲突关系（TODO §16；只呈现已记录关系，不做自动冲突分析）
+      properties:
+        id: { type: string }
+        mod_id: { type: string }
+        dep_kind: { type: string, enum: [required, optional, embedded, incompatible] }
+        target_mod_id: { type: string, nullable: true, description: 已收录对方 Mod 的 ID；未收录时为 null }
+        target_mod_name: { type: string, description: 未收录对方 Mod 时的展示名（与 target_mod_id 二者必居其一） }
+        version_note: { type: string }
+        note: { type: string }
+        source_url: { type: string, nullable: true, description: 该依赖记录的来源，逐条标注便于核验 }
+        verified: { type: boolean }
+        target_mod:
+          description: 已收录对方 Mod 的摘要；未收录（或已删除）时为 null，前端回退为纯文本名
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/ModRef" }]
+    ModDependent:
+      type: object
+      description: 反向依赖：谁依赖了当前 Mod（TODO §16）
+      properties:
+        dep_kind: { type: string, enum: [required, optional, embedded, incompatible] }
+        mod: { $ref: "#/components/schemas/ModRef" }
+        version_note: { type: string }
+        note: { type: string }
+        source_url: { type: string, nullable: true }
+        verified: { type: boolean }
+    ModDetail:
+      description: Mod 详情（本体 + 发布版本 + 依赖与冲突 + 反向依赖，TODO §16）
+      allOf:
+        - $ref: "#/components/schemas/Mod"
+        - type: object
+          properties:
+            versions: { type: array, items: { $ref: "#/components/schemas/ModVersion" } }
+            dependencies: { type: array, items: { $ref: "#/components/schemas/ModDependency" } }
+            dependents: { type: array, items: { $ref: "#/components/schemas/ModDependent" } }
+    Modpack:
+      type: object
+      description: 整合包父条目（TODO §16；仅 review_status = published 对公开接口可见）
+      properties:
+        id: { type: string }
+        slug: { type: string, example: fabulously-optimized }
+        name_zh: { type: string }
+        name_en: { type: string, nullable: true }
+        aliases: { type: array, items: { type: string } }
+        summary: { type: string }
+        description: { type: string }
+        mc_version: { type: string, description: 目标游戏版本（精确匹配） }
+        loader: { type: string, enum: [fabric, forge, neoforge, quilt, ""] }
+        author: { type: string }
+        homepage_url: { type: string, nullable: true }
+        source_url: { type: string, nullable: true }
+        license: { type: string, nullable: true }
+        license_note: { type: string }
+        data_version: { type: string, nullable: true }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        review_status: { type: string, enum: [pending, published, rejected] }
+        reviewer: { type: string, nullable: true }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        review_note: { type: string }
+        sort_order: { type: integer }
+    ModpackMod:
+      type: object
+      description: 整合包内的一条 Mod 清单项（TODO §16）
+      properties:
+        id: { type: string }
+        modpack_id: { type: string }
+        mod_id: { type: string, nullable: true, description: 已收录 Mod 的 ID；未收录时为 null }
+        mod_name: { type: string, description: 未收录 Mod 时的展示名 }
+        version: { type: string }
+        note: { type: string }
+        sort_order: { type: integer }
+        mod_ref:
+          description: 已收录 Mod 的摘要；未收录（或已删除）时为 null，前端回退为纯文本（不生成死链）
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/ModRef" }]
+    ModpackDetail:
+      description: 整合包详情（本体 + 包内 Mod 清单，TODO §16）
+      allOf:
+        - $ref: "#/components/schemas/Modpack"
+        - type: object
+          properties:
+            mods: { type: array, items: { $ref: "#/components/schemas/ModpackMod" } }
+    LinkHealthItem:
+      type: object
+      description: 资源链接最新一次检查结果与人工复核状态（TODO §6）
+      properties:
+        id: { type: string }
+        resource_id: { type: string }
+        resource_name: { type: string }
+        resource_slug: { type: string }
+        url: { type: string }
+        status: { type: string, enum: [unchecked, ok, redirected, broken, blocked, error] }
+        status_code: { type: integer }
+        final_url: { type: string }
+        trigger_source: { type: string, enum: [auto, manual] }
+        review_state: { type: string, enum: [pending, confirmed_broken, confirmed_ok, ignored] }
+        reviewed_by: { type: string }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        review_note: { type: string }
+        checked_at: { type: string, format: date-time }
+    LinkHealthRunSummary:
+      type: object
+      description: 批量链接复查汇总（TODO §6）
+      properties:
+        checked: { type: integer }
+        ok: { type: integer }
+        redirected: { type: integer }
+        broken: { type: integer }
+        blocked: { type: integer }
+        error: { type: integer }
+        concurrency: { type: integer, description: 本次生效的并发上限 }
+        trigger_source: { type: string, enum: [auto, manual] }
+    DevApiEntry:
+      type: object
+      description: 开发文档涉及的关键接口（TODO §21）
+      properties:
+        name: { type: string, example: "net.fabricmc.api.ModInitializer#onInitialize" }
+        kind: { type: string, enum: [class, method, event, field, command, file, plugin] }
+        signature: { type: string, description: 签名或用法片段，可为空 }
+        note: { type: string }
+    DevDocSummary:
+      type: object
+      description: 开发文档列表条目（不含正文）
+      properties:
+        slug: { type: string }
+        title_zh: { type: string }
+        title_en: { type: string }
+        loader: { type: string, enum: [neoforge, forge, fabric, vanilla, tooling, multi] }
+        category: { type: string, enum: [getting_started, events, registry, networking, datagen, resources, rendering, serialization, api_reference, mapping, toolchain] }
+        summary: { type: string }
+        mc_versions:
+          type: array
+          items: { type: string }
+          description: 适用版本声明（「自某版本起」如 1.20.1+，或范围 / all）
+        loaders: { type: array, items: { type: string } }
+        tags: { type: array, items: { type: string } }
+        api_entry_count: { type: integer, description: 关键接口条数 }
+        official_url: { type: string }
+        sort_order: { type: integer }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+    DevDoc:
+      description: 开发文档详情
+      allOf:
+        - $ref: "#/components/schemas/DevDocSummary"
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            body_md: { type: string, description: Markdown 正文，站内安全渲染 }
+            api_entries: { type: array, items: { $ref: "#/components/schemas/DevApiEntry" } }
+            source_url: { type: string, description: 可核验来源（可与 official_url 不同） }
+            status: { type: string, enum: [draft, published] }
+            data_version: { type: string }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    DevDocDetail:
+      type: object
+      description: 开发文档详情响应（文档 + 同平台相关条目）
+      properties:
+        doc: { $ref: "#/components/schemas/DevDoc" }
+        related: { type: array, items: { $ref: "#/components/schemas/DevDocSummary" } }
+    DevDocFacets:
+      type: object
+      description: 开发文档筛选维度统计
+      properties:
+        loaders:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              count: { type: integer }
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              count: { type: integer }
+        total: { type: integer }
+    MappingSet:
+      type: object
+      description: 一套映射数据集（版本 + 映射类型 + 渠道，TODO §21）
+      properties:
+        id: { type: string, format: uuid }
+        set_key: { type: string, description: 数据集唯一键，重复导入按此整体替换 }
+        mc_version: { type: string }
+        mapping_type: { type: string, enum: [mojang, srg, tsrg, yarn, parchment, mixed] }
+        channel: { type: string }
+        build_label: { type: string }
+        class_count: { type: integer }
+        member_count: { type: integer }
+        source_url: { type: string }
+        license: { type: string }
+        note: { type: string, description: 各名字列对应的命名空间说明 }
+        imported_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MappingMember:
+      type: object
+      description: 成员映射（方法 / 字段 / 参数）
+      properties:
+        kind: { type: string, enum: [method, field, param] }
+        obf_name: { type: string, description: 第一命名空间名（混淆 / 官方名） }
+        mid_name: { type: string, description: 中间命名空间名（intermediary / SRG） }
+        named_name: { type: string, description: 可读名（Yarn named / 官方映射） }
+        obf_desc: { type: string, description: 第一命名空间描述符 }
+        named_desc: { type: string, description: 可读类型描述符 }
+        side: { type: string }
+    MappingClassHit:
+      type: object
+      description: 类命中结果
+      properties:
+        id: { type: string, format: uuid }
+        set_id: { type: string, format: uuid }
+        set_key: { type: string }
+        mc_version: { type: string }
+        mapping_type: { type: string }
+        obf_name: { type: string }
+        mid_name: { type: string }
+        named_name: { type: string }
+        package: { type: string }
+        member_count: { type: integer }
+        matched_members:
+          type: array
+          description: 命中的成员预览（最多 8 条）
+          items: { $ref: "#/components/schemas/MappingMember" }
+        matched_total: { type: integer, description: 命中的成员总数（可能大于预览条数） }
+    MappingSearchResult:
+      type: object
+      description: 映射查询结果（含分页与截断标记）
+      properties:
+        hits: { type: array, items: { $ref: "#/components/schemas/MappingClassHit" } }
+        total: { type: integer }
+        truncated: { type: boolean, description: 命中集被扫描上限截断时为 true }
+        page: { type: integer }
+        page_size: { type: integer }
+        total_pages: { type: integer }
+    MappingClassDetail:
+      type: object
+      description: 类映射详情与成员列表
+      properties:
+        class: { $ref: "#/components/schemas/MappingClassHit" }
+        members: { type: array, items: { $ref: "#/components/schemas/MappingMember" } }
+        member_total: { type: integer }
+        set: { $ref: "#/components/schemas/MappingSet" }
+    SeedAnalysis:
+      type: object
+      properties:
+        world_seed: { type: string }
+        radius: { type: integer }
+        structures:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              x: { type: integer }
+              z: { type: integer }
+              label: { type: string }
+        note: { type: string }
+    DataQualityCheck:
+      type: object
+      description: 单项数据质量检查结果（TODO §2 / §4）
+      properties:
+        key: { type: string, example: items_missing_source }
+        label: { type: string, example: 缺少来源 URL }
+        category: { type: string, enum: [items, recipes, commands, potions, import] }
+        severity: { type: string, enum: [error, warning, info] }
+        count: { type: integer, description: 命中问题的条目数 }
+        total: { type: integer, description: 该数据域总条目数 }
+        hint: { type: string }
+    DataQualityOverview:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/DataQualityCheck" }
+        error_checks: { type: integer, description: 存在严重问题的检查项数 }
+        warning_checks: { type: integer, description: 存在提醒的检查项数 }
+    DataImportJob:
+      type: object
+      description: 一次数据导入任务的执行记录
+      properties:
+        id: { type: string, format: uuid }
+        data_type: { type: string, enum: [items, recipes, commands, tools] }
+        source_file: { type: string }
+        source_version: { type: string }
+        dry_run: { type: boolean }
+        total_count: { type: integer }
+        created_count: { type: integer }
+        updated_count: { type: integer }
+        skipped_count: { type: integer }
+        failed_count: { type: integer }
+        error_summary: { type: array, items: { type: string }, nullable: true }
+        operator: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+  requestBodies:
+    SearchQuery:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              q: { type: string, maxLength: 80, description: 关键词（超长返回 422） }
+              type: { type: string, enum: [tool, resource, wiki, item] }
+              game_version:
+                type: string
+                description: |-
+                  按游戏版本筛选（TODO §5 / §6-C）：具体版本会命中声明该版本或声明通配 all 的结果；
+                  all 仅命中声明了通配的资源；不传表示不限版本。
+              sort:
+                type: string
+                enum: [relevance, updated_desc]
+                description: 排序方式，默认 relevance（相关度）
+              page: { type: integer, minimum: 1 }
+              page_size: { type: integer, minimum: 1, maximum: 50 }
+    ResourceListQuery:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              q: { type: string }
+              type: { type: string }
+              game_version:
+                type: string
+                description: |-
+                  按游戏版本筛选（TODO §6-C）：具体版本会命中声明该版本或声明通配 all 的资源；
+                  all 仅命中声明了通配的资源；不传表示不限版本。
+              loader: { type: string }
+              source_platform: { type: string }
+              sort: { type: string, enum: [updated_desc, name_asc] }
+              page: { type: integer, minimum: 1 }
+              page_size: { type: integer, minimum: 1, maximum: 50 }
+
+  responses:
+    Envelope:
+      description: 成功
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: {}
+    PagedEnvelope:
+      description: 成功（含分页 meta）
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: array, items: {} }
+              meta: { $ref: "#/components/schemas/PageMeta" }
+    ValidationError:
+      description: 参数校验失败（422）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 资源不存在（404）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: 唯一性冲突（409）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: 未登录（401）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 权限不足（403）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UpstreamError:
+      description: 上游（Mojang API）错误（502）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: 请求过于频繁，触发限流（429）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: 数据源未加载（503）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

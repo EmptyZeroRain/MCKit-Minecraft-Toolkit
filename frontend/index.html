@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="index,follow" />
+    <meta name="theme-color" id="theme-color-meta" content="#0b1220" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>MC 工具站 · Minecraft Java 版工具与资源导航</title>
+    <meta
+      name="description"
+      content="Minecraft Java 版工具与资源导航站：合成配方查询、坐标换算、物品 ID 查询、指令格式辅助，以及 Mod / 整合包 / 资源包等资源导航。"
+    />
+    <script>
+      // 首屏恢复主题，避免闪烁（与 stores/theme.ts 的 schema 版本保持一致）
+      (function () {
+        try {
+          var raw = localStorage.getItem('mckit:theme')
+          var mode = null
+          if (raw) {
+            var parsed = JSON.parse(raw)
+            if (parsed && parsed.version === 1 && (parsed.data === 'light' || parsed.data === 'dark')) {
+              mode = parsed.data
+            }
+          }
+          if (!mode) {
+            mode = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+          }
+          document.documentElement.setAttribute('data-theme', mode)
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark')
+        }
+      })()
+    </script>
+    <script>
+      // 首屏禁用过渡闪烁：任何图标/图片加载失败时不会显示破碎占位
+      window.addEventListener('error', (e) => {
+        const t = e.target
+        if (t && t.tagName === 'IMG') {
+          t.style.display = 'none'
+        }
+      }, true)
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

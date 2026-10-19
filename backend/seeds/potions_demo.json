@@ -1,0 +1,942 @@
+{
+  "_note": "药水与酿造资料（TODO §9A）。数据来源：Minecraft Wiki Brewing/Potion 系列页面（2026-10-17 抓取），仅收录可酿造或可明确核验者。",
+  "potions": [
+    {
+      "slug": "water-bottle",
+      "name_zh": "水瓶",
+      "name_en": "Water Bottle",
+      "aliases": ["水药水"],
+      "category": "water",
+      "summary": "所有药水的酿造起点。",
+      "effect_note": "用玻璃瓶在水源方块或炼药锅中装水获得；直接饮用无效果。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Water_Bottle",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "awkward-potion",
+      "name_zh": "粗制的药水",
+      "name_en": "Awkward Potion",
+      "aliases": ["笨拙的药水"],
+      "category": "base",
+      "summary": "大多数效果药水的酿造基底。",
+      "effect_note": "由水瓶加地狱疣酿成；直接饮用无效果，但可加入效果原料酿出效果药水。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Awkward_Potion",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "mundane-potion",
+      "name_zh": "平淡的药水",
+      "name_en": "Mundane Potion",
+      "aliases": ["平凡的药水"],
+      "category": "base",
+      "summary": "无实际用途的杂项药水。",
+      "effect_note": "由水瓶加红石粉、糖、兔子脚等多种原料之一酿成，本身无效果（早期程序化酿造系统的遗留物）。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Mundane_Potion",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "thick-potion",
+      "name_zh": "浓稠的药水",
+      "name_en": "Thick Potion",
+      "aliases": [],
+      "category": "base",
+      "summary": "无实际用途的杂项药水。",
+      "effect_note": "由水瓶加荧石粉酿成，本身无效果。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Thick_Potion",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-healing",
+      "name_zh": "治疗药水",
+      "name_en": "Potion of Healing",
+      "aliases": ["生命药水"],
+      "category": "positive",
+      "summary": "瞬间恢复生命值。",
+      "effect_note": "对亡灵生物反而造成伤害。增强版无持续时间折损。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:instant_health",
+          "name_zh": "瞬间治疗",
+          "name_en": "Instant Health",
+          "amplifier": 1,
+          "duration_seconds": 0,
+          "description": "瞬间恢复 4 点生命值。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:instant_health",
+          "name_zh": "瞬间治疗",
+          "name_en": "Instant Health",
+          "amplifier": 2,
+          "duration_seconds": 0,
+          "description": "瞬间恢复 8 点生命值。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Healing",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-regeneration",
+      "name_zh": "再生药水",
+      "name_en": "Potion of Regeneration",
+      "aliases": ["恢复药水"],
+      "category": "positive",
+      "summary": "在一段时间内持续恢复生命值。",
+      "effect_note": "基岩版延长版持续时间为 2:00。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:regeneration",
+          "name_zh": "生命恢复",
+          "name_en": "Regeneration",
+          "amplifier": 1,
+          "duration_seconds": 45,
+          "description": "每 2.5 秒恢复 1 点生命值。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:regeneration",
+          "name_zh": "生命恢复",
+          "name_en": "Regeneration",
+          "amplifier": 1,
+          "duration_seconds": 90,
+          "description": "每 2.5 秒恢复 1 点生命值。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:regeneration",
+          "name_zh": "生命恢复",
+          "name_en": "Regeneration",
+          "amplifier": 2,
+          "duration_seconds": 22,
+          "description": "每 1.25 秒恢复 1 点生命值。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Regeneration",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-strength",
+      "name_zh": "力量药水",
+      "name_en": "Potion of Strength",
+      "aliases": [],
+      "category": "positive",
+      "summary": "提高近战攻击伤害。",
+      "effect_note": "",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:strength",
+          "name_zh": "力量",
+          "name_en": "Strength",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "近战攻击伤害 +3。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:strength",
+          "name_zh": "力量",
+          "name_en": "Strength",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "近战攻击伤害 +3。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:strength",
+          "name_zh": "力量",
+          "name_en": "Strength",
+          "amplifier": 2,
+          "duration_seconds": 90,
+          "description": "近战攻击伤害 +6。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Strength",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-swiftness",
+      "name_zh": "迅捷药水",
+      "name_en": "Potion of Swiftness",
+      "aliases": ["速度药水"],
+      "category": "positive",
+      "summary": "提高移动与疾跑速度。",
+      "effect_note": "",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:speed",
+          "name_zh": "迅捷",
+          "name_en": "Speed",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "移动、疾跑速度与跳跃距离 +20%。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:speed",
+          "name_zh": "迅捷",
+          "name_en": "Speed",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "移动、疾跑速度与跳跃距离 +20%。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:speed",
+          "name_zh": "迅捷",
+          "name_en": "Speed",
+          "amplifier": 2,
+          "duration_seconds": 90,
+          "description": "移动、疾跑速度与跳跃距离 +40%。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Swiftness",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-fire_resistance",
+      "name_zh": "抗火药水",
+      "name_en": "Potion of Fire Resistance",
+      "aliases": ["防火药水"],
+      "category": "positive",
+      "summary": "免疫火焰与岩浆等高温伤害。",
+      "effect_note": "无增强版（该效果没有等级区分，用荧石粉增强无意义）。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:fire_resistance",
+          "name_zh": "抗火",
+          "name_en": "Fire Resistance",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "免疫火焰、岩浆、岩浆块、营火与烈焰人火球的伤害。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:fire_resistance",
+          "name_zh": "抗火",
+          "name_en": "Fire Resistance",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "免疫火焰、岩浆、岩浆块、营火与烈焰人火球的伤害。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Fire_Resistance",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-night_vision",
+      "name_zh": "夜视药水",
+      "name_en": "Potion of Night Vision",
+      "aliases": [],
+      "category": "positive",
+      "summary": "使视野达到最大亮度。",
+      "effect_note": "加入发酵蛛眼可腐化为隐身药水。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:night_vision",
+          "name_zh": "夜视",
+          "name_en": "Night Vision",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "视野达到最大亮度，水下同样有效。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:night_vision",
+          "name_zh": "夜视",
+          "name_en": "Night Vision",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "视野达到最大亮度，水下同样有效。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.4.2+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Night_Vision",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-invisibility",
+      "name_zh": "隐身药水",
+      "name_en": "Potion of Invisibility",
+      "aliases": [],
+      "category": "positive",
+      "summary": "使玩家隐形。",
+      "effect_note": "由夜视药水加发酵蛛眼腐化而成；已装备的物品仍然可见。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:invisibility",
+          "name_zh": "隐身",
+          "name_en": "Invisibility",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "使玩家隐形，但已装备的物品仍可见。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:invisibility",
+          "name_zh": "隐身",
+          "name_en": "Invisibility",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "使玩家隐形，但已装备的物品仍可见。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.4.2+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Invisibility",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-water_breathing",
+      "name_zh": "水肺药水",
+      "name_en": "Potion of Water Breathing",
+      "aliases": ["水下呼吸药水"],
+      "category": "positive",
+      "summary": "使水下不会耗尽氧气。",
+      "effect_note": "",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:water_breathing",
+          "name_zh": "水下呼吸",
+          "name_en": "Water Breathing",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "水下不会消耗氧气。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:water_breathing",
+          "name_zh": "水下呼吸",
+          "name_en": "Water Breathing",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "水下不会消耗氧气。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.7.2+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Water_Breathing",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-leaping",
+      "name_zh": "跳跃药水",
+      "name_en": "Potion of Leaping",
+      "aliases": ["跳跃提升药水"],
+      "category": "positive",
+      "summary": "提高跳跃高度。",
+      "effect_note": "",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:jump_boost",
+          "name_zh": "跳跃提升",
+          "name_en": "Jump Boost",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "跳跃高度 +50%。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:jump_boost",
+          "name_zh": "跳跃提升",
+          "name_en": "Jump Boost",
+          "amplifier": 1,
+          "duration_seconds": 480,
+          "description": "跳跃高度 +50%。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:jump_boost",
+          "name_zh": "跳跃提升",
+          "name_en": "Jump Boost",
+          "amplifier": 2,
+          "duration_seconds": 90,
+          "description": "跳跃高度 +150%。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.8+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Leaping",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-slow_falling",
+      "name_zh": "缓降药水",
+      "name_en": "Potion of Slow Falling",
+      "aliases": [],
+      "category": "positive",
+      "summary": "大幅降低下落速度并免除摔落伤害。",
+      "effect_note": "",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:slow_falling",
+          "name_zh": "缓降",
+          "name_en": "Slow Falling",
+          "amplifier": 1,
+          "duration_seconds": 90,
+          "description": "大幅降低下落速度与加速度，并免除摔落伤害。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:slow_falling",
+          "name_zh": "缓降",
+          "name_en": "Slow Falling",
+          "amplifier": 1,
+          "duration_seconds": 240,
+          "description": "大幅降低下落速度与加速度，并免除摔落伤害。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.13+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Slow_Falling",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-poison",
+      "name_zh": "剧毒药水",
+      "name_en": "Potion of Poison",
+      "aliases": ["中毒药水"],
+      "category": "negative",
+      "summary": "在一段时间内持续造成伤害。",
+      "effect_note": "生命值降至 1 时停止生效；基岩版延长版为 2:00、增强版为 0:22。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:poison",
+          "name_zh": "中毒",
+          "name_en": "Poison",
+          "amplifier": 1,
+          "duration_seconds": 45,
+          "description": "每 1.25 秒造成 1 点伤害，生命值降至 1 时停止。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:poison",
+          "name_zh": "中毒",
+          "name_en": "Poison",
+          "amplifier": 1,
+          "duration_seconds": 90,
+          "description": "每 1.25 秒造成 1 点伤害，生命值降至 1 时停止。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:poison",
+          "name_zh": "中毒",
+          "name_en": "Poison",
+          "amplifier": 2,
+          "duration_seconds": 21,
+          "description": "每 0.6 秒造成 1 点伤害。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Poison",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-weakness",
+      "name_zh": "虚弱药水",
+      "name_en": "Potion of Weakness",
+      "aliases": ["弱化药水"],
+      "category": "negative",
+      "summary": "降低近战攻击伤害。",
+      "effect_note": "唯一无需地狱疣即可酿造的负面药水；配合金苹果可治愈僵尸村民。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:weakness",
+          "name_zh": "虚弱",
+          "name_en": "Weakness",
+          "amplifier": 1,
+          "duration_seconds": 90,
+          "description": "近战攻击伤害 -4。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:weakness",
+          "name_zh": "虚弱",
+          "name_en": "Weakness",
+          "amplifier": 1,
+          "duration_seconds": 240,
+          "description": "近战攻击伤害 -4。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Weakness",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-harming",
+      "name_zh": "伤害药水",
+      "name_en": "Potion of Harming",
+      "aliases": [],
+      "category": "negative",
+      "summary": "瞬间造成伤害。",
+      "effect_note": "对亡灵生物反而治疗；由治疗药水或剧毒药水加发酵蛛眼腐化而成。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:instant_damage",
+          "name_zh": "瞬间伤害",
+          "name_en": "Instant Damage",
+          "amplifier": 1,
+          "duration_seconds": 0,
+          "description": "瞬间造成 6 点伤害。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:instant_damage",
+          "name_zh": "瞬间伤害",
+          "name_en": "Instant Damage",
+          "amplifier": 2,
+          "duration_seconds": 0,
+          "description": "瞬间造成 12 点伤害。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Harming",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-slowness",
+      "name_zh": "迟缓药水",
+      "name_en": "Potion of Slowness",
+      "aliases": ["缓慢药水"],
+      "category": "negative",
+      "summary": "降低移动速度。",
+      "effect_note": "由迅捷药水或跳跃药水加发酵蛛眼腐化而成。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 1,
+          "duration_seconds": 90,
+          "description": "移动速度 -15%。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 1,
+          "duration_seconds": 240,
+          "description": "移动速度 -15%。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 4,
+          "duration_seconds": 20,
+          "description": "移动速度 -60%。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Slowness",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-the-turtle_master",
+      "name_zh": "神龟药水",
+      "name_en": "Potion of the Turtle Master",
+      "aliases": [],
+      "category": "mixed",
+      "summary": "同时降低自身移动速度并减免受到的伤害。",
+      "effect_note": "唯一同时附带正面与负面效果的药水，需海龟壳酿造。",
+      "is_brewable": true,
+      "is_extendable": true,
+      "is_enhanceable": true,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 4,
+          "duration_seconds": 20,
+          "description": "移动速度 -60%。"
+        },
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:resistance",
+          "name_zh": "抗性提升",
+          "name_en": "Resistance",
+          "amplifier": 3,
+          "duration_seconds": 20,
+          "description": "受到的伤害 -60%。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 4,
+          "duration_seconds": 40,
+          "description": "移动速度 -60%。"
+        },
+        {
+          "variant": "extended",
+          "effect_id": "minecraft:resistance",
+          "name_zh": "抗性提升",
+          "name_en": "Resistance",
+          "amplifier": 3,
+          "duration_seconds": 40,
+          "description": "受到的伤害 -60%。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:slowness",
+          "name_zh": "缓慢",
+          "name_en": "Slowness",
+          "amplifier": 6,
+          "duration_seconds": 20,
+          "description": "移动速度 -90%。"
+        },
+        {
+          "variant": "enhanced",
+          "effect_id": "minecraft:resistance",
+          "name_zh": "抗性提升",
+          "name_en": "Resistance",
+          "amplifier": 4,
+          "duration_seconds": 20,
+          "description": "受到的伤害 -80%。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.13+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_the_Turtle_Master",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-oozing",
+      "name_zh": "渗浆药水",
+      "name_en": "Potion of Oozing",
+      "aliases": [],
+      "category": "negative",
+      "summary": "使目标死亡时生成史莱姆。",
+      "effect_note": "1.21 加入，无延长版与增强版。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:oozing",
+          "name_zh": "渗浆",
+          "name_en": "Oozing",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "死亡时在附近生成 2 只中型史莱姆。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.21+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Oozing",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-weaving",
+      "name_zh": "织网药水",
+      "name_en": "Potion of Weaving",
+      "aliases": [],
+      "category": "negative",
+      "summary": "使目标死亡时生成蜘蛛网，并加快穿越蜘蛛网的速度。",
+      "effect_note": "1.21 加入，无延长版与增强版。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:weaving",
+          "name_zh": "织网",
+          "name_en": "Weaving",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "死亡时在附近生成 2–3 个蜘蛛网；穿越蜘蛛网的速度加倍。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.21+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Weaving",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-infestation",
+      "name_zh": "虫蚀药水",
+      "name_en": "Potion of Infestation",
+      "aliases": [],
+      "category": "negative",
+      "summary": "使目标受击时生成蠹虫。",
+      "effect_note": "1.21 加入，无延长版与增强版。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:infested",
+          "name_zh": "虫蚀",
+          "name_en": "Infested",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "受击时有 10% 概率在附近生成 1–2 只蠹虫。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.21+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Infestation",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-wind_charging",
+      "name_zh": "蓄风药水",
+      "name_en": "Potion of Wind Charging",
+      "aliases": [],
+      "category": "negative",
+      "summary": "使目标死亡时释放风爆。",
+      "effect_note": "1.21 加入，无延长版与增强版。",
+      "is_brewable": true,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:wind_charged",
+          "name_zh": "蓄风",
+          "name_en": "Wind Charged",
+          "amplifier": 1,
+          "duration_seconds": 180,
+          "description": "死亡时释放一次风爆。"
+        }
+      ],
+      "game_edition": "both",
+      "supported_versions": ["1.21+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Wind_Charging",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "uncraftable-potion",
+      "name_zh": "不可合成的药水",
+      "name_en": "Uncraftable Potion",
+      "aliases": [],
+      "category": "other",
+      "summary": "无法通过酿造获得。",
+      "effect_note": "无任何效果，仅能通过指令或创造模式物品栏获取；水肺药水之外的所有药水在缺少有效原料时也可能得到它。",
+      "is_brewable": false,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "both",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Uncraftable_Potion",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-luck",
+      "name_zh": "幸运药水",
+      "name_en": "Potion of Luck",
+      "aliases": [],
+      "category": "other",
+      "summary": "提高获取高品质战利品的概率。",
+      "effect_note": "仅 Java 版，无法酿造；仅能通过指令或创造模式物品栏获取。",
+      "is_brewable": false,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [
+        {
+          "variant": "normal",
+          "effect_id": "minecraft:luck",
+          "name_zh": "幸运",
+          "name_en": "Luck",
+          "amplifier": 1,
+          "duration_seconds": 300,
+          "description": "提高获得高品质战利品的概率。"
+        }
+      ],
+      "game_edition": "java",
+      "supported_versions": ["1.9+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Luck",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    },
+    {
+      "slug": "potion-of-decay",
+      "name_zh": "衰变药水",
+      "name_en": "Potion of Decay",
+      "aliases": [],
+      "category": "other",
+      "summary": "仅基岩版的隐藏药水，无法酿造。",
+      "effect_note": "仅基岩版；可在沼泽小屋的炼药锅中随机刷出。生效效果的等级与时长未在本站核验，故不在此列出具体数值。",
+      "is_brewable": false,
+      "is_extendable": false,
+      "is_enhanceable": false,
+      "effects": [],
+      "game_edition": "bedrock",
+      "supported_versions": ["1.0+"],
+      "source_url": "https://minecraft.wiki/w/Potion_of_Decay",
+      "data_version": "wiki-2026-10-17",
+      "last_verified_at": "2026-10-17T00:00:00Z"
+    }
+  ],
+  "brewing_recipes": [
+    {"recipe_key": "base:water-bottle/minecraft:nether_wart", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:nether_wart", "ingredient_name_zh": "地狱疣", "result_potion_slug": "awkward-potion", "note": "大多数效果药水的前置基底。", "supported_versions": ["1.0+"], "sort_order": 10},
+    {"recipe_key": "base:water-bottle/minecraft:redstone", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:redstone", "ingredient_name_zh": "红石粉", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 20},
+    {"recipe_key": "base:water-bottle/minecraft:sugar", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:sugar", "ingredient_name_zh": "糖", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 21},
+    {"recipe_key": "base:water-bottle/minecraft:rabbit_foot", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:rabbit_foot", "ingredient_name_zh": "兔子脚", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 22},
+    {"recipe_key": "base:water-bottle/minecraft:glistering_melon_slice", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:glistering_melon_slice", "ingredient_name_zh": "闪烁的西瓜片", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 23},
+    {"recipe_key": "base:water-bottle/minecraft:spider_eye", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:spider_eye", "ingredient_name_zh": "蜘蛛眼", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 24},
+    {"recipe_key": "base:water-bottle/minecraft:magma_cream", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:magma_cream", "ingredient_name_zh": "岩浆膏", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 25},
+    {"recipe_key": "base:water-bottle/minecraft:blaze_powder", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:blaze_powder", "ingredient_name_zh": "烈焰粉", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 26},
+    {"recipe_key": "base:water-bottle/minecraft:ghast_tear", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:ghast_tear", "ingredient_name_zh": "恶魂之泪", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 27},
+    {"recipe_key": "base:water-bottle/minecraft:breeze_rod", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:breeze_rod", "ingredient_name_zh": "旋风棒", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.21+"], "sort_order": 28},
+    {"recipe_key": "base:water-bottle/minecraft:stone", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:stone", "ingredient_name_zh": "石头", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.21+"], "sort_order": 29},
+    {"recipe_key": "base:water-bottle/minecraft:cobweb", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:cobweb", "ingredient_name_zh": "蜘蛛网", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.21+"], "sort_order": 30},
+    {"recipe_key": "base:water-bottle/minecraft:slime_block", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:slime_block", "ingredient_name_zh": "黏液块", "result_potion_slug": "mundane-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.21+"], "sort_order": 31},
+    {"recipe_key": "base:water-bottle/minecraft:glowstone_dust", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:glowstone_dust", "ingredient_name_zh": "荧石粉", "result_potion_slug": "thick-potion", "note": "杂项药水，无实际用途。", "supported_versions": ["1.0+"], "sort_order": 40},
+    {"recipe_key": "base:water-bottle/minecraft:fermented_spider_eye", "step_kind": "base", "input_potion_slug": null, "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-weakness", "note": "无需地狱疣即可得到虚弱药水。", "supported_versions": ["1.0+"], "sort_order": 50},
+
+    {"recipe_key": "effect:potion-of-healing/minecraft:glistering_melon_slice", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:glistering_melon_slice", "ingredient_name_zh": "闪烁的西瓜片", "result_potion_slug": "potion-of-healing", "note": "", "supported_versions": ["1.0+"], "sort_order": 110},
+    {"recipe_key": "effect:potion-of-fire_resistance/minecraft:magma_cream", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:magma_cream", "ingredient_name_zh": "岩浆膏", "result_potion_slug": "potion-of-fire_resistance", "note": "", "supported_versions": ["1.0+"], "sort_order": 111},
+    {"recipe_key": "effect:potion-of-regeneration/minecraft:ghast_tear", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:ghast_tear", "ingredient_name_zh": "恶魂之泪", "result_potion_slug": "potion-of-regeneration", "note": "", "supported_versions": ["1.0+"], "sort_order": 112},
+    {"recipe_key": "effect:potion-of-strength/minecraft:blaze_powder", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:blaze_powder", "ingredient_name_zh": "烈焰粉", "result_potion_slug": "potion-of-strength", "note": "", "supported_versions": ["1.0+"], "sort_order": 113},
+    {"recipe_key": "effect:potion-of-swiftness/minecraft:sugar", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:sugar", "ingredient_name_zh": "糖", "result_potion_slug": "potion-of-swiftness", "note": "", "supported_versions": ["1.0+"], "sort_order": 114},
+    {"recipe_key": "effect:potion-of-night_vision/minecraft:golden_carrot", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:golden_carrot", "ingredient_name_zh": "金胡萝卜", "result_potion_slug": "potion-of-night_vision", "note": "", "supported_versions": ["1.4.2+"], "sort_order": 115},
+    {"recipe_key": "effect:potion-of-water_breathing/minecraft:pufferfish", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:pufferfish", "ingredient_name_zh": "河豚", "result_potion_slug": "potion-of-water_breathing", "note": "", "supported_versions": ["1.7.2+"], "sort_order": 116},
+    {"recipe_key": "effect:potion-of-leaping/minecraft:rabbit_foot", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:rabbit_foot", "ingredient_name_zh": "兔子脚", "result_potion_slug": "potion-of-leaping", "note": "", "supported_versions": ["1.8+"], "sort_order": 117},
+    {"recipe_key": "effect:potion-of-slow_falling/minecraft:phantom_membrane", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:phantom_membrane", "ingredient_name_zh": "幻翼膜", "result_potion_slug": "potion-of-slow_falling", "note": "", "supported_versions": ["1.13+"], "sort_order": 118},
+    {"recipe_key": "effect:potion-of-poison/minecraft:spider_eye", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:spider_eye", "ingredient_name_zh": "蜘蛛眼", "result_potion_slug": "potion-of-poison", "note": "", "supported_versions": ["1.0+"], "sort_order": 119},
+    {"recipe_key": "effect:potion-of-the-turtle_master/minecraft:turtle_shell", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:turtle_shell", "ingredient_name_zh": "海龟壳", "result_potion_slug": "potion-of-the-turtle_master", "note": "", "supported_versions": ["1.13+"], "sort_order": 120},
+    {"recipe_key": "effect:potion-of-oozing/minecraft:slime_block", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:slime_block", "ingredient_name_zh": "黏液块", "result_potion_slug": "potion-of-oozing", "note": "", "supported_versions": ["1.21+"], "sort_order": 121},
+    {"recipe_key": "effect:potion-of-weaving/minecraft:cobweb", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:cobweb", "ingredient_name_zh": "蜘蛛网", "result_potion_slug": "potion-of-weaving", "note": "", "supported_versions": ["1.21+"], "sort_order": 122},
+    {"recipe_key": "effect:potion-of-infestation/minecraft:stone", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:stone", "ingredient_name_zh": "石头", "result_potion_slug": "potion-of-infestation", "note": "", "supported_versions": ["1.21+"], "sort_order": 123},
+    {"recipe_key": "effect:potion-of-wind_charging/minecraft:breeze_rod", "step_kind": "effect", "input_potion_slug": "awkward-potion", "ingredient_item_id": "minecraft:breeze_rod", "ingredient_name_zh": "旋风棒", "result_potion_slug": "potion-of-wind_charging", "note": "", "supported_versions": ["1.21+"], "sort_order": 124},
+
+    {"recipe_key": "corrupt:potion-of-invisibility/minecraft:fermented_spider_eye", "step_kind": "corrupt", "input_potion_slug": "potion-of-night_vision", "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-invisibility", "note": "夜视的反向效果。", "supported_versions": ["1.4.2+"], "sort_order": 210},
+    {"recipe_key": "corrupt:potion-of-harming/minecraft:fermented_spider_eye", "step_kind": "corrupt", "input_potion_slug": "potion-of-healing", "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-harming", "note": "治疗的反向效果。", "supported_versions": ["1.0+"], "sort_order": 211},
+    {"recipe_key": "corrupt:potion-of-harming-from-poison/minecraft:fermented_spider_eye", "step_kind": "corrupt", "input_potion_slug": "potion-of-poison", "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-harming", "note": "剧毒的反向效果（早期版本可用）。", "supported_versions": ["1.0+"], "sort_order": 212},
+    {"recipe_key": "corrupt:potion-of-slowness/minecraft:fermented_spider_eye", "step_kind": "corrupt", "input_potion_slug": "potion-of-swiftness", "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-slowness", "note": "迅捷的反向效果。", "supported_versions": ["1.0+"], "sort_order": 213},
+    {"recipe_key": "corrupt:potion-of-slowness-from-leaping/minecraft:fermented_spider_eye", "step_kind": "corrupt", "input_potion_slug": "potion-of-leaping", "ingredient_item_id": "minecraft:fermented_spider_eye", "ingredient_name_zh": "发酵蛛眼", "result_potion_slug": "potion-of-slowness", "note": "跳跃提升的反向效果。", "supported_versions": ["1.8+"], "sort_order": 214},
+
+    {"recipe_key": "modifier:extend/minecraft:redstone", "step_kind": "modifier", "input_potion_slug": null, "ingredient_item_id": "minecraft:redstone", "ingredient_name_zh": "红石粉", "result_potion_slug": null, "note": "把可延长药水的持续时间加倍（具体时长见各药水效果表）；已增强的药水不能再延长。", "supported_versions": ["1.0+"], "sort_order": 310},
+    {"recipe_key": "modifier:enhance/minecraft:glowstone_dust", "step_kind": "modifier", "input_potion_slug": null, "ingredient_item_id": "minecraft:glowstone_dust", "ingredient_name_zh": "荧石粉", "result_potion_slug": null, "note": "把可增强药水的效果等级 +1（持续时间缩短）；已延长的药水不能再增强。", "supported_versions": ["1.0+"], "sort_order": 311},
+    {"recipe_key": "form:splash/minecraft:gunpowder", "step_kind": "form", "input_potion_slug": null, "ingredient_item_id": "minecraft:gunpowder", "ingredient_name_zh": "火药", "result_potion_slug": null, "note": "把任意药水变为喷溅药水，持续时间不变；喷溅药水可再按同样方式修饰或腐化。", "supported_versions": ["1.0+"], "sort_order": 320},
+    {"recipe_key": "form:lingering/minecraft:dragon_breath", "step_kind": "form", "input_potion_slug": null, "ingredient_item_id": "minecraft:dragon_breath", "ingredient_name_zh": "龙息", "result_potion_slug": null, "note": "把喷溅药水变为滞留药水，持续时间为饮用型的 1/4。", "supported_versions": ["1.9+"], "sort_order": 321}
+  ]
+}

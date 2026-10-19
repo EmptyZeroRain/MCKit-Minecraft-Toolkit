@@ -1,0 +1,211 @@
+[
+  {
+    "slug": "jei",
+    "name": "JEI 物品管理器",
+    "summary": "在游戏中查看物品与合成配方，支持搜索、书签与作弊模式。",
+    "description": "Just Enough Items（JEI）是 Forge / NeoForge 生态中使用最广的物品与配方查看器，\n可在物品栏侧边栏浏览全部物品、右键查看用途、左键查看合成来源。",
+    "resource_type": "mod",
+    "author_name": "mezz",
+    "source_platform": "CurseForge",
+    "source_url": "https://www.curseforge.com/minecraft/mc-mods/jei",
+    "license": "MIT",
+    "game_edition": "java",
+    "supported_versions": ["1.18.2", "1.20.1", "1.21.1"],
+    "loader_types": ["forge", "neoforge"],
+    "dependencies": [
+      {
+        "name": "Forge / NeoForge",
+        "type": "prerequisite",
+        "resource_url": "https://files.minecraftforge.net/",
+        "required": true,
+        "note": "JEI 依赖 Forge 或 NeoForge 加载器，需先完成加载器安装。"
+      },
+      {
+        "name": "Cloth Config API",
+        "type": "dependency",
+        "resource_url": "https://www.curseforge.com/minecraft/mc-mods/cloth-config",
+        "required": false,
+        "note": "仅在使用游戏内配置界面时需要。"
+      },
+      {
+        "name": "OptiFine",
+        "type": "conflict",
+        "note": "与 OptiFine 的渲染优化存在已知冲突，建议改用 Embeddium 等替代方案。"
+      }
+    ],
+    "install_guide": "1. 安装对应版本的 Forge 或 NeoForge；\n2. 将 JEI 的 jar 放入 mods 目录；\n3. 启动游戏后按 E 打开物品栏即可看到右侧 JEI 面板。",
+    "tags": ["配方查看", "物品管理", "客户端"],
+    "compatibility_note": "1.21.1 起官方主线转向 NeoForge，Forge 支持以社区移植为准。",
+    "status": "published",
+    "releases": [
+      {
+        "version_label": "19.5.0.38",
+        "game_versions": ["1.21.1"],
+        "loader_types": ["neoforge"],
+        "source_url": "https://www.curseforge.com/minecraft/mc-mods/jei/files/5738000",
+        "released_at": "2024-09-12",
+        "notes": "NeoForge 1.21.1 主线版本。",
+        "is_latest": true
+      },
+      {
+        "version_label": "15.2.0.51",
+        "game_versions": ["1.20.1"],
+        "loader_types": ["forge"],
+        "source_url": "https://www.curseforge.com/minecraft/mc-mods/jei/files/5127159",
+        "released_at": "2023-11-05",
+        "notes": "1.20.1 Forge 长期稳定版。"
+      },
+      {
+        "version_label": "11.6.0.1018",
+        "game_versions": ["1.18.2"],
+        "loader_types": ["forge"],
+        "source_url": "https://www.curseforge.com/minecraft/mc-mods/jei/files/3907194",
+        "released_at": "2022-03-08"
+      }
+    ]
+  },
+  {
+    "slug": "sodium",
+    "name": "Sodium 渲染优化",
+    "summary": "重写渲染管线以大幅提升帧率，显著降低卡顿。",
+    "description": "Sodium 是 Fabric 生态的现代渲染优化 Mod，通过重写区块渲染与光照计算，\n在保持原版视觉风格的前提下显著提升帧率。",
+    "resource_type": "mod",
+    "author_name": "CaffeineMC",
+    "source_platform": "Modrinth",
+    "source_url": "https://modrinth.com/mod/sodium",
+    "license": "LGPL-3.0",
+    "game_edition": "java",
+    "supported_versions": ["1.20.1", "1.21.1"],
+    "loader_types": ["fabric"],
+    "dependencies": [
+      {
+        "name": "Fabric Loader",
+        "type": "prerequisite",
+        "resource_url": "https://fabricmc.net/use/",
+        "required": true
+      },
+      {
+        "name": "Fabric API",
+        "type": "dependency",
+        "resource_url": "https://modrinth.com/mod/fabric-api",
+        "required": true
+      },
+      {
+        "name": "OptiFine",
+        "type": "conflict",
+        "note": "两者都重写渲染管线，同时安装会导致崩溃。"
+      }
+    ],
+    "install_guide": "1. 安装 Fabric Loader 与 Fabric API；\n2. 将 Sodium 放入 mods 目录；\n3. 建议同时搭配 Lithium 优化服务端逻辑。",
+    "tags": ["性能优化", "渲染", "客户端"],
+    "status": "published",
+    "releases": [
+      {
+        "version_label": "0.6.0",
+        "game_versions": ["1.21.1"],
+        "loader_types": ["fabric"],
+        "source_url": "https://modrinth.com/mod/sodium/version/mc1.21.1-0.6.0",
+        "released_at": "2024-08-20",
+        "is_latest": true
+      },
+      {
+        "version_label": "0.5.11",
+        "game_versions": ["1.20.1"],
+        "loader_types": ["fabric"],
+        "source_url": "https://modrinth.com/mod/sodium/version/mc1.20.1-0.5.11",
+        "released_at": "2024-05-02"
+      }
+    ]
+  },
+  {
+    "slug": "chunky",
+    "name": "Chunky 区块预生成",
+    "summary": "在进入世界前预先生成指定范围内的区块，减少探索时的卡顿。",
+    "description": "Chunky 可预先加载并生成指定半径内的区块，常用于服务器开荒与整合包首发。\n本条目仅收录了基础介绍，适用版本与加载器信息尚待核对。",
+    "resource_type": "mod",
+    "author_name": "pop4959",
+    "source_platform": "Modrinth",
+    "source_url": "https://modrinth.com/mod/chunky",
+    "license": "GPL-3.0",
+    "game_edition": "java",
+    "supported_versions": [],
+    "loader_types": [],
+    "dependencies": [],
+    "install_guide": "将 jar 放入 mods 目录，进入世界后执行 /chunky start。",
+    "tags": ["区块", "服务器"],
+    "status": "published"
+  },
+  {
+    "slug": "appleskin",
+    "name": "AppleSkin 饱食度提示",
+    "summary": "在 HUD 与物品提示中显示饥饿值、饱和度与预计回复量。",
+    "description": "AppleSkin 在原有饥饿条基础上补充显示饱和度、食物回复量与饥饿消耗预估，\n不改变游戏机制，仅提供信息展示。",
+    "resource_type": "mod",
+    "author_name": "squeek502",
+    "source_platform": "CurseForge",
+    "source_url": "https://www.curseforge.com/minecraft/mc-mods/appleskin",
+    "license": "Unlicense",
+    "game_edition": "java",
+    "supported_versions": ["all"],
+    "loader_types": ["forge", "neoforge", "fabric"],
+    "dependencies": [
+      {
+        "name": "Forge / NeoForge / Fabric Loader",
+        "type": "prerequisite",
+        "required": true,
+        "note": "按所选加载器安装其一即可。"
+      }
+    ],
+    "install_guide": "1. 安装任一受支持的加载器；\n2. 将 AppleSkin 放入 mods 目录；\n3. 启动游戏后饥饿条会显示饱和度与回复预估。",
+    "tags": ["HUD", "客户端", "信息显示"],
+    "compatibility_note": "作者为各主版本维护独立分支，覆盖范围广，故声明适用于全部版本（all）。",
+    "status": "published",
+    "releases": [
+      {
+        "version_label": "3.0.6",
+        "game_versions": ["all"],
+        "loader_types": ["forge", "neoforge", "fabric"],
+        "source_url": "https://www.curseforge.com/minecraft/mc-mods/appleskin/files/5717014",
+        "released_at": "2024-08-15",
+        "notes": "声明适用于全部版本，各加载器共用同一发布页。",
+        "is_latest": true
+      }
+    ]
+  },
+  {
+    "slug": "fresh-animations",
+    "name": "Fresh Animations 资源包",
+    "summary": "为原版生物添加更丰富的待机与移动动画。",
+    "description": "Fresh Animations 通过自定义模型与动画文件，让原版生物的待机、移动与攻击动作更生动。",
+    "resource_type": "resource_pack",
+    "author_name": "FreshLX",
+    "source_platform": "Planet Minecraft",
+    "source_url": "https://www.planetminecraft.com/texture-pack/fresh-animations-v1-0/",
+    "license": "CC-BY-NC-SA-4.0",
+    "game_edition": "java",
+    "supported_versions": ["1.20.1"],
+    "loader_types": ["vanilla"],
+    "dependencies": [
+      {
+        "name": "Entity Model Features",
+        "type": "dependency",
+        "resource_url": "https://modrinth.com/mod/entity-model-features",
+        "required": true,
+        "note": "需要该 Mod 才能加载自定义实体模型与动画。"
+      }
+    ],
+    "install_guide": "1. 安装 Entity Model Features；\n2. 将资源包 zip 放入 resourcepacks 目录；\n3. 在游戏内资源包界面启用并置顶。",
+    "tags": ["资源包", "动画", "原版增强"],
+    "status": "draft",
+    "releases": [
+      {
+        "version_label": "1.4",
+        "game_versions": ["1.20.1"],
+        "loader_types": ["vanilla"],
+        "source_url": "https://www.planetminecraft.com/texture-pack/fresh-animations-v1-0/",
+        "released_at": "2023-06-18",
+        "is_latest": true
+      }
+    ]
+  }
+]

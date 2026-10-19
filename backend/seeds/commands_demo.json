@@ -1,0 +1,65 @@
+[
+  {
+    "slug": "give",
+    "name": "give",
+    "syntax": "/give <玩家> <物品> [数量] [nbt]",
+    "description": "给予指定玩家物品。物品参数支持命名空间 ID。",
+    "parameters": [
+      {"name": "玩家", "description": "目标玩家名称或 @s", "required": true},
+      {"name": "物品", "description": "物品 ID，如 minecraft:diamond", "required": true},
+      {"name": "数量", "description": "物品数量，默认 1", "required": false}
+    ],
+    "examples": [
+      {"command": "/give @s minecraft:diamond 64", "note": "给予自己 64 个钻石"}
+    ],
+    "permission_notes": "需要 OP 权限（2 级）",
+    "game_versions": ["1.20.1", "1.21", "1.21.1"],
+    "source_references": [
+      {"name": "Minecraft Wiki", "url": "https://minecraft.wiki/w/Commands/give", "verified": false}
+    ],
+    "source_url": "https://minecraft.wiki/w/Commands/give",
+    "last_verified_at": "2026-01-15T00:00:00Z",
+    "status": "published"
+  },
+  {
+    "slug": "tp",
+    "name": "tp",
+    "syntax": "/tp [目标] <目的地>",
+    "description": "传送实体到指定坐标或位置。",
+    "parameters": [
+      {"name": "目标", "description": "要传送的实体", "required": false},
+      {"name": "目的地", "description": "坐标、实体或位置名", "required": true}
+    ],
+    "examples": [
+      {"command": "/tp @s 100 64 100", "note": "传送到坐标 (100,64,100)"}
+    ],
+    "permission_notes": "需要 OP 权限（2 级）",
+    "game_versions": ["1.20.1", "1.21"],
+    "source_references": [
+      {"name": "Minecraft Wiki", "url": "https://minecraft.wiki/w/Commands/tp", "verified": true}
+    ],
+    "source_url": "https://minecraft.wiki/w/Commands/tp",
+    "last_verified_at": "2026-01-15T00:00:00Z",
+    "status": "published"
+  },
+  {
+    "slug": "time-set",
+    "name": "time set",
+    "syntax": "/time set <时间>",
+    "description": "设置世界时间。时间可以是 day、night、noon 或数字。",
+    "parameters": [
+      {"name": "时间", "description": "day / night / noon / midnight 或 tick 数值", "required": true}
+    ],
+    "examples": [
+      {"command": "/time set day", "note": "设为白天"}
+    ],
+    "permission_notes": "需要 OP 权限（2 级）",
+    "game_versions": ["1.20.1", "1.21"],
+    "source_references": [
+      {"name": "Minecraft Wiki", "url": "https://minecraft.wiki/w/Commands/time", "verified": false}
+    ],
+    "source_url": "https://minecraft.wiki/w/Commands/time",
+    "last_verified_at": "2026-01-15T00:00:00Z",
+    "status": "published"
+  }
+]

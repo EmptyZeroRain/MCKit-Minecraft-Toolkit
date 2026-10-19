@@ -1,0 +1,20 @@
+# 中文 Minecraft Wiki 常用条目抓取清单
+# 用法：go run ./cmd/wikicrawl --titles-file seeds/wiki_crawl_titles.txt
+# 说明：以下标题会被自动解析重定向（如 酿造 -> 药水酿造、结构 -> 生成结构）。
+# 内容授权 CC BY-NC-SA 3.0，抓取遵守 robots.txt 并限速。
+交易
+药水酿造
+附魔
+生物
+方块
+物品
+生物群系
+状态效果
+合成
+烧炼
+锻造
+生成结构
+红石电路
+命令
+版本记录
+教程

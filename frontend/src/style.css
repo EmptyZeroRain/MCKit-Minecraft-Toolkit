@@ -1,0 +1,275 @@
+@import 'tailwindcss';
+
+/* ===== MC 工具站设计令牌（明暗双主题）=====
+ * @theme 层将 Tailwind 工具类名映射到 CSS 变量 —— 变量实际值定义在
+ * :root（暗色默认）与 [data-theme='light'] 两套作用域中。
+ * 组件只使用语义化类名（bg-ink-* / text-text-* 等），切换主题无需改动组件。
+ */
+@theme {
+  /* 背景色板 */
+  --color-ink-950: var(--mc-ink-950);
+  --color-ink-900: var(--mc-ink-900);
+  --color-ink-800: var(--mc-ink-800);
+  --color-ink-700: var(--mc-ink-700);
+  --color-ink-600: var(--mc-ink-600);
+
+  /* 边框 */
+  --color-border-dark: var(--mc-border-dark);
+  --color-border-light: var(--mc-border-light);
+
+  /* 主操作色：草地绿（随主题变化，保证对比度） */
+  --color-grass-300: var(--mc-grass-300);
+  --color-grass-400: var(--mc-grass-400);
+  --color-grass-500: var(--mc-grass-500);
+  --color-grass-600: var(--mc-grass-600);
+  --color-grass-700: var(--mc-grass-700);
+
+  /* 警告 / 错误 */
+  --color-amber-mc: #f59e0b;
+  --color-danger-mc: #ef4444;
+
+  /* 文本 */
+  --color-text-primary: var(--mc-text-primary);
+  --color-text-secondary: var(--mc-text-secondary);
+  --color-text-muted: var(--mc-text-muted);
+
+  /* 字体 */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', SFMono-Regular, Menlo, Consolas,
+    monospace;
+  --font-pixel: 'Press Start 2P', 'PingFang SC', ui-monospace, monospace;
+
+  /* 圆角 */
+  --radius-card: 0.75rem;
+}
+
+/* ===== 暗色主题（默认）：深海军蓝 / 炭黑 ===== */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --mc-ink-950: #070b14;
+  --mc-ink-900: #0b1220;
+  --mc-ink-800: #111a2e;
+  --mc-ink-700: #1a2540;
+  --mc-ink-600: #253356;
+
+  --mc-border-dark: #1e2a45;
+  --mc-border-light: #31406a;
+
+  --mc-text-primary: #e6edf7;
+  --mc-text-secondary: #9aa9c4;
+  --mc-text-muted: #6b7a99;
+
+  --mc-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --mc-grid-line: rgba(92, 122, 180, 0.07);
+  --mc-scrollbar: #253356;
+  --mc-header-bg: rgba(7, 11, 20, 0.9);
+
+  --mc-grass-300: #9fe08a;
+  --mc-grass-400: #7cd15f;
+  --mc-grass-500: #5eb845;
+  --mc-grass-600: #489836;
+  --mc-grass-700: #37792a;
+}
+
+/* ===== 亮色主题 ===== */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --mc-ink-950: #eef1f7;
+  --mc-ink-900: #f7f9fc;
+  --mc-ink-800: #ffffff;
+  --mc-ink-700: #f1f4fa;
+  --mc-ink-600: #dfe5f0;
+
+  --mc-border-dark: #e0e6f1;
+  --mc-border-light: #c2ccdf;
+
+  --mc-text-primary: #1b2437;
+  --mc-text-secondary: #4a5a75;
+  --mc-text-muted: #7c89a3;
+
+  --mc-shadow: 0 10px 30px -14px rgba(30, 41, 70, 0.35);
+  --mc-grid-line: rgba(60, 90, 160, 0.09);
+  --mc-scrollbar: #c2ccdf;
+  --mc-header-bg: rgba(255, 255, 255, 0.92);
+
+  --mc-grass-300: #5a9e46;
+  --mc-grass-400: #4d8f3d;
+  --mc-grass-500: #3f7f34;
+  --mc-grass-600: #336b2b;
+  --mc-grass-700: #275820;
+}
+
+html {
+  /* 主题切换过渡 */
+  background-color: var(--mc-ink-950);
+  transition: background-color 0.25s ease;
+}
+
+body {
+  background-color: var(--mc-ink-950);
+  color: var(--mc-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* 网格背景装饰：MC 世界氛围 */
+.mc-grid-bg {
+  background-image:
+    linear-gradient(var(--mc-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--mc-grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.card {
+  background-color: var(--mc-ink-800);
+  border: 1px solid var(--mc-border-dark);
+  border-radius: var(--radius-card);
+}
+
+.card-hover {
+  transition:
+    border-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.card-hover:hover {
+  border-color: var(--mc-border-light);
+  transform: translateY(-2px);
+  box-shadow: var(--mc-shadow);
+}
+
+/* 代码块字体 */
+.code-block {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  background-color: var(--mc-ink-900);
+  border: 1px solid var(--mc-border-dark);
+  border-radius: 0.5rem;
+  /* TODO §14：命令/指令/长 ID 无空格，移动端须允许任意位置换行，避免横向溢出 */
+  overflow-wrap: anywhere;
+}
+
+/* 滚动条适配主题 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--mc-scrollbar) transparent;
+}
+
+/* 焦点可见性：键盘可达性（不只靠颜色表达状态） */
+:focus-visible {
+  outline: 2px solid var(--color-grass-400);
+  outline-offset: 2px;
+}
+
+/* 跳转到主要内容（TODO §14）：键盘首次 Tab 时出现，跳过顶部导航 */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 200;
+  padding: 0.5rem 1rem;
+  border-radius: 0 0 0.5rem 0;
+  background: var(--mc-grass-600);
+  color: #fff;
+  font-size: 0.875rem;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+/* Markdown 正文样式（跟随主题变量） */
+.markdown-body {
+  line-height: 1.75;
+  color: var(--mc-text-secondary);
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  color: var(--mc-text-primary);
+  font-weight: 700;
+  margin: 1.2em 0 0.5em;
+  line-height: 1.35;
+}
+.markdown-body h1 {
+  font-size: 1.5em;
+}
+.markdown-body h2 {
+  font-size: 1.3em;
+}
+.markdown-body h3 {
+  font-size: 1.15em;
+}
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body table {
+  margin: 0.6em 0;
+}
+.markdown-body ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.markdown-body ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background-color: var(--mc-ink-700);
+  border-radius: 0.25rem;
+  padding: 0.1em 0.4em;
+}
+.markdown-body pre {
+  background-color: var(--mc-ink-900);
+  border: 1px solid var(--mc-border-dark);
+  border-radius: 0.5rem;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--color-grass-500);
+  padding-left: 1em;
+  color: var(--mc-text-secondary);
+}
+.markdown-body a {
+  color: var(--color-grass-500);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--mc-border-dark);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.markdown-body th {
+  background-color: var(--mc-ink-700);
+  color: var(--mc-text-primary);
+}
+
+/* 减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
