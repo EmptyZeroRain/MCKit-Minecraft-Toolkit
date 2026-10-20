@@ -2,7 +2,7 @@
 // 等级阈值管理（jingyan.md §5 / §10.4 相关）。
 //
 // 等级仅作展示，不构成任何权限。阈值必须全局唯一、按等级严格递增，Lv.1 固定为 0。
-// 等级定义可追加新等级或删除最高级；修改后可用「重算等级」修正历史用户展示等级。
+// 等级定义可指定等级号新增（允许跳号）或删除任意非 Lv.1 等级；修改后可用「重算等级」修正历史用户展示等级。
 import { computed, onMounted, reactive, ref } from 'vue'
 import AdminTable from '@/components/admin/AdminTable.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -31,7 +31,7 @@ const lastLevel = computed(() => levels.value.find((l) => l.level === maxLevel.v
 const showCreate = ref(false)
 const creating = ref(false)
 const createError = ref('')
-const createForm = reactive({ threshold_xp: 0, title: '', enabled: true })
+const createForm = reactive({ level: 1, threshold_xp: 0, title: '', enabled: true })
 
 const recalcOpen = ref(false)
 const recalculating = ref(false)
@@ -75,6 +75,7 @@ onMounted(load)
 
 function openCreate() {
   createError.value = ''
+  createForm.level = nextLevel.value
   createForm.title = ''
   createForm.enabled = true
   createForm.threshold_xp = lastLevel.value ? lastLevel.value.threshold_xp + 100 : 0
@@ -84,7 +85,12 @@ function openCreate() {
 async function submitCreate() {
   createError.value = ''
   const title = createForm.title.trim()
+  const level = Number(createForm.level)
   const threshold = Number(createForm.threshold_xp)
+  if (!Number.isInteger(level) || level < 1) {
+    createError.value = '等级号必须是大于等于 1 的整数'
+    return
+  }
   if (!title) {
     createError.value = '请填写等级称号'
     return
@@ -93,17 +99,47 @@ async function submitCreate() {
     createError.value = '所需经验必须是非负整数'
     return
   }
-  if (lastLevel.value && threshold <= lastLevel.value.threshold_xp) {
-    createError.value = `所需经验必须大于 Lv.${lastLevel.value.level} 的 ${lastLevel.value.threshold_xp}`
+  if (levels.value.some((l) => l.level === level)) {
+    createError.value = `Lv.${level} 已存在，请使用其他等级号`
     return
   }
-  const level = nextLevel.value
+  if (level === 1 && threshold !== 0) {
+    createError.value = 'Lv.1 的所需经验必须为 0'
+    return
+  }
+  if (levels.value.length === 0 && (level !== 1 || threshold !== 0)) {
+    createError.value = '第一个等级必须是 Lv.1，且所需经验为 0'
+    return
+  }
+  const lower = levels.value.filter((l) => l.level < level)
+  const higher = levels.value.filter((l) => l.level > level)
+  const lowerMax = lower.reduce<GrowthLevel | null>(
+    (max, l) => (!max || l.threshold_xp > max.threshold_xp ? l : max),
+    null,
+  )
+  const higherMin = higher.reduce<GrowthLevel | null>(
+    (min, l) => (!min || l.threshold_xp < min.threshold_xp ? l : min),
+    null,
+  )
+  if (lowerMax && threshold <= lowerMax.threshold_xp) {
+    createError.value = `所需经验必须大于 Lv.${lowerMax.level} 的 ${lowerMax.threshold_xp}`
+    return
+  }
+  if (higherMin && threshold >= higherMin.threshold_xp) {
+    createError.value = `所需经验必须小于 Lv.${higherMin.level} 的 ${higherMin.threshold_xp}`
+    return
+  }
   creating.value = true
   error.value = ''
   notice.value = ''
   try {
-    await createGrowthLevel({ threshold_xp: threshold, title, enabled: createForm.enabled })
-    notice.value = `已新增 Lv.${level}。`
+    const created = await createGrowthLevel({
+      level,
+      threshold_xp: threshold,
+      title,
+      enabled: createForm.enabled,
+    })
+    notice.value = `已新增 Lv.${created.level}。`
     showCreate.value = false
     await load()
   } catch (e) {
@@ -114,14 +150,14 @@ async function submitCreate() {
 }
 
 function canDelete(row: GrowthLevel): boolean {
-  return row.level > 1 && row.level === maxLevel.value
+  return row.level > 1
 }
 
 async function removeLevel(row: GrowthLevel) {
   if (!canDelete(row) || busyLevel.value !== null) return
   if (
     !window.confirm(
-      `确定删除 Lv.${row.level}「${row.title}」吗？删除后用户等级会按剩余阈值重算，且不可恢复。`,
+      `确定删除 Lv.${row.level}「${row.title}」吗？删除后所有更高等级号会减 1，用户等级会重算，且不可恢复。`,
     )
   ) {
     return
@@ -131,7 +167,7 @@ async function removeLevel(row: GrowthLevel) {
   notice.value = ''
   try {
     await deleteGrowthLevel(row.level)
-    notice.value = `已删除 Lv.${row.level}，用户等级已重算。`
+    notice.value = `已删除 Lv.${row.level}，后续等级已重排，用户等级已重算。`
     await load()
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : '删除等级失败'
@@ -165,8 +201,14 @@ async function save(level: GrowthLevel) {
 async function submitLevelAdjust() {
   adjustError.value = ''
   adjustNotice.value = ''
-  if (!levelAdjust.target_user_id.trim()) {
+  const targetId = levelAdjust.target_user_id.trim().toUpperCase()
+  if (!targetId) {
     adjustError.value = '请填写目标用户 ID'
+    return
+  }
+  // 后端只接受对外 user_no；这里提前拦截内部 UUID，避免落到通用的 404/422 文案。
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)) {
+    adjustError.value = '目标用户 ID 只支持对外用户 ID（如 U7K3M2QX9F），不支持内部 UUID'
     return
   }
   if (!levelAdjust.delta_level) {
@@ -180,7 +222,7 @@ async function submitLevelAdjust() {
   adjusting.value = true
   try {
     const result = await adjustUserLevel({
-      target_user_id: levelAdjust.target_user_id.trim(),
+      target_user_id: targetId,
       delta_level: Number(levelAdjust.delta_level),
       reason: levelAdjust.reason.trim(),
     })
@@ -189,7 +231,9 @@ async function submitLevelAdjust() {
     levelAdjust.delta_level = 1
     levelAdjust.reason = ''
   } catch (e) {
-    adjustError.value = e instanceof ApiError ? e.message : '等级调整失败'
+    // 后端字段级错误（如对外 ID 不存在）优先展示，避免只看到通用错误文案。
+    const detail = e instanceof ApiError ? e.details?.[0]?.message : ''
+    adjustError.value = detail || (e instanceof ApiError ? e.message : '等级调整失败')
   } finally {
     adjusting.value = false
   }
@@ -215,11 +259,21 @@ async function confirmRecalculate() {
     <form class="card mb-5 grid gap-3 p-4 sm:grid-cols-4" @submit.prevent="submitLevelAdjust">
       <h2 class="text-sm font-medium text-text-secondary sm:col-span-4">单用户等级调整</h2>
       <p class="text-xs text-text-muted sm:col-span-4">
-        只调整展示等级偏移，不修改等级定义本身；经验仍按阈值正常累积。
+        只调整展示等级偏移，不修改等级定义本身；经验仍按阈值正常累积。目标只填用户列表中的对外 ID，
+        不要填内部 UUID 或用户名；普通用户与后台账号均可调整。
       </p>
       <label class="text-xs text-text-muted sm:col-span-2">
-        目标用户 ID（内部 UUID 或对外 ID）
-        <input v-model="levelAdjust.target_user_id" :class="inputClass" type="text" placeholder="UUID / U7K3M2QX9F" />
+        目标用户 ID（对外 ID）
+        <input
+          v-model="levelAdjust.target_user_id"
+          :class="inputClass"
+          type="text"
+          maxlength="12"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          placeholder="U7K3M2QX9F"
+        />
       </label>
       <label class="text-xs text-text-muted">
         调整值（可负）
@@ -242,7 +296,7 @@ async function confirmRecalculate() {
 
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <p class="text-xs text-text-muted">
-        阈值必须唯一且严格递增，Lv.1 固定为 0 经验。等级仅展示，不影响权限；新增会追加到最高级之后，删除仅限最高级且 Lv.1 不可删除。
+        阈值必须唯一且严格递增，Lv.1 固定为 0 经验。等级仅展示，不影响权限；新增可指定等级号并允许跳号，删除任意非 Lv.1 等级会自动重排后续等级。
       </p>
       <div class="flex shrink-0 gap-2">
         <button
@@ -266,13 +320,22 @@ async function confirmRecalculate() {
     <p v-if="error" class="mb-3 rounded-card border border-danger-mc/40 bg-danger-mc/10 px-4 py-2 text-sm text-danger-mc" role="alert">{{ error }}</p>
     <p v-if="notice" class="mb-3 rounded-card border border-grass-500/40 bg-grass-500/10 px-4 py-2 text-sm text-grass-400" role="status">{{ notice }}</p>
 
-    <form v-if="showCreate" class="card mb-4 grid gap-3 p-4 sm:grid-cols-4" @submit.prevent="submitCreate">
-      <h2 class="text-sm font-medium text-text-secondary sm:col-span-4">新增 Lv.{{ nextLevel }}</h2>
-      <p class="text-xs text-text-muted sm:col-span-4">
-        等级号由服务端自动追加；所需经验必须大于当前最高级
-        <template v-if="lastLevel"> Lv.{{ lastLevel.level }} 的 {{ lastLevel.threshold_xp }}</template>
-        。
+    <form v-if="showCreate" class="card mb-4 grid gap-3 p-4 sm:grid-cols-5" @submit.prevent="submitCreate">
+      <h2 class="text-sm font-medium text-text-secondary sm:col-span-5">新增等级（默认 Lv.{{ nextLevel }}）</h2>
+      <p class="text-xs text-text-muted sm:col-span-5">
+        可指定等级号并允许跳号（如 99、999）；阈值必须与等级号一起严格递增，Lv.1 固定为 0。
       </p>
+      <label class="text-xs text-text-muted">
+        等级号
+        <input
+          v-model.number="createForm.level"
+          :class="inputClass"
+          type="number"
+          min="1"
+          step="1"
+          placeholder="如 99"
+        />
+      </label>
       <label class="text-xs text-text-muted">
         所需经验
         <input
@@ -298,8 +361,8 @@ async function confirmRecalculate() {
         <input v-model="createForm.enabled" type="checkbox" />
         启用
       </label>
-      <p v-if="createError" class="text-xs text-danger-mc sm:col-span-4" role="alert">{{ createError }}</p>
-      <div class="flex gap-2 sm:col-span-4">
+      <p v-if="createError" class="text-xs text-danger-mc sm:col-span-5" role="alert">{{ createError }}</p>
+      <div class="flex gap-2 sm:col-span-5">
         <button
           type="submit"
           class="rounded-md bg-grass-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-grass-500 disabled:opacity-60"
@@ -343,7 +406,7 @@ async function confirmRecalculate() {
             type="button"
             class="rounded-md border border-danger-mc/40 px-3 py-1 text-xs font-medium text-danger-mc transition hover:bg-danger-mc/10 disabled:cursor-not-allowed disabled:opacity-30"
             :disabled="!canDelete(row) || busyLevel !== null"
-            :title="canDelete(row) ? '删除最高等级' : '仅可删除最高等级（Lv.1 不可删除）'"
+            :title="canDelete(row) ? '删除该等级并自动重排后续等级' : 'Lv.1 不可删除'"
             @click="removeLevel(row)"
           >
             删除

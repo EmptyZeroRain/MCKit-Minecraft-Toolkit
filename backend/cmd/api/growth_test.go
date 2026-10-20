@@ -321,36 +321,45 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 		t.Fatalf("非法等级阈值期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 新增等级：自动追加 Lv.11。
+	// 新增等级：可指定等级号并跳号（直接创建 Lv.99）。
+	const apiLevel = 99
+	_ = itDB.Where("level = ?", apiLevel).Delete(&domain.GrowthLevel{}).Error
 	t.Cleanup(func() {
-		_ = itDB.Where("level = ?", 11).Delete(&domain.GrowthLevel{}).Error
+		_ = itDB.Where("level = ?", apiLevel).Delete(&domain.GrowthLevel{}).Error
 	})
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
-		`{"threshold_xp":8000,"title":"接口测试等级","enabled":true}`, adminCookie, adminCSRF)
+		`{"level":99,"threshold_xp":8000,"title":"接口测试等级","enabled":true}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("新增等级期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	if lv := toInt(decodeData(t, rec)["level"]); lv != 11 {
-		t.Fatalf("新增等级期望 Lv.11，实际 %d", lv)
+	if lv := toInt(decodeData(t, rec)["level"]); lv != 99 {
+		t.Fatalf("新增等级期望 Lv.99，实际 %d", lv)
 	}
 
-	// 新增等级阈值必须高于当前最高级。
+	// 等级号重复应返回 409。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
-		`{"threshold_xp":8000,"title":"重复阈值","enabled":true}`, adminCookie, adminCSRF)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("重复等级阈值期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+		`{"level":99,"threshold_xp":8100,"title":"重复等级号","enabled":true}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("重复等级号期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 只允许删除最高等级。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
-		`{"level":5}`, adminCookie, adminCSRF)
+	// 阈值顺序非法应返回 422。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
+		`{"level":50,"threshold_xp":5999,"title":"阈值顺序错误","enabled":true}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("删除中间等级期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("阈值顺序错误期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// Lv.1 不可删除。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
+		`{"level":1}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("删除 Lv.1 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
-		`{"level":11}`, adminCookie, adminCSRF)
+		`{"level":99}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("删除最高等级期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("删除 Lv.99 期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 }
 

@@ -216,7 +216,7 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	}
 }
 
-// TestGrowthLevelManagementIntegration 覆盖等级新增 / 删除、连续等级约束与删除后的用户等级重算。
+// TestGrowthLevelManagementIntegration 覆盖指定等级号新增、跳号、删除中间等级重排与用户 / 成就同步。
 func TestGrowthLevelManagementIntegration(t *testing.T) {
 	gdb := setupGrowthAdminDB(t)
 	ctx := context.Background()
@@ -229,76 +229,123 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 	if err != nil || len(levels) != 10 {
 		t.Fatalf("初始等级应为 10 个: len=%d err=%v", len(levels), err)
 	}
-
-	created, err := svc.CreateLevel(ctx, CreateLevelInput{
-		ThresholdXP: 8000,
-		Title:       "测试等级",
-		Enabled:     true,
-	}, operator.ID.String())
-	if err != nil {
-		t.Fatalf("新增等级失败: %v", err)
-	}
-	if created.Level != 11 || created.ThresholdXP != 8000 {
-		t.Fatalf("新增等级结果异常: %+v", created)
-	}
-
-	// 阈值必须高于当前最高等级。
-	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
-		ThresholdXP: 8000, Title: "重复阈值", Enabled: true,
-	}, operator.ID.String()); !errors.Is(err, ErrLevelNewThreshold) {
-		t.Fatalf("重复阈值应返回 ErrLevelNewThreshold，实际 %v", err)
-	}
-
-	// 只能删除最高等级，Lv.1 永远保留。
-	if err := svc.DeleteLevel(ctx, 5, operator.ID.String()); !errors.Is(err, ErrLevelDeleteTopOnly) {
-		t.Fatalf("删除中间等级应返回 ErrLevelDeleteTopOnly，实际 %v", err)
-	}
-	if err := svc.DeleteLevel(ctx, 1, operator.ID.String()); !errors.Is(err, ErrLevelDeleteTopOnly) {
-		t.Fatalf("删除 Lv.1 应返回 ErrLevelDeleteTopOnly，实际 %v", err)
-	}
-
-	// 用户当前处于 Lv.10；删除新增的 Lv.11 后不受影响。
 	if err := gdb.Create(&domain.UserGrowth{
-		UserID: user.ID, CurrentXP: 6000, Level: 10,
+		UserID: user.ID, CurrentXP: 7000, Level: 10,
 	}).Error; err != nil {
 		t.Fatalf("创建成长投影失败: %v", err)
 	}
-	if err := svc.DeleteLevel(ctx, 11, operator.ID.String()); err != nil {
-		t.Fatalf("删除最高等级失败: %v", err)
+
+	// 可指定等级号并跳号：直接创建 Lv.99 / Lv.999。
+	created, err := svc.CreateLevel(ctx, CreateLevelInput{
+		Level:       99,
+		ThresholdXP: 8000,
+		Title:       "测试 Lv.99",
+		Enabled:     true,
+	}, operator.ID.String())
+	if err != nil {
+		t.Fatalf("新增 Lv.99 失败: %v", err)
 	}
+	if created.Level != 99 || created.ThresholdXP != 8000 {
+		t.Fatalf("新增 Lv.99 结果异常: %+v", created)
+	}
+	created, err = svc.CreateLevel(ctx, CreateLevelInput{
+		Level:       999,
+		ThresholdXP: 9000,
+		Title:       "测试 Lv.999",
+		Enabled:     true,
+	}, operator.ID.String())
+	if err != nil {
+		t.Fatalf("新增 Lv.999 失败: %v", err)
+	}
+	if created.Level != 999 {
+		t.Fatalf("新增 Lv.999 结果异常: %+v", created)
+	}
+
+	// 等级号重复应冲突；阈值顺序非法应拒绝。
+	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
+		Level: 99, ThresholdXP: 8500, Title: "重复等级号", Enabled: true,
+	}, operator.ID.String()); !errors.Is(err, ErrLevelExists) {
+		t.Fatalf("重复等级号应返回 ErrLevelExists，实际 %v", err)
+	}
+	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
+		Level: 50, ThresholdXP: 8500, Title: "阈值顺序错误", Enabled: true,
+	}, operator.ID.String()); !errors.Is(err, ErrLevelOrder) {
+		t.Fatalf("阈值顺序错误应返回 ErrLevelOrder，实际 %v", err)
+	}
+
+	// Lv.1 永远保留。
+	if err := svc.DeleteLevel(ctx, 1, operator.ID.String()); !errors.Is(err, ErrLevelDeleteLv1) {
+		t.Fatalf("删除 Lv.1 应返回 ErrLevelDeleteLv1，实际 %v", err)
+	}
+
+	// 删除中间等级 Lv.5：更高等级整体减 1，跳号间隔保留。
+	if err := svc.DeleteLevel(ctx, 5, operator.ID.String()); err != nil {
+		t.Fatalf("删除中间等级 Lv.5 失败: %v", err)
+	}
+	levels, err = svc.ListLevels(ctx)
+	if err != nil {
+		t.Fatalf("读取等级失败: %v", err)
+	}
+	byLevel := make(map[int]domain.GrowthLevel, len(levels))
+	for _, l := range levels {
+		byLevel[l.Level] = l
+	}
+	if len(levels) != 11 {
+		t.Fatalf("删除后应剩 11 个等级，实际 %d", len(levels))
+	}
+	if byLevel[5].Title != "资源猎人" {
+		t.Fatalf("原 Lv.6 应重排为 Lv.5，实际 %+v", byLevel[5])
+	}
+	if byLevel[9].Title != "MCkit 传奇" {
+		t.Fatalf("原 Lv.10 应重排为 Lv.9，实际 %+v", byLevel[9])
+	}
+	if byLevel[98].Title != "测试 Lv.99" || byLevel[998].Title != "测试 Lv.999" {
+		t.Fatalf("跳号等级应同步前移为 98 / 998，实际 %+v / %+v", byLevel[98], byLevel[998])
+	}
+
+	// 用户经验 7000 从原 Lv.10 重算为新 Lv.9。
 	var g domain.UserGrowth
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.Level != 10 {
-		t.Fatalf("删除 Lv.11 后用户应保持 Lv.10，实际 %d", g.Level)
-	}
-
-	// 删除原最高级 Lv.10 后，用户应按剩余阈值降到 Lv.9。
-	if err := svc.DeleteLevel(ctx, 10, operator.ID.String()); err != nil {
-		t.Fatalf("删除 Lv.10 失败: %v", err)
-	}
-	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
-		t.Fatalf("读取成长投影失败: %v", err)
-	}
 	if g.Level != 9 || g.LevelOffset != 0 {
-		t.Fatalf("删除 Lv.10 后用户应重算为 Lv.9，实际 level=%d offset=%d", g.Level, g.LevelOffset)
+		t.Fatalf("删除 Lv.5 后用户应重算为 Lv.9，实际 level=%d offset=%d", g.Level, g.LevelOffset)
 	}
 
-	// 重新补齐 Lv.10，并通过重算恢复用户等级。
-	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
-		ThresholdXP: 6000, Title: "MCkit 传奇", Enabled: true,
-	}, operator.ID.String()); err != nil {
-		t.Fatalf("重新新增 Lv.10 失败: %v", err)
+	// level_reached 成就目标 > 被删等级时同步减 1，等于 / 小于时保持不变。
+	var ach10, ach5, ach3 domain.AchievementDefinition
+	if err := gdb.Where("code = ?", "level_10").First(&ach10).Error; err != nil {
+		t.Fatalf("读取 level_10 成就失败: %v", err)
 	}
-	if fixed, err := svc.RecalculateLevels(ctx); err != nil || fixed != 1 {
-		t.Fatalf("重算等级异常: fixed=%d err=%v", fixed, err)
+	if err := gdb.Where("code = ?", "level_5").First(&ach5).Error; err != nil {
+		t.Fatalf("读取 level_5 成就失败: %v", err)
+	}
+	if err := gdb.Where("code = ?", "level_3").First(&ach3).Error; err != nil {
+		t.Fatalf("读取 level_3 成就失败: %v", err)
+	}
+	if ach10.TargetValue != 9 || ach5.TargetValue != 5 || ach3.TargetValue != 3 {
+		t.Fatalf("成就目标重排异常: level_10=%d level_5=%d level_3=%d",
+			ach10.TargetValue, ach5.TargetValue, ach3.TargetValue)
+	}
+
+	// 可插入被删除的等级号：Lv.10 阈值 6500 位于 Lv.9(6000) 与 Lv.98(8000) 之间。
+	created, err = svc.CreateLevel(ctx, CreateLevelInput{
+		Level:       10,
+		ThresholdXP: 6500,
+		Title:       "MCkit 传奇（补回）",
+		Enabled:     true,
+	}, operator.ID.String())
+	if err != nil {
+		t.Fatalf("插入 Lv.10 失败: %v", err)
+	}
+	if created.Level != 10 {
+		t.Fatalf("插入等级号异常: %+v", created)
 	}
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
 	if g.Level != 10 {
-		t.Fatalf("重算后用户应回到 Lv.10，实际 %d", g.Level)
+		t.Fatalf("插入 Lv.10 后用户应自动重算为 Lv.10，实际 %d", g.Level)
 	}
 }
 

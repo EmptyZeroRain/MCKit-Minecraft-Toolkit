@@ -84,6 +84,7 @@ const entry: GiftLedgerItem = {
 const levels: GrowthLevel[] = [
   { level: 1, threshold_xp: 0, title: '初来乍到', enabled: true },
   { level: 2, threshold_xp: 100, title: '方块学徒', enabled: true },
+  { level: 3, threshold_xp: 300, title: '探索者', enabled: true },
 ]
 
 describe('后台礼物钱包', () => {
@@ -178,7 +179,7 @@ describe('后台单用户等级调整', () => {
 
     const wrapper = mount(AdminGrowthLevelsPanel)
     await flushPromises()
-    expect(wrapper.text()).toContain('新增会追加到最高级之后')
+    expect(wrapper.text()).toContain('新增可指定等级号并允许跳号')
 
     await wrapper.find('input[placeholder="UUID / U7K3M2QX9F"]').setValue('U7K3M2QX9F')
     await wrapper.find('input[type="number"]').setValue('1')
@@ -195,10 +196,26 @@ describe('后台单用户等级调整', () => {
     expect(wrapper.text()).toContain('偏移 +1')
   })
 
-  it('可新增最高级之后的等级，并只允许删除最高级', async () => {
+  it('拒绝内部 UUID，只允许对外用户 ID', async () => {
+    const wrapper = mount(AdminGrowthLevelsPanel)
+    await flushPromises()
+
+    await wrapper
+      .find('input[placeholder="U7K3M2QX9F"]')
+      .setValue('00000000-0000-0000-0000-000000000001')
+    await wrapper.find('input[type="number"]').setValue('1')
+    await wrapper.find('input[placeholder="如 活动补偿"]').setValue('测试升级')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(adjustUserLevel).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('不支持内部 UUID')
+  })
+
+  it('可指定等级号跳号新增，并可删除中间等级重排后续等级', async () => {
     ;(createGrowthLevel as ReturnType<typeof vi.fn>).mockResolvedValue({
-      level: 3,
-      threshold_xp: 300,
+      level: 99,
+      threshold_xp: 8000,
       title: '探索者',
       enabled: true,
     })
@@ -209,24 +226,28 @@ describe('后台单用户等级调整', () => {
     await flushPromises()
 
     const deleteButtons = wrapper.findAll('button').filter((b) => b.text() === '删除')
-    expect(deleteButtons).toHaveLength(2)
+    expect(deleteButtons).toHaveLength(3)
     expect(deleteButtons[0].attributes('disabled')).toBeDefined()
     expect(deleteButtons[1].attributes('disabled')).toBeUndefined()
+    expect(deleteButtons[2].attributes('disabled')).toBeUndefined()
 
     await wrapper.findAll('button').find((b) => b.text() === '新增等级')!.trigger('click')
-    expect(wrapper.text()).toContain('新增 Lv.3')
-    await wrapper.find('input[placeholder="如 8000"]').setValue('300')
+    expect(wrapper.text()).toContain('新增等级（默认 Lv.4）')
+    await wrapper.find('input[placeholder="如 99"]').setValue('99')
+    await wrapper.find('input[placeholder="如 8000"]').setValue('8000')
     await wrapper.find('input[placeholder="如 红石大师"]').setValue('探索者')
     await wrapper.findAll('form')[1].trigger('submit')
     await flushPromises()
 
     expect(createGrowthLevel).toHaveBeenCalledWith({
-      threshold_xp: 300,
+      level: 99,
+      threshold_xp: 8000,
       title: '探索者',
       enabled: true,
     })
-    expect(wrapper.text()).toContain('已新增 Lv.3')
+    expect(wrapper.text()).toContain('已新增 Lv.99')
 
+    // 删除中间等级 Lv.2（首个可删除行），后端会重排后续等级。
     await wrapper
       .findAll('button')
       .find((b) => b.text() === '删除' && b.attributes('disabled') === undefined)!
@@ -235,7 +256,7 @@ describe('后台单用户等级调整', () => {
 
     expect(window.confirm).toHaveBeenCalled()
     expect(deleteGrowthLevel).toHaveBeenCalledWith(2)
-    expect(wrapper.text()).toContain('已删除 Lv.2')
+    expect(wrapper.text()).toContain('已删除 Lv.2，后续等级已重排')
   })
 })
 

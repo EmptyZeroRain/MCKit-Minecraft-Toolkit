@@ -409,9 +409,10 @@ func (h *GrowthHandler) LevelsUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // LevelsCreate POST /api/v1/admin/growth/levels/create
-// 参数：threshold_xp、title、enabled；等级号由服务端追加为当前最高级 + 1。
+// 参数：level（可选，省略时追加为最高级 +1）、threshold_xp、title、enabled。
 func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Level       int    `json:"level"`
 		ThresholdXP int64  `json:"threshold_xp"`
 		Title       string `json:"title"`
 		Enabled     *bool  `json:"enabled"`
@@ -424,6 +425,7 @@ func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 	out, err := h.svc.CreateLevel(r.Context(), growth.CreateLevelInput{
+		Level:       req.Level,
 		ThresholdXP: req.ThresholdXP,
 		Title:       req.Title,
 		Enabled:     enabled,
@@ -436,7 +438,7 @@ func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // LevelsDelete POST /api/v1/admin/growth/levels/delete
-// 参数：level。只允许删除最高等级，Lv.1 不可删除。
+// 参数：level。可删除任意 Lv.2 及以上等级；Lv.1 不可删除。
 func (h *GrowthHandler) LevelsDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level int `json:"level"`
@@ -462,7 +464,7 @@ func (h *GrowthHandler) LevelsRecalculate(w http.ResponseWriter, r *http.Request
 }
 
 // LevelsAdjust POST /api/v1/admin/growth/levels/adjust
-// 参数：target_user_id、delta_level（可负）、reason、request_key（仅留痕）。
+// 参数：target_user_id（仅对外用户 ID）、delta_level（可负）、reason、request_key（仅留痕）。
 func (h *GrowthHandler) LevelsAdjust(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetUserID string `json:"target_user_id"`
@@ -727,7 +729,8 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, growth.ErrTaskCodeTaken),
 		errors.Is(err, growth.ErrAchievementCodeTaken),
 		errors.Is(err, growth.ErrAchievementAlreadyUnlocked),
-		errors.Is(err, growth.ErrAchievementNotUnlocked):
+		errors.Is(err, growth.ErrAchievementNotUnlocked),
+		errors.Is(err, growth.ErrLevelExists):
 		response.Conflict(w, r, err.Error())
 	case errors.Is(err, growth.ErrAlreadyReversed),
 		errors.Is(err, growth.ErrRuleInUse),
@@ -736,8 +739,8 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, growth.ErrBadInput),
 		errors.Is(err, growth.ErrReasonRequired),
 		errors.Is(err, growth.ErrLevelThreshold),
-		errors.Is(err, growth.ErrLevelNewThreshold),
-		errors.Is(err, growth.ErrLevelDeleteTopOnly),
+		errors.Is(err, growth.ErrLevelOrder),
+		errors.Is(err, growth.ErrLevelDeleteLv1),
 		errors.Is(err, growth.ErrLevelRange),
 		errors.Is(err, growth.ErrBadCondition),
 		errors.Is(err, growth.ErrBadIconURL),
@@ -745,6 +748,11 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, growth.ErrReverseExceeds),
 		errors.Is(err, growth.ErrCannotReverseReversal):
 		response.Validation(w, r, []response.ErrorDetail{{Message: err.Error()}})
+	case errors.Is(err, growth.ErrLevelAdjustUserIDRequired),
+		errors.Is(err, growth.ErrLevelAdjustUserNotFound):
+		response.Validation(w, r, []response.ErrorDetail{{
+			Field: "target_user_id", Message: err.Error(),
+		}})
 	default:
 		response.HandleError(w, r, err)
 	}

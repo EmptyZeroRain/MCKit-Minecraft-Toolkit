@@ -4927,8 +4927,8 @@ paths:
   /admin/growth/levels/create:
     post:
       tags: [growth]
-      summary: 新增等级（需 ops.growth）
-      description: 等级号由服务端追加为当前最高级 + 1；所需经验必须严格大于当前最高级。
+      summary: 新增等级（可指定等级号，需 ops.growth）
+      description: 可指定 level 并跳号（如 99、999）；省略 level 时追加为当前最高级 +1。阈值必须按等级号严格递增，新增后服务端会重算用户展示等级。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -4947,6 +4947,7 @@ paths:
                   data: { $ref: "#/components/schemas/GrowthLevel" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/growth/levels/update:
@@ -4970,8 +4971,8 @@ paths:
   /admin/growth/levels/delete:
     post:
       tags: [growth]
-      summary: 删除最高等级（需 ops.growth）
-      description: 仅允许删除最高等级且 Lv.1 不可删除；删除后按剩余阈值重算所有用户展示等级，并收敛人工等级偏移。
+      summary: 删除等级并重排后续等级（需 ops.growth）
+      description: 可删除任意 Lv.2 及以上等级；删除后所有更高等级号减 1，level_reached 成就目标值大于被删等级时同步减 1，并按新阈值重算用户展示等级、收敛人工偏移。Lv.1 不可删除。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -7795,7 +7796,8 @@ components:
       type: object
       required: [threshold_xp, title]
       properties:
-        threshold_xp: { type: integer, minimum: 0, description: 必须严格大于当前最高等级阈值 }
+        level: { type: integer, minimum: 1, description: 可选；省略时追加为当前最高级 +1；允许跳号 }
+        threshold_xp: { type: integer, minimum: 0, description: 必须按等级号严格递增 }
         title: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
 

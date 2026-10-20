@@ -214,7 +214,7 @@ export async function fetchGrowthLevels(): Promise<GrowthLevel[]> {
   return data.data.items ?? []
 }
 
-/** 新增等级（服务端自动追加到当前最高级之后） */
+/** 新增等级（可指定等级号并跳号；不传 level 时追加到当前最高级之后） */
 export async function createGrowthLevel(input: GrowthLevelCreateInput): Promise<GrowthLevel> {
   const { data } = await http.post<ApiResponse<GrowthLevel>>('/admin/growth/levels/create', input)
   return data.data
@@ -225,7 +225,7 @@ export async function updateGrowthLevel(level: GrowthLevel): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/growth/levels/update', level)
 }
 
-/** 删除最高等级（Lv.1 不可删除；后端会重算用户展示等级） */
+/** 删除任意非 Lv.1 等级（后端会重排后续等级并重算用户展示等级） */
 export async function deleteGrowthLevel(level: number): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/growth/levels/delete', { level })
 }

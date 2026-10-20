@@ -194,8 +194,9 @@ export interface GrowthLevel {
   updated_at?: string
 }
 
-/** 新增等级入参（等级号由服务端追加到最高级之后） */
+/** 新增等级入参（可指定等级号并跳号；省略 level 时由服务端追加到最高级之后） */
 export interface GrowthLevelCreateInput {
+  level?: number
   threshold_xp: number
   title: string
   enabled: boolean

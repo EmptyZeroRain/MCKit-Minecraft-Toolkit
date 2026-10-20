@@ -27,10 +27,12 @@ var (
 	ErrLevelNotFound = errors.New("等级不存在")
 	// ErrLevelThreshold 等级阈值不合法（非负、严格递增、必须含 Lv.1 / 0 XP）。
 	ErrLevelThreshold = errors.New("等级阈值必须非负且严格递增，并保留 Lv.1（0 XP）")
-	// ErrLevelNewThreshold 新增等级的所需经验未高于当前最高等级。
-	ErrLevelNewThreshold = errors.New("新增等级的所需经验必须大于当前最高等级")
-	// ErrLevelDeleteTopOnly 仅允许删除最高等级，且不能删除 Lv.1。
-	ErrLevelDeleteTopOnly = errors.New("只能删除最高等级，且不能删除 Lv.1")
+	// ErrLevelExists 指定等级号已存在。
+	ErrLevelExists = errors.New("等级号已存在")
+	// ErrLevelOrder 新增 / 修改后的阈值未按等级号严格递增。
+	ErrLevelOrder = errors.New("等级阈值必须按等级号严格递增")
+	// ErrLevelDeleteLv1 Lv.1 是等级体系的基础，不允许删除。
+	ErrLevelDeleteLv1 = errors.New("Lv.1 不能删除")
 	// ErrTaskNotFound 每日任务不存在。
 	ErrTaskNotFound = errors.New("每日任务不存在")
 	// ErrTaskCodeTaken 任务编码已存在。
@@ -55,6 +57,10 @@ var (
 	ErrBadIconURL = errors.New("图标地址只允许 https:// 或站内 / 开头的路径")
 	// ErrUnknownUser 目标用户不存在。
 	ErrUnknownUser = errors.New("目标用户不存在")
+	// ErrLevelAdjustUserIDRequired 单用户等级调整只接受对外用户 ID。
+	ErrLevelAdjustUserIDRequired = errors.New("目标用户 ID 只支持对外用户 ID（如 U7K3M2QX9F），不支持内部 UUID")
+	// ErrLevelAdjustUserNotFound 对外用户 ID 未匹配到任何账号（含管理员）。
+	ErrLevelAdjustUserNotFound = errors.New("未找到该对外用户 ID，请从用户列表重新复制")
 	// ErrLevelRange 目标等级超出当前启用等级范围。
 	ErrLevelRange = errors.New("目标等级超出当前等级范围")
 	// ErrAchievementAlreadyUnlocked 用户已持有该成就。
