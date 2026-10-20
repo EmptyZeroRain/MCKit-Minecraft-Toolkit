@@ -3068,7 +3068,7 @@ paths:
               properties:
                 q: { type: string }
                 type: { type: string }
-                status: { type: string, enum: [draft, published, hidden, offline, removed] }
+                status: { type: string, enum: [draft, published, hidden, removed] }
                 game_version: { type: string }
                 loader: { type: string }
                 source_platform: { type: string }
@@ -3162,10 +3162,30 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
+  /admin/resources/unpublish:
+    post:
+      tags: [admin]
+      summary: 下架已发布资源
+      description: |
+        仅将资源状态改为 `hidden`，资源仍保留在后台列表中，可再次编辑或删除。
+        已发布资源必须先下架才能删除；非已发布状态返回 409。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已下架 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /admin/resources/delete:
     post:
       tags: [admin]
-      summary: 软删除/下架资源
+      summary: 删除资源（已发布资源需先下架）
+      description: |
+        软删除资源并从后台列表隐藏。若资源仍处于 `published` 状态，返回 409，
+        调用方需先调用 `/admin/resources/unpublish` 下架。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -3175,6 +3195,7 @@ paths:
       responses:
         "204": { description: 已删除 }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /admin/resources/check-link:
     post:
       tags: [admin]

@@ -329,15 +329,41 @@ func TestResourceLifecycleAndPublicVisibility(t *testing.T) {
 		t.Fatalf("已发布详情期望 200，实际 %d", rec.Code)
 	}
 
-	// 下架（软删除）
+	// 已发布资源不能直接删除，必须先下架。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/delete",
 		fmt.Sprintf(`{"id":%q}`, id), cookie, csrf)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("已发布资源直接删除期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 下架：仅隐藏公开可见性，后台列表仍保留。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/unpublish",
+		fmt.Sprintf(`{"id":%q}`, id), cookie, csrf)
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("删除期望 204，实际 %d", rec.Code)
+		t.Fatalf("下架期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/list", `{"q":"JEI"}`, cookie, csrf)
+	if !strings.Contains(rec.Body.String(), "jei-it") || !strings.Contains(rec.Body.String(), `"status":"hidden"`) {
+		t.Fatalf("下架后后台列表应保留资源且状态为 hidden：%s", rec.Body.String())
 	}
 	rec = do(t, router, http.MethodPost, "/api/v1/resources", `{"q":"JEI"}`, nil, "")
 	if strings.Contains(rec.Body.String(), "jei-it") {
 		t.Fatalf("下架后公开列表不应包含：%s", rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/resources/jei-it", `{}`, nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("下架后公开详情期望 404，实际 %d", rec.Code)
+	}
+
+	// 下架后删除：资源从后台列表移除。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/delete",
+		fmt.Sprintf(`{"id":%q}`, id), cookie, csrf)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("删除期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/resources/list", `{"q":"JEI"}`, cookie, csrf)
+	if strings.Contains(rec.Body.String(), "jei-it") {
+		t.Fatalf("删除后后台列表不应包含：%s", rec.Body.String())
 	}
 }
 

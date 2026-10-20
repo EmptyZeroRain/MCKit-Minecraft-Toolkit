@@ -6,6 +6,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const api = vi.hoisted(() => ({
   listResources: vi.fn(),
+  unpublishResource: vi.fn(),
   deleteResource: vi.fn(),
   checkResourceLink: vi.fn(),
   exportResourcesCsv: vi.fn(),

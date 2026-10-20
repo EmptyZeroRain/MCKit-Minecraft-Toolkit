@@ -1041,6 +1041,7 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 			rr.Post("/create", adminHandler.CreateResource)
 			rr.Post("/detail", handler.WithBodyID(adminHandler.ResourceDetail))
 			rr.Post("/update", handler.WithBodyID(adminHandler.UpdateResource))
+			rr.Post("/unpublish", handler.WithBodyID(adminHandler.UnpublishResource))
 			rr.Post("/delete", handler.WithBodyID(adminHandler.RemoveResource))
 			rr.Post("/check-link", handler.WithBodyID(adminHandler.CheckResourceLink))
 			// 发布版本（TODO §6）：同一资源不同发布版本的关联
@@ -1051,6 +1052,7 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 			rr.Post("/new", adminHandler.CreateResource)
 			rr.Post("/{id}", adminHandler.ResourceDetail)
 			rr.Patch("/{id}", adminHandler.UpdateResource)
+			rr.Post("/{id}/unpublish", adminHandler.UnpublishResource)
 			rr.Delete("/{id}", adminHandler.RemoveResource)
 			rr.Post("/{id}/check-link", adminHandler.CheckResourceLink)
 		})

@@ -25,6 +25,12 @@ var ErrSlugTaken = errors.New("slug 已被占用")
 // ErrNotFound 资源不存在。
 var ErrNotFound = errors.New("资源不存在")
 
+// ErrMustUnpublishFirst 已发布资源必须先下架才能删除。
+var ErrMustUnpublishFirst = errors.New("请先下架资源再删除")
+
+// ErrNotPublished 只有已发布资源可以下架。
+var ErrNotPublished = errors.New("只有已发布资源可以下架")
+
 // Service 资源服务。
 type Service struct {
 	db *gorm.DB
@@ -598,10 +604,29 @@ func (s *Service) checkSlugFreeExcept(slug, exceptID string) error {
 	return nil
 }
 
-// RemoveByID 软删除（需求 §6.3：删除优先软删除或下架）。
-func (s *Service) RemoveByID(ctx context.Context, id string) error {
-	if _, err := s.GetByID(ctx, id); err != nil {
+// UnpublishByID 下架已发布资源：仅隐藏公开可见性，仍保留在后台列表中。
+func (s *Service) UnpublishByID(ctx context.Context, id string) error {
+	res, err := s.GetByID(ctx, id)
+	if err != nil {
 		return err
+	}
+	if res.Status != domain.StatusPublished {
+		return ErrNotPublished
+	}
+	return s.db.WithContext(ctx).Model(&domain.Resource{}).
+		Where("id = ?", id).
+		Update("status", domain.StatusHidden).Error
+}
+
+// RemoveByID 软删除资源。
+// 已发布资源必须先下架，避免「点删除只是下架」的歧义。
+func (s *Service) RemoveByID(ctx context.Context, id string) error {
+	res, err := s.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if res.Status == domain.StatusPublished {
+		return ErrMustUnpublishFirst
 	}
 	return s.db.WithContext(ctx).Model(&domain.Resource{}).
 		Where("id = ?", id).

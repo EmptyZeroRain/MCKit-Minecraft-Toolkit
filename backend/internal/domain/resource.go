@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"mckit/backend/internal/repository/types"
 )
@@ -113,7 +114,8 @@ type Resource struct {
 	UpdatedBy         *uuid.UUID `gorm:"type:uuid" json:"-"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
-	DeletedAt         *time.Time `json:"-"`
+	// 使用 GORM 软删除类型，确保删除后默认查询（含后台列表）自动过滤。
+	DeletedAt gorm.DeletedAt `json:"-"`
 }
 
 // TableName 指定表名。

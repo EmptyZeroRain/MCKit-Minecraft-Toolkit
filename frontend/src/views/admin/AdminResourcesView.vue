@@ -10,6 +10,7 @@ import Pagination from '@/components/common/Pagination.vue'
 import { useUiStore } from '@/stores/ui'
 import {
   listResources,
+  unpublishResource,
   deleteResource,
   checkResourceLink,
   exportResourcesCsv,
@@ -50,6 +51,7 @@ const error = ref('')
 
 const toDelete = ref<Resource | null>(null)
 const deleting = ref(false)
+const unpublishingId = ref<string | null>(null)
 const checkingId = ref<string | null>(null)
 
 async function load() {
@@ -83,12 +85,35 @@ function onPageChange(p: number) {
   load()
 }
 
+async function handleUnpublish(item: Resource) {
+  if (unpublishingId.value) return
+  unpublishingId.value = item.id
+  try {
+    await unpublishResource(item.id)
+    ui.success('资源已下架')
+    load()
+  } catch (err) {
+    ui.error(err instanceof ApiError ? err.message : '下架失败')
+  } finally {
+    unpublishingId.value = null
+  }
+}
+
+/** 已发布资源必须先下架，避免把「删除」误解为仅下架。 */
+function requestDelete(item: Resource) {
+  if (item.status === 'published') {
+    ui.error('请先下架该资源，再执行删除')
+    return
+  }
+  toDelete.value = item
+}
+
 async function confirmDelete() {
   if (!toDelete.value) return
   deleting.value = true
   try {
     await deleteResource(toDelete.value.id)
-    ui.success('已删除/下架资源')
+    ui.success('资源已删除')
     toDelete.value = null
     load()
   } catch (err) {
@@ -96,6 +121,12 @@ async function confirmDelete() {
   } finally {
     deleting.value = false
   }
+}
+
+function statusLabel(status: ResourceStatus): string | undefined {
+  if (status === 'hidden') return '已下架'
+  if (status === 'removed') return '已删除'
+  return undefined
 }
 
 async function handleCheckLink(item: Resource) {
@@ -208,7 +239,9 @@ onMounted(load)
               <td class="px-4 py-3">
                 <ResourceTypeBadge :type="item.resource_type" />
               </td>
-              <td class="px-4 py-3"><StatusBadge :status="item.status" /></td>
+              <td class="px-4 py-3">
+                <StatusBadge :status="item.status" :label="statusLabel(item.status)" />
+              </td>
               <td class="px-4 py-3">
                 <div class="flex items-center gap-1.5 text-xs">
                   <span
@@ -241,9 +274,19 @@ onMounted(load)
                     编辑
                   </RouterLink>
                   <button
+                    v-if="item.status === 'published'"
+                    type="button"
+                    class="rounded border border-amber-mc/40 px-2 py-1 text-amber-mc hover:bg-amber-mc/10 disabled:opacity-50"
+                    :disabled="unpublishingId === item.id"
+                    @click="handleUnpublish(item)"
+                  >
+                    {{ unpublishingId === item.id ? '下架中…' : '下架' }}
+                  </button>
+                  <button
                     type="button"
                     class="rounded border border-danger-mc/40 px-2 py-1 text-danger-mc hover:bg-danger-mc/10"
-                    @click="toDelete = item"
+                    :title="item.status === 'published' ? '请先下架后再删除' : ''"
+                    @click="requestDelete(item)"
                   >
                     删除
                   </button>
@@ -270,7 +313,7 @@ onMounted(load)
     <ConfirmDialog
       :open="!!toDelete"
       title="删除资源"
-      :message="`确定删除「${toDelete?.name}」吗？此操作将软删除或下架该资源。`"
+      :message="`确定删除「${toDelete?.name}」吗？删除后该资源将从后台列表中移除。`"
       confirm-text="确认删除"
       dangerous
       :confirm-disabled="deleting"

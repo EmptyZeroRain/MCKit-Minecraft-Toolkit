@@ -317,6 +317,17 @@ func (h *AdminHandler) UpdateResource(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, res)
 }
 
+// UnpublishResource POST /api/v1/admin/resources/unpublish（下架，保留后台记录）
+func (h *AdminHandler) UnpublishResource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.resources.UnpublishByID(r.Context(), id); err != nil {
+		writeResourceError(w, r, err)
+		return
+	}
+	h.auditLog(r, "resource.unpublish", "resource", id, nil, nil)
+	response.NoContent(w)
+}
+
 // RemoveResource DELETE /api/v1/admin/resources/:id（软删除）
 func (h *AdminHandler) RemoveResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -974,6 +985,10 @@ func writeResourceError(w http.ResponseWriter, r *http.Request, err error) {
 		response.NotFound(w, r)
 	case errors.Is(err, resource.ErrSlugTaken):
 		response.Conflict(w, r, "slug 已被占用")
+	case errors.Is(err, resource.ErrMustUnpublishFirst):
+		response.Conflict(w, r, resource.ErrMustUnpublishFirst.Error())
+	case errors.Is(err, resource.ErrNotPublished):
+		response.Conflict(w, r, resource.ErrNotPublished.Error())
 	case err == nil:
 		response.HandleError(w, r, err)
 	default:

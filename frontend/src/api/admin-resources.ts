@@ -46,7 +46,12 @@ export async function updateResource(id: string, payload: Partial<ResourcePayloa
   return data.data
 }
 
-/** 删除 / 下架资源（软删除由后端实现） */
+/** 下架资源（仅隐藏公开可见性，保留后台记录） */
+export async function unpublishResource(id: string): Promise<void> {
+  await http.post<ApiResponse<null>>('/admin/resources/unpublish', { id })
+}
+
+/** 删除资源（已发布资源需先下架） */
 export async function deleteResource(id: string): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/resources/delete', { id })
 }
