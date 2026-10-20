@@ -10,6 +10,7 @@ import (
 // TestComputeLevel 覆盖等级计算的关键边界（jingyan.md §5）。
 func TestComputeLevel(t *testing.T) {
 	levels := []domain.GrowthLevel{
+		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
 		{Level: 1, ThresholdXP: 0, Title: "初来乍到", Enabled: true},
 		{Level: 2, ThresholdXP: 100, Title: "方块学徒", Enabled: true},
 		{Level: 3, ThresholdXP: 300, Title: "探索者", Enabled: true},
@@ -30,7 +31,7 @@ func TestComputeLevel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			view := computeLevel(levels, tc.xp)
+			view := computeLevel(levels, tc.xp, GuestActiveDaysRequired)
 			if view.Level != tc.wantLevel {
 				t.Fatalf("等级 = %d，期望 %d", view.Level, tc.wantLevel)
 			}
@@ -47,32 +48,60 @@ func TestComputeLevel(t *testing.T) {
 	}
 }
 
+// TestComputeLevelGuestGate 未满 7 个活跃日固定为 Lv.0，进度按活跃天数计算。
+func TestComputeLevelGuestGate(t *testing.T) {
+	levels := []domain.GrowthLevel{
+		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
+		{Level: 1, ThresholdXP: 0, Title: "初来乍到", Enabled: true},
+		{Level: 2, ThresholdXP: 100, Title: "方块学徒", Enabled: true},
+	}
+	view := computeLevel(levels, 5000, 3)
+	if view.Level != 0 || view.Title != "访客" {
+		t.Fatalf("3 个活跃日应停留 Lv.0，实际 %+v", view)
+	}
+	if view.NextThreshold != nil || view.XPToNext != 0 {
+		t.Fatalf("访客阶段不应展示经验升级目标，实际 %+v", view)
+	}
+	if view.ActiveDays != 3 || view.GuestActiveDays != GuestActiveDaysRequired {
+		t.Fatalf("活跃天数展示异常: %+v", view)
+	}
+	wantPercent := 3 * 100 / GuestActiveDaysRequired
+	if view.ProgressPercent != wantPercent {
+		t.Fatalf("访客进度 = %d，期望 %d", view.ProgressPercent, wantPercent)
+	}
+	if got := computeLevel(levels, 5000, GuestActiveDaysRequired).Level; got != 2 {
+		t.Fatalf("满 7 个活跃日后应按经验进入 Lv.2，实际 Lv.%d", got)
+	}
+}
+
 // TestComputeLevelIgnoresDisabled 停用等级不参与计算。
 func TestComputeLevelIgnoresDisabled(t *testing.T) {
 	levels := []domain.GrowthLevel{
+		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
 		{Level: 1, ThresholdXP: 0, Title: "Lv.1", Enabled: true},
 		{Level: 2, ThresholdXP: 100, Title: "Lv.2", Enabled: false},
 		{Level: 3, ThresholdXP: 300, Title: "Lv.3", Enabled: true},
 	}
-	if got := computeLevel(levels, 150).Level; got != 1 {
+	if got := computeLevel(levels, 150, GuestActiveDaysRequired).Level; got != 1 {
 		t.Fatalf("停用 Lv.2 后 150 XP 应为 Lv.1，实际 Lv.%d", got)
 	}
-	if got := computeLevel(levels, 300).Level; got != 3 {
+	if got := computeLevel(levels, 300, GuestActiveDaysRequired).Level; got != 3 {
 		t.Fatalf("300 XP 应为 Lv.3，实际 Lv.%d", got)
 	}
 }
 
-// TestComputeLevelEmptyThresholds 阈值表缺失时兜底 Lv.1。
+// TestComputeLevelEmptyThresholds 阈值表缺失时兜底 Lv.0。
 func TestComputeLevelEmptyThresholds(t *testing.T) {
-	view := computeLevel(nil, 12345)
-	if view.Level != 1 || !view.IsMax {
-		t.Fatalf("空阈值表应兜底 Lv.1 满级，实际 %+v", view)
+	view := computeLevel(nil, 12345, GuestActiveDaysRequired)
+	if view.Level != 0 || view.Title != "访客" || !view.IsMax {
+		t.Fatalf("空阈值表应兜底 Lv.0 访客满级，实际 %+v", view)
 	}
 }
 
-// TestComputeLevelWithOffset 人工等级偏移：经验等级叠加偏移并限制在有效等级范围。
-func TestComputeLevelWithOffset(t *testing.T) {
+// TestComputeLevelWithOverride 人工等级覆盖：覆盖值优先，经验变化不影响展示等级。
+func TestComputeLevelWithOverride(t *testing.T) {
 	levels := []domain.GrowthLevel{
+		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
 		{Level: 1, ThresholdXP: 0, Title: "Lv.1", Enabled: true},
 		{Level: 2, ThresholdXP: 100, Title: "Lv.2", Enabled: true},
 		{Level: 3, ThresholdXP: 300, Title: "Lv.3", Enabled: true},
@@ -80,27 +109,36 @@ func TestComputeLevelWithOffset(t *testing.T) {
 	cases := []struct {
 		name      string
 		xp        int64
-		offset    int
+		override  *int
+		active    int
 		wantLevel int
 	}{
-		{"无偏移保持经验等级", 150, 0, 2},
-		{"正偏移提升展示等级", 150, 1, 3},
-		{"负偏移降低展示等级", 350, -2, 1},
-		{"正偏移不超过最高等级", 300, 9, 3},
-		{"负偏移不低于最低等级", 0, -9, 1},
+		{"无覆盖按经验计算", 150, nil, 7, 2},
+		{"覆盖值优先于经验", 150, intPtr(3), 7, 3},
+		{"访客也可被人工覆盖", 0, intPtr(2), 1, 2},
+		{"覆盖值不超过最高等级", 300, intPtr(99), 7, 3},
+		{"覆盖值不低于最低等级", 0, intPtr(-1), 7, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			view := computeLevelWithOffset(levels, tc.xp, tc.offset)
+			view := computeLevelWithOverride(levels, tc.xp, tc.override, tc.active)
 			if view.Level != tc.wantLevel {
 				t.Fatalf("等级 = %d，期望 %d", view.Level, tc.wantLevel)
 			}
+			if tc.override != nil && !view.Overridden {
+				t.Fatal("人工覆盖时 Overridden 应为 true")
+			}
+			if tc.override != nil && view.NextThreshold != nil {
+				t.Fatalf("人工覆盖时不应展示经验升级目标，实际 %+v", view)
+			}
 		})
 	}
-	if got := effectiveLevel(levels, 0, 2); got != 3 {
-		t.Fatalf("0 XP + 偏移 2 应为 Lv.3，实际 Lv.%d", got)
+	if got := effectiveLevel(levels, 0, intPtr(2), 7); got != 2 {
+		t.Fatalf("0 XP + 覆盖 Lv.2 应为 Lv.2，实际 Lv.%d", got)
 	}
 }
+
+func intPtr(v int) *int { return &v }
 
 // TestBusinessDate 业务日期按站点时区换算。
 func TestBusinessDate(t *testing.T) {

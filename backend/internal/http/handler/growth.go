@@ -438,7 +438,7 @@ func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // LevelsDelete POST /api/v1/admin/growth/levels/delete
-// 参数：level。可删除任意 Lv.2 及以上等级；Lv.1 不可删除。
+// 参数：level。可删除任意 Lv.2 及以上等级；Lv.0 / Lv.1 不可删除。
 func (h *GrowthHandler) LevelsDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level int `json:"level"`
@@ -464,20 +464,24 @@ func (h *GrowthHandler) LevelsRecalculate(w http.ResponseWriter, r *http.Request
 }
 
 // LevelsAdjust POST /api/v1/admin/growth/levels/adjust
-// 参数：target_user_id（仅对外用户 ID）、delta_level（可负）、reason、request_key（仅留痕）。
+// 参数：target_user_id（仅对外用户 ID）、target_level（绝对目标等级）、reason、request_key（仅留痕）。
 func (h *GrowthHandler) LevelsAdjust(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetUserID string `json:"target_user_id"`
-		DeltaLevel   int    `json:"delta_level"`
+		TargetLevel  *int   `json:"target_level"`
 		Reason       string `json:"reason"`
 		RequestKey   string `json:"request_key"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if req.TargetLevel == nil {
+		writeGrowthError(w, r, growth.ErrBadInput)
+		return
+	}
 	out, err := h.svc.AdjustLevel(r.Context(), growth.AdjustLevelInput{
 		TargetUserID: req.TargetUserID,
-		DeltaLevel:   req.DeltaLevel,
+		TargetLevel:  *req.TargetLevel,
 		Reason:       req.Reason,
 		RequestKey:   req.RequestKey,
 		OperatorID:   actorID(r),

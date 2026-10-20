@@ -83,9 +83,10 @@ func TestGrowthEventDrivenAndIdempotent(t *testing.T) {
 
 	cookie, csrf := loginUser(t, router, "growth-1")
 	// 登录：daily_login 规则 5 XP + 每日登录任务 5 XP = 10 XP。
+	// 注册当天 + 登录当天仍是 1 个活跃日，未满 7 天，等级保持 Lv.0「访客」。
 	xp, level, tasks := growthOverview(t, router, cookie)
-	if xp != 10 || level != 1 || tasks != 1 {
-		t.Fatalf("首次登录后期望 XP=10 Lv.1 任务完成 1，实际 XP=%d Lv.%d 完成=%d", xp, level, tasks)
+	if xp != 10 || level != 0 || tasks != 1 {
+		t.Fatalf("首次登录后期望 XP=10 Lv.0 任务完成 1，实际 XP=%d Lv.%d 完成=%d", xp, level, tasks)
 	}
 
 	// 同日再次登录：规则按业务日期幂等、任务已完成不再自增，经验不变。
@@ -141,9 +142,9 @@ func TestGrowthAdminAdjustReverseAndPermission(t *testing.T) {
 
 	userID := registerUser(t, router, "growth-2")
 	userCookie, _ := loginUser(t, router, "growth-2")
-	// 登录后 10 XP。
-	if xp, _, _ := growthOverview(t, router, userCookie); xp != 10 {
-		t.Fatalf("登录后期望 XP=10，实际 %d", xp)
+	// 登录后 10 XP，但仍处于访客阶段。
+	if xp, level, _ := growthOverview(t, router, userCookie); xp != 10 || level != 0 {
+		t.Fatalf("登录后期望 XP=10 Lv.0，实际 XP=%d Lv.%d", xp, level)
 	}
 
 	// 普通用户不能访问后台成长接口（无 ops.growth 权限）。
@@ -158,6 +159,19 @@ func TestGrowthAdminAdjustReverseAndPermission(t *testing.T) {
 	}
 
 	adminCookie, adminCSRF := loginAs(t, router, itAdminUser)
+
+	// 测试用：补足 7 个活跃日后重算，进入经验等级体系。
+	if err := gdb.Model(&domain.UserGrowth{}).Where("user_id = ?", userID).
+		Update("active_days", 7).Error; err != nil {
+		t.Fatalf("补足活跃天数失败: %v", err)
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/recalculate", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("重算等级期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if xp, level, _ := growthOverview(t, router, userCookie); xp != 10 || level != 1 {
+		t.Fatalf("满 7 个活跃日后期望 XP=10 Lv.1，实际 XP=%d Lv.%d", xp, level)
+	}
 
 	// 人工调整 +100：XP 110，等级升到 Lv.2（阈值 100）。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/adjust",
@@ -350,7 +364,12 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 		t.Fatalf("阈值顺序错误期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// Lv.1 不可删除。
+	// Lv.0 / Lv.1 不可删除。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
+		`{"level":0}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("删除 Lv.0 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
 		`{"level":1}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusUnprocessableEntity {

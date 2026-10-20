@@ -153,6 +153,12 @@ onMounted(async () => {
               <span class="rounded-full border border-grass-500/40 bg-grass-500/10 px-2 py-0.5 text-xs text-grass-300">
                 Lv.{{ overview.level }} · {{ overview.level_title }}
               </span>
+              <span
+                v-if="overview.is_level_overridden"
+                class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"
+              >
+                人工覆盖
+              </span>
             </div>
             <p class="mt-1 text-sm text-text-secondary">
               当前有效经验 <span class="font-semibold text-text-primary">{{ overview.current_xp }}</span>
@@ -164,9 +170,15 @@ onMounted(async () => {
         <!-- 升级进度条 -->
         <div class="mt-5">
           <div class="mb-1.5 flex items-center justify-between text-xs text-text-muted">
-            <span v-if="overview.is_max_level">已达最高等级</span>
+            <span v-if="overview.is_level_overridden">
+              当前等级由管理员调整，经验继续累积但不自动升级
+            </span>
+            <span v-else-if="overview.level === 0">
+              访客阶段：活跃 {{ overview.active_days }}/{{ overview.guest_active_days }} 天
+            </span>
+            <span v-else-if="overview.is_max_level">已达最高等级</span>
             <span v-else>距下一级还需 {{ overview.xp_to_next_level }} 经验</span>
-            <span>{{ overview.level_progress_percent }}%</span>
+            <span v-if="!overview.is_level_overridden">{{ overview.level_progress_percent }}%</span>
           </div>
           <div class="h-2.5 w-full overflow-hidden rounded-full bg-ink-800">
             <div

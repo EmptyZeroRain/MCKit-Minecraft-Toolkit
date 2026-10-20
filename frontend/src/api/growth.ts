@@ -325,7 +325,7 @@ export async function recalculateAchievements(userId = ''): Promise<number> {
   return data.data.unlocked
 }
 
-/** 单用户等级调整（只调整等级偏移，不修改等级定义本身） */
+/** 单用户等级调整（直接覆盖展示等级，不修改等级定义本身） */
 export async function adjustUserLevel(payload: AdjustLevelInput): Promise<LevelAdjustResult> {
   const { data } = await http.post<ApiResponse<LevelAdjustResult>>(
     '/admin/growth/levels/adjust',

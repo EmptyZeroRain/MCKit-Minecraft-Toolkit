@@ -248,9 +248,9 @@ func (s *Service) ListLevels(ctx context.Context) ([]domain.GrowthLevel, error) 
 }
 
 // UpdateLevel 更新单个等级阈值 / 标题 / 启用状态。
-// 校验：阈值非负且全局唯一、按等级严格递增，Lv.1 必须为 0 XP。
+// 校验：等级号非负；Lv.0 / Lv.1 阈值固定为 0；其余等级阈值必须唯一且按等级严格递增。
 func (s *Service) UpdateLevel(ctx context.Context, in domain.GrowthLevel, operatorID string) error {
-	if in.Level < 1 || in.ThresholdXP < 0 || strings.TrimSpace(in.Title) == "" || len(in.Title) > 100 {
+	if in.Level < GuestLevel || in.ThresholdXP < 0 || strings.TrimSpace(in.Title) == "" || len(in.Title) > 100 {
 		return ErrLevelThreshold
 	}
 	levels, err := s.repo.ListLevels(ctx)
@@ -266,24 +266,11 @@ func (s *Service) UpdateLevel(ctx context.Context, in domain.GrowthLevel, operat
 	if target == nil {
 		return ErrLevelNotFound
 	}
-	for _, l := range levels {
-		if l.Level == in.Level {
-			continue
-		}
-		if l.ThresholdXP == in.ThresholdXP {
-			return ErrLevelThreshold
-		}
-	}
-	if in.Level == 1 && in.ThresholdXP != 0 {
+	if (in.Level == GuestLevel || in.Level == 1) && in.ThresholdXP != 0 {
 		return ErrLevelThreshold
 	}
-	for _, l := range levels {
-		if l.Level < in.Level && l.ThresholdXP >= in.ThresholdXP {
-			return ErrLevelThreshold
-		}
-		if l.Level > in.Level && l.ThresholdXP <= in.ThresholdXP {
-			return ErrLevelThreshold
-		}
+	if err := validateLevelOrder(levels, in.Level, in.ThresholdXP); err != nil {
+		return err
 	}
 	before := levelSnapshot(target)
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -304,6 +291,32 @@ func (s *Service) UpdateLevel(ctx context.Context, in domain.GrowthLevel, operat
 	})
 }
 
+// validateLevelOrder 校验等级阈值的唯一性与顺序。
+//
+// Lv.0 与 Lv.1 都固定为 0 XP，是唯一允许的重复阈值；其余正阈值必须全局唯一，
+// 且阈值随等级号严格递增。
+func validateLevelOrder(levels []domain.GrowthLevel, level int, threshold int64) error {
+	for _, l := range levels {
+		if l.Level == level {
+			continue
+		}
+		if l.ThresholdXP == threshold {
+			zeroPair := threshold == 0 &&
+				((level == GuestLevel && l.Level == 1) || (level == 1 && l.Level == GuestLevel))
+			if !zeroPair {
+				return ErrLevelThreshold
+			}
+		}
+		if l.Level < level && l.ThresholdXP > threshold {
+			return ErrLevelThreshold
+		}
+		if l.Level > level && l.ThresholdXP < threshold {
+			return ErrLevelThreshold
+		}
+	}
+	return nil
+}
+
 // CreateLevelInput 新增等级入参。
 //
 // Level 为 0 时沿用「追加到当前最高级 +1」的兼容行为；
@@ -317,8 +330,9 @@ type CreateLevelInput struct {
 
 // CreateLevel 新增一个等级，可指定等级号并跳号。
 //
-// 阈值按等级号严格递增，以保持「等级号越大、所需经验越高」的语义。
-// 新增等级可能插入现有序列中间，因此创建后立即重算用户展示等级。
+// Lv.0「访客」与 Lv.1 是内置基础等级，不允许重复创建；新增等级号必须 >= 2，
+// 阈值必须为正且按等级号严格递增。新增等级可能插入现有序列中间，因此创建后
+// 立即重算用户展示等级。
 func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operatorID string) (*domain.GrowthLevel, error) {
 	title := strings.TrimSpace(in.Title)
 	if in.Level < 0 || in.ThresholdXP < 0 || title == "" || len(title) > 100 {
@@ -330,27 +344,34 @@ func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operator
 		if err := tx.Order("level ASC").Find(&levels).Error; err != nil {
 			return err
 		}
-		level := in.Level
-		if level == 0 {
-			level = 1
-			if len(levels) > 0 {
-				level = levels[len(levels)-1].Level + 1
+		hasGuest, hasOne := false, false
+		for _, l := range levels {
+			if l.Level == GuestLevel {
+				hasGuest = true
+			}
+			if l.Level == 1 {
+				hasOne = true
 			}
 		}
-		if level < 1 {
-			return ErrBadInput
-		}
-		if level == 1 && in.ThresholdXP != 0 {
+		if !hasGuest || !hasOne {
 			return ErrLevelOrder
 		}
-		if len(levels) == 0 && (level != 1 || in.ThresholdXP != 0) {
+		level := in.Level
+		if level == 0 {
+			level = levels[len(levels)-1].Level + 1
+		}
+		if level < 2 {
+			// 显式 Lv.0 已被自动追加语义占用；Lv.1 已存在。
+			return ErrLevelExists
+		}
+		if in.ThresholdXP <= 0 {
+			// 0 XP 只属于 Lv.0 / Lv.1；新增等级必须使用正阈值。
 			return ErrLevelOrder
 		}
 		for _, l := range levels {
 			if l.Level == level {
 				return ErrLevelExists
 			}
-			// 阈值必须按等级号严格递增；重复阈值同样视为顺序非法。
 			if l.ThresholdXP == in.ThresholdXP ||
 				(l.Level < level && l.ThresholdXP >= in.ThresholdXP) ||
 				(l.Level > level && l.ThresholdXP <= in.ThresholdXP) {
@@ -370,7 +391,7 @@ func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operator
 		}
 		levels = append(levels, *lvl)
 		sort.Slice(levels, func(i, j int) bool { return levels[i].Level < levels[j].Level })
-		if _, err := recalculateUserLevels(tx, levels, true); err != nil {
+		if _, err := recalculateUserLevels(tx, levels); err != nil {
 			return err
 		}
 		if err := syncLevelAchievementProgress(tx, s.now()); err != nil {
@@ -395,7 +416,7 @@ func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operator
 //
 // 允许删除中间等级：删除后更高等级整体前移一位，保留既有跳号间隔；
 // level_reached 成就的目标等级大于被删等级时同步减 1，避免成就阈值错位。
-// Lv.1 永远保留；删除后按新阈值重算用户展示等级，人工等级偏移同步收敛。
+// Lv.0 / Lv.1 永远保留；删除后按新阈值重算用户展示等级，人工覆盖等级同步收敛。
 func (s *Service) DeleteLevel(ctx context.Context, level int, operatorID string) error {
 	if level <= 1 {
 		return ErrLevelDeleteLv1
@@ -451,7 +472,7 @@ func (s *Service) DeleteLevel(ctx context.Context, level int, operatorID string)
 			return achRes.Error
 		}
 
-		fixed, err := recalculateUserLevels(tx, remaining, true)
+		fixed, err := recalculateUserLevels(tx, remaining)
 		if err != nil {
 			return err
 		}
@@ -488,37 +509,39 @@ func syncLevelAchievementProgress(tx *gorm.DB, now time.Time) error {
 type AdjustLevelInput struct {
 	// TargetUserID 对外用户 ID（accounts.user_no），不接受内部 UUID 或用户名。
 	TargetUserID string `json:"target_user_id"`
-	DeltaLevel   int    `json:"delta_level"`
-	Reason       string `json:"reason"`
-	RequestKey   string `json:"request_key"`
-	OperatorID   string `json:"-"`
-	RequestID    string `json:"-"`
+	// TargetLevel 直接覆盖的目标等级（绝对值），必须是当前启用的等级。
+	TargetLevel int    `json:"target_level"`
+	Reason      string `json:"reason"`
+	RequestKey  string `json:"request_key"`
+	OperatorID  string `json:"-"`
+	RequestID   string `json:"-"`
 }
 
 // LevelAdjustResult 单用户等级调整结果。
 type LevelAdjustResult struct {
-	UserID      string `json:"user_id"`
-	BaseLevel   int    `json:"base_level"`
-	LevelOffset int    `json:"level_offset"`
-	Level       int    `json:"level"`
-	LevelTitle  string `json:"level_title"`
-	DeltaLevel  int    `json:"delta_level"`
+	UserID     string `json:"user_id"`
+	BaseLevel  int    `json:"base_level"`
+	Level      int    `json:"level"`
+	LevelTitle string `json:"level_title"`
+	// Overridden 人工覆盖后固定为 true；经验继续累积但不自动改级。
+	Overridden bool `json:"is_level_overridden"`
 }
 
-// AdjustLevel 直接调整单个用户的展示等级。
+// AdjustLevel 直接用目标等级覆盖单个用户的展示等级。
 //
 // 目标只接受对外用户 ID（accounts.user_no），便于运营直接复制用户列表中的
 // ID；内部 UUID 与用户名不作为该表单的输入口径。普通用户与后台账号均可调整
 // （统一账号都可能拥有成长投影）。
-// 等级本身由经验阈值推导，因此这里调整的是 user_growth.level_offset：
-// 有效等级 = 经验等级 + 偏移，后续经验变化仍会平滑叠加，不会把人工调整清零。
-// 只允许调整现有启用等级范围内的目标；等级定义本身由 CreateLevel / DeleteLevel 管理。
+//
+// 与旧的“经验等级 + 偏移”不同，这里写入 user_growth.level_override：
+// 覆盖期间展示等级固定为目标值，后续经验变化不会自动改级；经验仍正常累积，
+// 直到下一次人工调整覆盖。等级定义本身由 CreateLevel / DeleteLevel 管理。
 func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelAdjustResult, error) {
 	targetID, err := s.resolveLevelAdjustUserID(ctx, in.TargetUserID)
 	if err != nil {
 		return nil, err
 	}
-	if in.DeltaLevel == 0 || in.DeltaLevel < -100 || in.DeltaLevel > 100 {
+	if in.TargetLevel < GuestLevel || in.TargetLevel > 100000 {
 		return nil, ErrBadInput
 	}
 	reason := strings.TrimSpace(in.Reason)
@@ -533,10 +556,12 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 	if len(enabled) == 0 {
 		return nil, ErrLevelNotFound
 	}
-	minLevel, maxLevel := enabled[0].Level, enabled[len(enabled)-1].Level
 	enabledSet := make(map[int]bool, len(enabled))
 	for _, l := range enabled {
 		enabledSet[l.Level] = true
+	}
+	if !enabledSet[in.TargetLevel] {
+		return nil, ErrLevelRange
 	}
 
 	var result *LevelAdjustResult
@@ -545,19 +570,15 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 		if err != nil {
 			return err
 		}
-		baseLevel := computeLevel(levels, g.CurrentXP).Level
-		currentLevel := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
-		targetLevel := currentLevel + in.DeltaLevel
-		if targetLevel < minLevel || targetLevel > maxLevel || !enabledSet[targetLevel] {
-			return ErrLevelRange
-		}
-		newOffset := targetLevel - baseLevel
+		baseLevel := computeLevel(levels, g.CurrentXP, g.ActiveDays).Level
+		targetLevel := in.TargetLevel
+		override := targetLevel
 		if err := tx.Model(&domain.UserGrowth{}).Where("user_id = ?", targetID).
 			Updates(map[string]any{
-				"level":        targetLevel,
-				"level_offset": newOffset,
-				"version":      gorm.Expr("version + 1"),
-				"updated_at":   s.now(),
+				"level":          targetLevel,
+				"level_override": override,
+				"version":        gorm.Expr("version + 1"),
+				"updated_at":     s.now(),
 			}).Error; err != nil {
 			return err
 		}
@@ -565,28 +586,27 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 			OperatorID: in.OperatorID, Action: "level.adjust", TargetUser: targetID.String(),
 			EntityType: "user_growth", EntityID: targetID.String(), Reason: reason,
 			Before: map[string]any{
-				"base_level":   baseLevel,
-				"level":        currentLevel,
-				"level_offset": g.LevelOffset,
+				"base_level":     baseLevel,
+				"level":          g.Level,
+				"level_override": g.LevelOverride,
 			},
 			After: map[string]any{
-				"base_level":   baseLevel,
-				"level":        targetLevel,
-				"level_offset": newOffset,
-				"delta_level":  in.DeltaLevel,
-				"request_key":  strings.TrimSpace(in.RequestKey),
+				"base_level":     baseLevel,
+				"level":          targetLevel,
+				"level_override": override,
+				"target_level":   targetLevel,
+				"request_key":    strings.TrimSpace(in.RequestKey),
 			},
 			RequestID: in.RequestID,
 		}); err != nil {
 			return err
 		}
 		result = &LevelAdjustResult{
-			UserID:      targetID.String(),
-			BaseLevel:   baseLevel,
-			LevelOffset: newOffset,
-			Level:       targetLevel,
-			LevelTitle:  levelTitle(levels, targetLevel),
-			DeltaLevel:  in.DeltaLevel,
+			UserID:     targetID.String(),
+			BaseLevel:  baseLevel,
+			Level:      targetLevel,
+			LevelTitle: levelTitle(levels, targetLevel),
+			Overridden: true,
 		}
 		return nil
 	})
@@ -603,30 +623,27 @@ func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return recalculateUserLevels(s.db.WithContext(ctx), levels, false)
+	return recalculateUserLevels(s.db.WithContext(ctx), levels)
 }
 
 // recalculateUserLevels 按给定等级表重算用户展示等级。
 //
-// clampOffset 为 true 时会把 level_offset 收敛到新等级范围内；
-// 删除等级或重排后必须收敛，否则偏移会在未来新增等级时产生意外跳级。
-func recalculateUserLevels(db *gorm.DB, levels []domain.GrowthLevel, clampOffset bool) (int, error) {
+// 人工覆盖等级也会被收敛到当前启用等级范围：若覆盖值对应的等级被删除 / 停用，
+// 则取不超过该值的最高启用等级并回写 level_override，避免长期保留无效值。
+func recalculateUserLevels(db *gorm.DB, levels []domain.GrowthLevel) (int, error) {
 	var rows []domain.UserGrowth
-	if err := db.Select("user_id, current_xp, level, level_offset").Find(&rows).Error; err != nil {
+	if err := db.Select("user_id, current_xp, level, level_override, active_days").Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	fixed := 0
 	for _, g := range rows {
-		want := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
+		want := effectiveLevel(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
 		updates := map[string]any{}
 		if want != g.Level {
 			updates["level"] = want
 		}
-		if clampOffset {
-			base := computeLevel(levels, g.CurrentXP).Level
-			if newOffset := want - base; newOffset != g.LevelOffset {
-				updates["level_offset"] = newOffset
-			}
+		if g.LevelOverride != nil && *g.LevelOverride != want {
+			updates["level_override"] = want
 		}
 		if len(updates) == 0 {
 			continue
@@ -1079,9 +1096,11 @@ func (s *Service) SetAchievementEnabled(ctx context.Context, id string, enabled 
 func (s *Service) RecalculateAchievements(ctx context.Context, userID, operatorID string) (int, error) {
 	ids := []uuid.UUID{}
 	if strings.TrimSpace(userID) != "" {
-		id, err := uuid.Parse(strings.TrimSpace(userID))
+		// 复用统一解析：拒绝全零 UUID，并校验目标账号确实存在，
+		// 避免向 achievement_progress 写入悬空外键后以 500 暴露。
+		id, err := s.resolveUserID(ctx, userID)
 		if err != nil {
-			return 0, ErrBadInput
+			return 0, err
 		}
 		ids = append(ids, id)
 	} else {
@@ -1454,15 +1473,15 @@ func (s *Service) resolveLevelAdjustUserID(ctx context.Context, raw string) (uui
 		return uuid.Nil, ErrLevelAdjustUserIDRequired
 	}
 	var account domain.Account
-	err := s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Select("id").
 		Where("user_no = ?", strings.ToUpper(raw)).
-		First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return uuid.Nil, ErrLevelAdjustUserNotFound
-	}
-	if err != nil {
+		Limit(1).
+		Find(&account).Error; err != nil {
 		return uuid.Nil, err
+	}
+	if account.ID == uuid.Nil {
+		return uuid.Nil, ErrLevelAdjustUserNotFound
 	}
 	return account.ID, nil
 }

@@ -4,13 +4,17 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"mckit/backend/internal/audit"
 	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/response"
+
+	"github.com/google/uuid"
 )
 
 // AuditHandler 审计日志查询处理器（需求 §8.4）。
@@ -43,8 +47,8 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, r, "请求体格式错误")
 		return
 	}
-	if !validAuditResult(req.Result) {
-		response.Validation(w, r, []response.ErrorDetail{{Field: "result", Message: "结果只能是 success 或 failure"}})
+	if details := validateAuditFilter(req); len(details) > 0 {
+		response.Validation(w, r, details)
 		return
 	}
 
@@ -79,8 +83,8 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req)
 	}
-	if !validAuditResult(req.Result) {
-		response.Validation(w, r, []response.ErrorDetail{{Field: "result", Message: "结果只能是 success 或 failure"}})
+	if details := validateAuditFilter(req); len(details) > 0 {
+		response.Validation(w, r, details)
 		return
 	}
 
@@ -146,6 +150,25 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 }
 
 // validAuditResult 校验结果筛选值。
+// validateAuditFilter 校验筛选条件，避免把非法 UUID / IP 直接交给数据库。
+// 审计表的 actor_admin_id 是 uuid、source_ip 是 inet，非法字符串会触发 PostgreSQL
+// 类型错误并最终以 500 暴露；这里统一转为 422。
+func validateAuditFilter(req listRequest) []response.ErrorDetail {
+	details := make([]response.ErrorDetail, 0, 2)
+	if req.ActorID != "" {
+		if _, err := uuid.Parse(strings.TrimSpace(req.ActorID)); err != nil {
+			details = append(details, response.ErrorDetail{Field: "actor_id", Message: "操作者 ID 必须是合法 UUID"})
+		}
+	}
+	if req.SourceIP != "" && net.ParseIP(strings.TrimSpace(req.SourceIP)) == nil {
+		details = append(details, response.ErrorDetail{Field: "source_ip", Message: "来源 IP 格式不合法"})
+	}
+	if !validAuditResult(req.Result) {
+		details = append(details, response.ErrorDetail{Field: "result", Message: "结果只能是 success 或 failure"})
+	}
+	return details
+}
+
 func validAuditResult(result string) bool {
 	return result == "" || result == domain.AuditSuccess || result == domain.AuditFailure
 }

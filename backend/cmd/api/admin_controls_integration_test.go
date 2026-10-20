@@ -33,23 +33,39 @@ func TestGrowthAdminControlsAndGiftAPI(t *testing.T) {
 
 	cookie, csrf := loginAs(t, router, itAdminUser)
 
-	// 1) 单用户等级 +2。
+	// 1) 单用户等级直接覆盖为 Lv.3。
 	rec := do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/adjust",
-		fmt.Sprintf(`{"target_user_id":%q,"delta_level":2,"reason":"接口集成测试"}`, user.UserNo),
+		fmt.Sprintf(`{"target_user_id":%q,"target_level":3,"reason":"接口集成测试"}`, user.UserNo),
 		cookie, csrf)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("等级调整失败: %d %s", rec.Code, rec.Body.String())
 	}
 	data := decodeData(t, rec)
-	var gotLevel, gotOffset int
+	var gotLevel int
 	if v, ok := data["level"].(float64); ok {
 		gotLevel = int(v)
 	}
-	if v, ok := data["level_offset"].(float64); ok {
-		gotOffset = int(v)
+	gotOverridden, _ := data["is_level_overridden"].(bool)
+	if gotLevel != 3 || !gotOverridden {
+		t.Fatalf("等级调整结果异常: level=%d overridden=%v body=%s", gotLevel, gotOverridden, rec.Body.String())
 	}
-	if gotLevel != 3 || gotOffset != 2 {
-		t.Fatalf("等级调整结果异常: level=%d offset=%d body=%s", gotLevel, gotOffset, rec.Body.String())
+
+	// 1.1) 后台账号同样可按对外 ID 调整；表单不接受内部 UUID。
+	var adminTarget domain.User
+	if err := gdb.Where("username = ?", itAdminUser).First(&adminTarget).Error; err != nil {
+		t.Fatalf("读取后台账号失败: %v", err)
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/adjust",
+		fmt.Sprintf(`{"target_user_id":%q,"target_level":2,"reason":"管理员等级接口测试"}`, adminTarget.UserNo),
+		cookie, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("管理员等级调整失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/adjust",
+		fmt.Sprintf(`{"target_user_id":%q,"target_level":1,"reason":"UUID 接口测试"}`, user.ID.String()),
+		cookie, csrf)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("内部 UUID 应返回 422，实际: %d %s", rec.Code, rec.Body.String())
 	}
 
 	// 2) 授予成就 -> 查询 -> 撤销。

@@ -79,6 +79,11 @@ func (s *Service) handleEventOnce(ctx context.Context, ev domain.GrowthEvent) er
 			return nil // 已处理过，幂等成功
 		}
 
+		// 1.1 记录活跃日：同一业务日期只计一次，满 7 天后不再重复统计。
+		if err := s.refreshActiveDays(tx, ev.ActorUserID); err != nil {
+			return err
+		}
+
 		date := businessDate(ev.OccurredAt, s.loc)
 
 		// 2. 加载当前生效规则并发放行为经验。
@@ -226,7 +231,8 @@ func lockGrowth(tx *gorm.DB, userID uuid.UUID) (*domain.UserGrowth, error) {
 		return nil, err
 	}
 	var g domain.UserGrowth
-	if err := tx.Raw(`SELECT user_id, current_xp, lifetime_earned_xp, lifetime_reversed_xp, level, level_offset, version
+	if err := tx.Raw(`SELECT user_id, current_xp, lifetime_earned_xp, lifetime_reversed_xp,
+		level, level_override, active_days, version
 		FROM user_growth WHERE user_id = ? FOR UPDATE`, userID).Scan(&g).Error; err != nil {
 		return nil, err
 	}
@@ -236,7 +242,37 @@ func lockGrowth(tx *gorm.DB, userID uuid.UUID) (*domain.UserGrowth, error) {
 	return &g, nil
 }
 
-// recalcLevel 依据当前有效经验重算并写入等级。
+// refreshActiveDays 统计用户累计活跃天数并写入投影。
+//
+// 活跃日口径：growth_events 中同一业务日期（站点时区）至少有一个已处理事件。
+// 注册、登录、收藏、工具使用等都会产生事件；只读页面刷新不会。满 7 天后
+// 不再查询历史，避免老用户每次事件都做一次去重统计。
+func (s *Service) refreshActiveDays(tx *gorm.DB, userID uuid.UUID) error {
+	g, err := lockGrowth(tx, userID)
+	if err != nil {
+		return err
+	}
+	if g.ActiveDays >= GuestActiveDaysRequired {
+		return nil
+	}
+	var count int
+	if err := tx.Raw(`SELECT COUNT(DISTINCT (occurred_at AT TIME ZONE ?)::date)
+		FROM growth_events
+		WHERE actor_user_id = ? AND status = ?`,
+		s.loc.String(), userID, domain.GrowthEventProcessed).Scan(&count).Error; err != nil {
+		return err
+	}
+	if count > GuestActiveDaysRequired {
+		count = GuestActiveDaysRequired
+	}
+	if count <= g.ActiveDays {
+		return nil
+	}
+	return tx.Model(&domain.UserGrowth{}).Where("user_id = ?", userID).
+		Updates(map[string]any{"active_days": count, "updated_at": s.now()}).Error
+}
+
+// recalcLevel 依据当前经验 / 人工覆盖 / 活跃天数重算并写入等级。
 func (s *Service) recalcLevel(tx *gorm.DB, userID uuid.UUID) error {
 	g, err := lockGrowth(tx, userID)
 	if err != nil {
@@ -246,7 +282,7 @@ func (s *Service) recalcLevel(tx *gorm.DB, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	level := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
+	level := effectiveLevel(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
 	if level == g.Level {
 		return nil
 	}
@@ -254,10 +290,10 @@ func (s *Service) recalcLevel(tx *gorm.DB, userID uuid.UUID) error {
 		Update("level", level).Error
 }
 
-// loadLevels 读取全部等级（按阈值升序）。
+// loadLevels 读取全部等级（按阈值升序、同阈值按等级号升序）。
 func loadLevels(tx *gorm.DB) ([]domain.GrowthLevel, error) {
 	var out []domain.GrowthLevel
-	err := tx.Order("threshold_xp ASC").Find(&out).Error
+	err := tx.Order("threshold_xp ASC, level ASC").Find(&out).Error
 	return out, err
 }
 

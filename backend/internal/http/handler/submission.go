@@ -327,7 +327,9 @@ func (h *SubmissionAdminHandler) BatchReview(w http.ResponseWriter, r *http.Requ
 	ids := make([]uuid.UUID, 0, len(req.IDs))
 	for _, raw := range req.IDs {
 		id, err := uuid.Parse(raw)
-		if err != nil {
+		// 全零 UUID 虽能解析，但服务层会按「空 ID」丢弃，最终表现为 500；
+		// 在入口直接拒绝，保持 422 语义。
+		if err != nil || id == uuid.Nil {
 			response.Validation(w, r, []response.ErrorDetail{{Field: "ids", Message: "存在非法的投稿 ID"}})
 			return
 		}

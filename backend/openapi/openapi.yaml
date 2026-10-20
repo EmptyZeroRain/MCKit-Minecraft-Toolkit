@@ -111,6 +111,7 @@ paths:
       parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /items:
     post:
@@ -742,6 +743,7 @@ paths:
       parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /wiki/{slug}:
     post:
@@ -750,6 +752,7 @@ paths:
       parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /categories:
     post:
@@ -909,6 +912,7 @@ paths:
         1.12 及更早为 false）、supported 为二者与。单次计算限时 3s。
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /mc/structures/types:
     post:
@@ -946,12 +950,14 @@ paths:
       summary: 要塞位置估算
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
   /mc/slime-chunks:
     post:
       tags: [mc]
       summary: 史莱姆区块查询（仅 Java 版；单次计算限时 3s）
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /mc/seeds/generate:
     post:
@@ -965,12 +971,14 @@ paths:
       summary: 按结构位置搜索种子
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
   /mc/seeds/parse:
     post:
       tags: [mc]
       summary: 解析种子文本为数值
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
   /mc/region/inspect:
     post:
       tags: [mc]
@@ -1005,6 +1013,7 @@ paths:
                 local_z: { type: integer }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /mc/level/parse:
     post:
@@ -1838,6 +1847,7 @@ paths:
                 is_active: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /admin/admins/reset-password:
     post:
@@ -1856,6 +1866,7 @@ paths:
                 new_password: { type: string, minLength: 12 }
       responses:
         "204": { description: 已重置 }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
   /admin/admins/delete-preview:
     post:
@@ -1922,6 +1933,7 @@ paths:
             schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/users/create:
@@ -2957,6 +2969,7 @@ paths:
                     items: { $ref: "#/components/schemas/ToolUsageStat" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/analytics/resources:
     post:
@@ -2981,6 +2994,7 @@ paths:
                     items: { $ref: "#/components/schemas/ResourceUsageStat" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/analytics/api:
     post:
@@ -3008,6 +3022,7 @@ paths:
                     items: { $ref: "#/components/schemas/ApiUsageStat" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/analytics/trend:
     post:
@@ -3033,6 +3048,7 @@ paths:
                     items: { $ref: "#/components/schemas/UsageTrendPoint" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/resources/list:
     post:
@@ -3107,14 +3123,23 @@ paths:
             schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/resources/create:
     post:
       tags: [admin]
       summary: 创建资源
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceInput" }
       responses:
         "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/resources/update:
     post:
       tags: [admin]
@@ -3122,11 +3147,21 @@ paths:
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
+        required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IdBody" }
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ResourceInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/resources/delete:
     post:
       tags: [admin]
@@ -3139,6 +3174,7 @@ paths:
             schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/resources/check-link:
     post:
       tags: [admin]
@@ -3151,6 +3187,7 @@ paths:
             schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/resources/releases/list:
     post:
       tags: [admin]
@@ -3171,6 +3208,7 @@ paths:
                 type: object
                 properties:
                   data: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/resources/releases/replace:
     post:
       tags: [admin]
@@ -3200,6 +3238,7 @@ paths:
                 type: object
                 properties:
                   data: { type: array, items: { $ref: "#/components/schemas/ResourceRelease" } }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/submissions/list:
@@ -3747,28 +3786,57 @@ paths:
       summary: 工具详情
       security: [{ cookieAuth: [] }]
       requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/tools/create:
     post:
       tags: [admin]
       summary: 创建工具
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
-      responses: { "201": { $ref: "#/components/responses/Envelope" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/tools/update:
     post:
       tags: [admin]
       summary: 更新工具
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ToolInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/tools/delete:
     post:
       tags: [admin]
       summary: 下架工具
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
-      responses: { "204": { description: 已下架 } }
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses:
+        "204": { description: 已下架 }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /admin/wiki/list:
     post:
@@ -3793,13 +3861,57 @@ paths:
       summary: 百科详情
       security: [{ cookieAuth: [] }]
       requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/wiki/create:
-    post: { tags: [admin], summary: 创建百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+    post:
+      tags: [admin]
+      summary: 创建百科
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WikiInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/wiki/update:
-    post: { tags: [admin], summary: 更新百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post:
+      tags: [admin]
+      summary: 更新百科
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/WikiInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/wiki/delete:
-    post: { tags: [admin], summary: 软删除百科, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+    post:
+      tags: [admin]
+      summary: 软删除百科
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   # ---- 内容历史版本与回滚（gj.md §15 / §16.2）----
   # 权限与对应内容类型一致：resources→content.resources、tools→content.tools、wiki→content.wiki。
@@ -3807,21 +3919,21 @@ paths:
   /admin/revisions/resources/list:
     post: { tags: [admin], summary: 资源历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
   /admin/revisions/resources/diff:
-    post: { tags: [admin], summary: 资源版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 资源版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
   /admin/revisions/resources/rollback:
-    post: { tags: [admin], summary: 资源回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 资源回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
   /admin/revisions/tools/list:
     post: { tags: [admin], summary: 工具历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
   /admin/revisions/tools/diff:
-    post: { tags: [admin], summary: 工具版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 工具版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
   /admin/revisions/tools/rollback:
-    post: { tags: [admin], summary: 工具回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 工具回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
   /admin/revisions/wiki/list:
     post: { tags: [admin], summary: 百科历史版本列表, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionListBody" } } } }, responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } } }
   /admin/revisions/wiki/diff:
-    post: { tags: [admin], summary: 百科版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 百科版本差异, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
   /admin/revisions/wiki/rollback:
-    post: { tags: [admin], summary: 百科回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post: { tags: [admin], summary: 百科回滚到指定版本, security: [{ cookieAuth: [] }], requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/RevisionTargetBody" } } } }, responses: { "200": { $ref: "#/components/responses/Envelope" }, "404": { $ref: "#/components/responses/NotFound" } } }
 
   /admin/content-tasks/list:
     post:
@@ -3971,15 +4083,43 @@ paths:
   /admin/categories/list:
     post: { tags: [admin], summary: 分类列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
   /admin/categories/create:
-    post: { tags: [admin], summary: 创建分类, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+    post:
+      tags: [admin]
+      summary: 创建分类
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/categories/update:
     post:
       tags: [admin]
       summary: 更新分类
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
-      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/CategoryInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/categories/delete:
     post:
       tags: [admin]
@@ -3987,16 +4127,58 @@ paths:
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
-      responses: { "204": { description: 已删除 } }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /admin/tags/list:
     post: { tags: [admin], summary: 标签列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
   /admin/tags/create:
-    post: { tags: [admin], summary: 创建标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "201": { $ref: "#/components/responses/Envelope" } } }
+    post:
+      tags: [admin]
+      summary: 创建标签
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/tags/update:
-    post: { tags: [admin], summary: 更新标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
+    post:
+      tags: [admin]
+      summary: 更新标签
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/TagInput"
+                - type: object
+                  required: [id]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /admin/tags/delete:
-    post: { tags: [admin], summary: 删除标签, security: [{ cookieAuth: [] }], parameters: [{ $ref: "#/components/parameters/CsrfToken" }], responses: { "204": { description: 已删除 } } }
+    post:
+      tags: [admin]
+      summary: 删除标签
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/IdBody" } } } }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
   /admin/tags/usage:
     post:
       tags: [admin]
@@ -4053,7 +4235,9 @@ paths:
                 id: { type: string, format: uuid }
                 status: { type: string, enum: [new, processing, resolved, ignored] }
                 note: { type: string, maxLength: 500, description: 审核备注，写入审核历史 }
-      responses: { "200": { $ref: "#/components/responses/Envelope" } }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /admin/feedback/reviews:
     post:
@@ -4095,7 +4279,9 @@ paths:
                 security: { type: boolean }
                 page: { type: integer, minimum: 1 }
                 page_size: { type: integer, minimum: 1, maximum: 100 }
-      responses: { "200": { $ref: "#/components/responses/PagedEnvelope" } }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/audit-logs/export:
     post:
@@ -4200,6 +4386,7 @@ paths:
                 permissions: { type: array, items: { type: string } }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/roles/impact:
@@ -4271,6 +4458,7 @@ paths:
                 name: { type: string, description: 角色标识（主键） }
       responses:
         "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
@@ -5016,7 +5204,7 @@ paths:
     post:
       tags: [growth]
       summary: 单用户等级调整（需 ops.growth）
-      description: 只调整展示等级偏移，不修改等级定义本身；目标等级必须落在当前启用范围内。
+      description: 直接覆盖用户展示等级，不修改等级定义本身；目标等级必须是当前启用等级。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5024,10 +5212,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [target_user_id, delta_level, reason]
+              required: [target_user_id, target_level, reason]
               properties:
-                target_user_id: { type: string, description: 内部 UUID 或对外用户 ID（如 U7K3M2QX9F） }
-                delta_level: { type: integer, description: 正数提升，负数降低，不能为 0 }
+                target_user_id: { type: string, description: 对外用户 ID（如 U7K3M2QX9F）；不接受内部 UUID 或用户名 }
+                target_level: { type: integer, description: 绝对目标等级，必须存在且已启用 }
                 reason: { type: string, maxLength: 500 }
                 request_key: { type: string, description: 可选，仅用于审计留痕 }
       responses:
@@ -5227,6 +5415,7 @@ paths:
                       unlocked: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/achievements/user/list:
@@ -5270,6 +5459,7 @@ paths:
         "200": { $ref: "#/components/responses/Envelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
@@ -7413,7 +7603,7 @@ components:
       properties:
         key: { type: string, example: items_missing_source }
         label: { type: string, example: 缺少来源 URL }
-        category: { type: string, enum: [items, recipes, commands, potions, import] }
+        category: { type: string, enum: [items, recipes, commands, potions, dev_docs, mobs, mods, redstone, villagers, import] }
         severity: { type: string, enum: [error, warning, info] }
         count: { type: integer, description: 命中问题的条目数 }
         total: { type: integer, description: 该数据域总条目数 }
@@ -7551,11 +7741,10 @@ components:
       type: object
       properties:
         user_id: { type: string, format: uuid }
-        base_level: { type: integer, description: 按经验计算的等级 }
-        level_offset: { type: integer, description: 人工等级偏移 }
+        base_level: { type: integer, description: 按经验与活跃天数计算的等级 }
         level: { type: integer, description: 调整后的展示等级 }
         level_title: { type: string }
-        delta_level: { type: integer }
+        is_level_overridden: { type: boolean, description: 是否处于人工覆盖状态 }
 
     AdminUserAchievement:
       type: object
@@ -7833,6 +8022,119 @@ components:
         enabled: { type: boolean }
         sort_order: { type: integer }
 
+    ResourceInput:
+      type: object
+      description: 资源创建/更新入参（更新时 `id` 必填，其余字段按需提交）
+      required: [slug, name, summary, resource_type, source_url, status]
+      properties:
+        slug: { type: string, description: URL 短标识，全局唯一 }
+        name: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        resource_type: { type: string, enum: [mod, modpack, resource_pack, shader, world, datapack, plugin] }
+        cover_image_url: { type: string }
+        author_name: { type: string }
+        source_platform: { type: string }
+        source_url: { type: string, format: uri }
+        license: { type: string }
+        game_edition: { type: string, enum: [java, bedrock] }
+        supported_versions: { type: array, items: { type: string } }
+        loader_types:
+          type: array
+          items: { type: string, enum: [forge, neoforge, fabric, quilt, vanilla, paper, spigot, purpur, other] }
+        dependencies: { type: array, items: { type: object } }
+        install_guide: { type: string }
+        tags: { type: array, items: { type: string } }
+        compatibility_note: { type: string }
+        status: { type: string, enum: [draft, published, hidden] }
+    ToolInput:
+      type: object
+      description: 工具创建/更新入参（更新时 `id` 必填）
+      required: [slug, name, summary, category]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        summary: { type: string }
+        description: { type: string }
+        category: { type: string, enum: [查询类, 计算类, 生成类, 编辑类, 辅助类] }
+        icon: { type: string }
+        tags: { type: array, items: { type: string } }
+        supported_versions: { type: array, items: { type: string } }
+        input_schema: { type: array, items: { type: object } }
+        output_schema: { type: array, items: { type: object } }
+        is_featured: { type: boolean }
+        sort_order: { type: integer }
+        status: { type: string, enum: [draft, published, hidden] }
+    WikiInput:
+      type: object
+      description: 百科创建/更新入参（更新时 `id` 必填）
+      required: [slug, title, content]
+      properties:
+        slug: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        content: { type: string }
+        content_format: { type: string, enum: [markdown, html, plaintext] }
+        content_type: { type: string, enum: [wiki, guide, reference] }
+        game_edition: { type: string, enum: [java, bedrock] }
+        game_versions: { type: array, items: { type: string } }
+        tags: { type: array, items: { type: string } }
+        source_references: { type: array, items: { type: object } }
+        status: { type: string, enum: [draft, published, hidden] }
+    CategoryInput:
+      type: object
+      required: [name, slug, content_type]
+      properties:
+        id: { type: string, format: uuid, description: 更新时必填 }
+        name: { type: string }
+        slug: { type: string }
+        content_type: { type: string, enum: [tool, resource, wiki] }
+        sort_order: { type: integer }
+    TagInput:
+      type: object
+      description: 标签创建/更新入参（创建时 name 或 slug 至少一个）
+      properties:
+        id: { type: string, format: uuid, description: 更新时必填 }
+        name: { type: string }
+        slug: { type: string }
+
+    CommunityAuthor:
+      type: object
+      description: 社区作者公开信息（不含内部 UUID、邮箱等隐私字段）
+      required: [user_no, username, nickname]
+      properties:
+        user_no: { type: string, example: U7K3M2QX9F, description: 对外随机用户 ID }
+        username: { type: string }
+        nickname: { type: string }
+    CommunityPost:
+      type: object
+      description: 社区帖子（status = hidden 时仅后台可见）
+      required: [id, category, title, body, status, author, like_count, comment_count, liked]
+      properties:
+        id: { type: string, format: uuid }
+        category: { type: string, enum: [chat, help, showcase, tutorial] }
+        title: { type: string }
+        body: { type: string }
+        status: { type: string, enum: [published, hidden] }
+        author: { $ref: "#/components/schemas/CommunityAuthor" }
+        like_count: { type: integer }
+        comment_count: { type: integer }
+        liked: { type: boolean, description: 当前查看者是否已点赞；匿名为 false }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CommunityComment:
+      type: object
+      description: 帖子留言
+      required: [id, post_id, body, status, author, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        post_id: { type: string, format: uuid }
+        body: { type: string }
+        status: { type: string, enum: [published, hidden] }
+        author: { $ref: "#/components/schemas/CommunityAuthor" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
   requestBodies:
     SearchQuery:
       required: true
@@ -7879,43 +8181,6 @@ components:
               page: { type: integer, minimum: 1 }
               page_size: { type: integer, minimum: 1, maximum: 50 }
 
-    CommunityAuthor:
-      type: object
-      description: 社区作者公开信息（不含内部 UUID、邮箱等隐私字段）
-      required: [user_no, username, nickname]
-      properties:
-        user_no: { type: string, example: U7K3M2QX9F, description: 对外随机用户 ID }
-        username: { type: string }
-        nickname: { type: string }
-    CommunityPost:
-      type: object
-      description: 社区帖子（status = hidden 时仅后台可见）
-      required: [id, category, title, body, status, author, like_count, comment_count, liked]
-      properties:
-        id: { type: string, format: uuid }
-        category: { type: string, enum: [chat, help, showcase, tutorial] }
-        title: { type: string }
-        body: { type: string }
-        status: { type: string, enum: [published, hidden] }
-        author: { $ref: "#/components/schemas/CommunityAuthor" }
-        like_count: { type: integer }
-        comment_count: { type: integer }
-        liked: { type: boolean, description: 当前查看者是否已点赞；匿名为 false }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-    CommunityComment:
-      type: object
-      description: 帖子留言
-      required: [id, post_id, body, status, author, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        post_id: { type: string, format: uuid }
-        body: { type: string }
-        status: { type: string, enum: [published, hidden] }
-        author: { $ref: "#/components/schemas/CommunityAuthor" }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-
   responses:
     Envelope:
       description: 成功
@@ -7934,6 +8199,11 @@ components:
             properties:
               data: { type: array, items: {} }
               meta: { $ref: "#/components/schemas/PageMeta" }
+    BadRequest:
+      description: 请求体格式错误（400）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     ValidationError:
       description: 参数校验失败（422）
       content:

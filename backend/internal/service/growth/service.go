@@ -44,11 +44,17 @@ type Overview struct {
 	XPToNextLevel        int64  `json:"xp_to_next_level"`
 	LevelProgressPercent int    `json:"level_progress_percent"`
 	IsMaxLevel           bool   `json:"is_max_level"`
-	UnlockedAchievements int    `json:"unlocked_achievements"`
-	AchievementTotal     int    `json:"achievement_total"`
-	TodayTasksCompleted  int    `json:"today_tasks_completed"`
-	TodayTasksTotal      int    `json:"today_tasks_total"`
-	TodayXP              int64  `json:"today_xp"`
+	// IsLevelOverridden 当前等级是否由后台人工直接覆盖。
+	IsLevelOverridden bool `json:"is_level_overridden"`
+	// ActiveDays 累计活跃天数（封顶 guest_active_days）。
+	ActiveDays int `json:"active_days"`
+	// GuestActiveDays 脱离访客阶段所需活跃天数。
+	GuestActiveDays      int   `json:"guest_active_days"`
+	UnlockedAchievements int   `json:"unlocked_achievements"`
+	AchievementTotal     int   `json:"achievement_total"`
+	TodayTasksCompleted  int   `json:"today_tasks_completed"`
+	TodayTasksTotal      int   `json:"today_tasks_total"`
+	TodayXP              int64 `json:"today_xp"`
 }
 
 // GetOverview 汇总当前用户的成长概览。
@@ -62,9 +68,9 @@ func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, er
 		return nil, err
 	}
 	if g == nil {
-		g = &domain.UserGrowth{Level: 1}
+		g = &domain.UserGrowth{Level: GuestLevel}
 	}
-	view := computeLevelWithOffset(levels, g.CurrentXP, g.LevelOffset)
+	view := computeLevelWithOverride(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
 
 	date := businessDate(s.now(), s.loc)
 	defs, err := s.repo.ListTaskDefs(ctx, true)
@@ -106,6 +112,9 @@ func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, er
 		XPToNextLevel:        view.XPToNext,
 		LevelProgressPercent: view.ProgressPercent,
 		IsMaxLevel:           view.IsMax,
+		IsLevelOverridden:    view.Overridden,
+		ActiveDays:           view.ActiveDays,
+		GuestActiveDays:      view.GuestActiveDays,
 		UnlockedAchievements: len(unlocked),
 		AchievementTotal:     len(allDefs),
 		TodayTasksCompleted:  completed,
@@ -267,6 +276,7 @@ type PublicProfile struct {
 	AvatarURL            string `json:"avatar_url"`
 	Level                int    `json:"level"`
 	LevelTitle           string `json:"level_title"`
+	IsLevelOverridden    bool   `json:"is_level_overridden"`
 	CurrentXP            int64  `json:"current_xp"`
 	UnlockedAchievements int    `json:"unlocked_achievements"`
 }
@@ -301,9 +311,9 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 		return nil, err
 	}
 	if g == nil {
-		g = &domain.UserGrowth{Level: 1}
+		g = &domain.UserGrowth{Level: GuestLevel}
 	}
-	view := computeLevelWithOffset(levels, g.CurrentXP, g.LevelOffset)
+	view := computeLevelWithOverride(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
 	unlocked, err := s.repo.ListUserAchievements(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -316,6 +326,7 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 		AvatarURL:            acc.AvatarURL,
 		Level:                view.Level,
 		LevelTitle:           view.Title,
+		IsLevelOverridden:    view.Overridden,
 		CurrentXP:            g.CurrentXP,
 		UnlockedAchievements: len(unlocked),
 	}, nil

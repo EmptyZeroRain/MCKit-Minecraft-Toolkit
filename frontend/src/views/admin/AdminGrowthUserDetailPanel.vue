@@ -2,7 +2,7 @@
 // 用户成长详情（jingyan.md §10，后台 ops.growth）。
 //
 // 先搜索用户（含管理员），再按用户聚合：
-//   * 等级：当前等级 / 称号 / 经验进度 / 人工偏移；
+//   * 等级：当前等级 / 称号 / 经验进度 / 人工覆盖；
 //   * 成就：已解锁数量与每项解锁时间；
 //   * 经验：当前 / 累计获得 / 累计冲正与最近流水；
 //   * 礼物：礼物币余额与最近流水；
@@ -160,6 +160,12 @@ onMounted(() => loadUsers())
       <template #cell-level="{ row }">
         <span class="text-text-primary">Lv.{{ row.level }}</span>
         <span class="ml-1 text-xs text-text-muted">{{ row.level_title }}</span>
+        <span v-if="row.is_overridden" class="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] text-amber-300">
+          人工
+        </span>
+        <span v-else-if="row.level === 0" class="ml-1 text-[10px] text-text-muted">
+          活跃 {{ row.active_days }}/{{ row.guest_active_days }} 天
+        </span>
       </template>
       <template #cell-current_xp="{ row }">
         <span class="text-grass-300">{{ row.current_xp }}</span>
@@ -227,7 +233,12 @@ onMounted(() => loadUsers())
           </dd>
           <dd class="text-xs text-text-muted">
             基础 Lv.{{ detail.base_level }}
-            <span v-if="detail.level_offset !== 0">（人工偏移 {{ detail.level_offset > 0 ? '+' : '' }}{{ detail.level_offset }}）</span>
+            <span v-if="detail.level_override !== null">
+              · 人工覆盖 Lv.{{ detail.level_override }}（经验不自动改级）
+            </span>
+            <span v-else-if="detail.user.level === 0">
+              · 活跃 {{ detail.user.active_days }}/{{ detail.user.guest_active_days }} 天
+            </span>
           </dd>
         </div>
         <div class="rounded-card border border-border-dark bg-ink-900/60 p-3">
@@ -263,7 +274,11 @@ onMounted(() => loadUsers())
           <div class="ml-5 border-l border-border-dark py-2 pl-4 pr-4">
             <div class="mb-1 flex items-center justify-between text-xs text-text-muted">
               <span>Lv.{{ detail.user.level }} · {{ detail.user.level_title }}</span>
-              <span v-if="detail.next_level_xp !== null">
+              <span v-if="detail.level_override !== null">已人工覆盖，不自动升级</span>
+              <span v-else-if="detail.user.level === 0">
+                活跃 {{ detail.user.active_days }}/{{ detail.user.guest_active_days }} 天
+              </span>
+              <span v-else-if="detail.next_level_xp !== null">
                 下一级需 {{ detail.xp_to_next_level }} 经验
               </span>
               <span v-else>已达最高等级</span>
@@ -273,7 +288,14 @@ onMounted(() => loadUsers())
             </div>
             <p class="mt-2 text-xs text-text-muted">
               等级进度 {{ detail.level_progress_percent }}%。
-              等级仅用于展示，不影响任何权限；人工等级偏移会保留在后续经验变化中。
+              等级仅用于展示，不影响任何权限。
+              <template v-if="detail.level_override !== null">
+                当前等级由后台人工覆盖，经验继续累积但不会自动改变等级。
+              </template>
+              <template v-else-if="detail.user.level === 0">
+                当前为访客等级，累计满 {{ detail.user.guest_active_days }} 个活跃日后进入 Lv.1。
+              </template>
+              <template v-else>等级进度会随经验变化自动更新。</template>
             </p>
           </div>
         </details>

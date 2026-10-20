@@ -23,6 +23,9 @@ const USER: AdminGrowthUserSummary = {
   is_active: true,
   level: 5,
   level_title: '红石学徒',
+  is_overridden: false,
+  active_days: 7,
+  guest_active_days: 7,
   current_xp: 320,
   lifetime_earned_xp: 360,
   lifetime_reversed_xp: 40,
@@ -37,7 +40,7 @@ const USER: AdminGrowthUserSummary = {
 const DETAIL: AdminGrowthUserDetail = {
   user: USER,
   base_level: 5,
-  level_offset: 0,
+  level_override: null,
   next_level_xp: 500,
   xp_to_next_level: 180,
   level_progress_percent: 64,

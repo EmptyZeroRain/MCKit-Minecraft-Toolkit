@@ -117,9 +117,10 @@ type MappingClassHit struct {
 	Package     string    `json:"package"`
 	MemberCount int       `json:"member_count"`
 	// MatchedMembers 命中的成员预览（最多 mappingMemberPreview 条）。
-	MatchedMembers []MappingMemberView `json:"matched_members"`
+	// gorm:"-"：该字段由归并阶段填充，不能参与扁平查询 Scan，否则 GORM 会误判为关联。
+	MatchedMembers []MappingMemberView `json:"matched_members" gorm:"-"`
 	// MatchedTotal 命中的成员总数（可能大于预览条数）。
-	MatchedTotal int `json:"matched_total"`
+	MatchedTotal int `json:"matched_total" gorm:"-"`
 }
 
 // MappingSearchResult 映射查询结果。

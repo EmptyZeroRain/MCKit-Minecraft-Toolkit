@@ -167,33 +167,32 @@ describe('后台单用户等级调整', () => {
     vi.restoreAllMocks()
   })
 
-  it('提交等级调整并展示基础等级与偏移结果', async () => {
+  it('提交等级调整并展示人工覆盖结果', async () => {
     ;(adjustUserLevel as ReturnType<typeof vi.fn>).mockResolvedValue({
       user_id: '00000000-0000-0000-0000-000000000001',
-      base_level: 1,
-      level_offset: 1,
+      base_level: 0,
       level: 2,
       level_title: '方块学徒',
-      delta_level: 1,
+      is_level_overridden: true,
     })
 
     const wrapper = mount(AdminGrowthLevelsPanel)
     await flushPromises()
     expect(wrapper.text()).toContain('新增可指定等级号并允许跳号')
 
-    await wrapper.find('input[placeholder="UUID / U7K3M2QX9F"]').setValue('U7K3M2QX9F')
-    await wrapper.find('input[type="number"]').setValue('1')
+    await wrapper.find('input[placeholder="U7K3M2QX9F"]').setValue('u7k3m2qx9f')
+    await wrapper.find('input[type="number"]').setValue('2')
     await wrapper.find('input[placeholder="如 活动补偿"]').setValue('测试升级')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(adjustUserLevel).toHaveBeenCalledWith({
       target_user_id: 'U7K3M2QX9F',
-      delta_level: 1,
+      target_level: 2,
       reason: '测试升级',
     })
     expect(wrapper.text()).toContain('调整完成：Lv.2 方块学徒')
-    expect(wrapper.text()).toContain('偏移 +1')
+    expect(wrapper.text()).toContain('已人工覆盖')
   })
 
   it('拒绝内部 UUID，只允许对外用户 ID', async () => {

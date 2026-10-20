@@ -147,12 +147,15 @@ type UserGrowth struct {
 	CurrentXP          int64     `gorm:"column:current_xp;not null;default:0" json:"current_xp"`
 	LifetimeEarnedXP   int64     `gorm:"column:lifetime_earned_xp;not null;default:0" json:"lifetime_earned_xp"`
 	LifetimeReversedXP int64     `gorm:"column:lifetime_reversed_xp;not null;default:0" json:"lifetime_reversed_xp"`
-	Level              int       `gorm:"column:level;not null;default:1" json:"level"`
-	// LevelOffset 人工等级偏移：有效等级 = 经验计算等级 + 偏移，经验变化时保留偏移。
-	LevelOffset int       `gorm:"column:level_offset;not null;default:0" json:"level_offset"`
-	Version     int64     `gorm:"column:version;not null;default:0" json:"version"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Level              int       `gorm:"column:level;not null;default:0" json:"level"`
+	// LevelOverride 后台人工覆盖等级。非空时固定展示该等级，经验继续累积但不自动改级；
+	// 直到下一次人工调整才会改变。nil 表示按经验 / 活跃天数自动计算。
+	LevelOverride *int `gorm:"column:level_override" json:"level_override"`
+	// ActiveDays 累计活跃天数（每天最多记一次，封顶 GuestActiveDaysRequired）。
+	ActiveDays int       `gorm:"column:active_days;not null;default:0" json:"active_days"`
+	Version    int64     `gorm:"column:version;not null;default:0" json:"version"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。

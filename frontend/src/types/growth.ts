@@ -14,6 +14,12 @@ export interface GrowthOverview {
   xp_to_next_level: number
   level_progress_percent: number
   is_max_level: boolean
+  /** 当前等级是否由后台人工直接覆盖（覆盖期间经验不自动改级） */
+  is_level_overridden: boolean
+  /** 已累计活跃天数（封顶 guest_active_days） */
+  active_days: number
+  /** 脱离访客阶段所需活跃天数 */
+  guest_active_days: number
   unlocked_achievements: number
   achievement_total: number
   today_tasks_completed: number
@@ -111,6 +117,7 @@ export interface GrowthPublicProfile {
   avatar_url: string
   level: number
   level_title: string
+  is_level_overridden: boolean
   current_xp: number
   unlocked_achievements: number
 }
@@ -394,10 +401,10 @@ export const RARITY_LABELS: Record<string, string> = {
   legendary: '传说',
 }
 
-/** 单用户等级调整入参（delta_level 可负；不修改等级定义本身） */
+/** 单用户等级调整入参（target_level 为直接覆盖的绝对等级；目标只接受对外用户 ID） */
 export interface AdjustLevelInput {
   target_user_id: string
-  delta_level: number
+  target_level: number
   reason: string
   request_key?: string
 }
@@ -406,10 +413,10 @@ export interface AdjustLevelInput {
 export interface LevelAdjustResult {
   user_id: string
   base_level: number
-  level_offset: number
   level: number
   level_title: string
-  delta_level: number
+  /** 人工覆盖后固定为 true */
+  is_level_overridden: boolean
 }
 
 /** 后台查看某用户成就的持有 / 撤销状态 */
@@ -439,6 +446,12 @@ export interface AdminGrowthUserSummary {
   is_active: boolean
   level: number
   level_title: string
+  /** 当前等级是否由后台人工直接覆盖 */
+  is_overridden: boolean
+  /** 已累计活跃天数（封顶 guest_active_days） */
+  active_days: number
+  /** 脱离访客阶段所需活跃天数 */
+  guest_active_days: number
   current_xp: number
   lifetime_earned_xp: number
   lifetime_reversed_xp: number
@@ -493,7 +506,8 @@ export interface AdminGrowthAuditItem {
 export interface AdminGrowthUserDetail {
   user: AdminGrowthUserSummary
   base_level: number
-  level_offset: number
+  /** 人工覆盖的目标等级；null 表示按经验 / 活跃天数自动计算 */
+  level_override: number | null
   next_level_xp: number | null
   xp_to_next_level: number
   level_progress_percent: number

@@ -25,14 +25,20 @@ const detailEntryLimit = 200
 
 // AdminGrowthUserSummary 后台成长用户摘要。
 type AdminGrowthUserSummary struct {
-	UserID             string     `json:"user_id"`
-	UserNo             string     `json:"user_no"`
-	Username           string     `json:"username"`
-	Nickname           string     `json:"nickname"`
-	Role               string     `json:"role"`
-	IsActive           bool       `json:"is_active"`
-	Level              int        `json:"level"`
-	LevelTitle         string     `json:"level_title"`
+	UserID     string `json:"user_id"`
+	UserNo     string `json:"user_no"`
+	Username   string `json:"username"`
+	Nickname   string `json:"nickname"`
+	Role       string `json:"role"`
+	IsActive   bool   `json:"is_active"`
+	Level      int    `json:"level"`
+	LevelTitle string `json:"level_title"`
+	// IsOverridden 当前等级是否由后台人工直接覆盖。
+	IsOverridden bool `json:"is_overridden"`
+	// ActiveDays 累计活跃天数（封顶 guest_active_days）。
+	ActiveDays int `json:"active_days"`
+	// GuestActiveDays 脱离访客阶段所需活跃天数。
+	GuestActiveDays    int        `json:"guest_active_days"`
 	CurrentXP          int64      `json:"current_xp"`
 	LifetimeEarnedXP   int64      `json:"lifetime_earned_xp"`
 	LifetimeReversedXP int64      `json:"lifetime_reversed_xp"`
@@ -94,7 +100,7 @@ type AdminGrowthAuditItem struct {
 type AdminGrowthUserDetail struct {
 	User                 AdminGrowthUserSummary       `json:"user"`
 	BaseLevel            int                          `json:"base_level"`
-	LevelOffset          int                          `json:"level_offset"`
+	LevelOverride        *int                         `json:"level_override"`
 	NextLevelXP          *int64                       `json:"next_level_xp"`
 	XPToNextLevel        int64                        `json:"xp_to_next_level"`
 	LevelProgressPercent int                          `json:"level_progress_percent"`
@@ -117,6 +123,8 @@ type adminGrowthUserRow struct {
 	Role               string     `gorm:"column:role"`
 	IsActive           bool       `gorm:"column:is_active"`
 	Level              int        `gorm:"column:level"`
+	LevelOverride      *int       `gorm:"column:level_override"`
+	ActiveDays         int        `gorm:"column:active_days"`
 	CurrentXP          int64      `gorm:"column:current_xp"`
 	LifetimeEarnedXP   int64      `gorm:"column:lifetime_earned_xp"`
 	LifetimeReversedXP int64      `gorm:"column:lifetime_reversed_xp"`
@@ -130,7 +138,9 @@ type adminGrowthUserRow struct {
 
 const adminGrowthUserColumns = `a.id AS user_id, a.user_no, a.username, a.nickname, a.role, a.is_active,
 	a.created_at,
-	COALESCE(g.level, 1) AS level,
+	COALESCE(g.level, 0) AS level,
+	g.level_override,
+	COALESCE(g.active_days, 0) AS active_days,
 	COALESCE(g.current_xp, 0) AS current_xp,
 	COALESCE(g.lifetime_earned_xp, 0) AS lifetime_earned_xp,
 	COALESCE(g.lifetime_reversed_xp, 0) AS lifetime_reversed_xp,
@@ -206,10 +216,10 @@ func (s *Service) GetAdminGrowthUserDetail(ctx context.Context, rawUserID string
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
-		growth = domain.UserGrowth{UserID: id, Level: 1}
+		growth = domain.UserGrowth{UserID: id, Level: GuestLevel}
 	}
-	progress := computeLevelWithOffset(levels, growth.CurrentXP, growth.LevelOffset)
-	base := computeLevel(levels, growth.CurrentXP)
+	progress := computeLevelWithOverride(levels, growth.CurrentXP, growth.LevelOverride, growth.ActiveDays)
+	base := computeLevel(levels, growth.CurrentXP, growth.ActiveDays)
 
 	var achievementTotal int64
 	if err := s.db.WithContext(ctx).Model(&domain.AchievementDefinition{}).
@@ -319,7 +329,7 @@ func (s *Service) GetAdminGrowthUserDetail(ctx context.Context, rawUserID string
 	return &AdminGrowthUserDetail{
 		User:                 summary,
 		BaseLevel:            base.Level,
-		LevelOffset:          growth.LevelOffset,
+		LevelOverride:        growth.LevelOverride,
 		NextLevelXP:          progress.NextThreshold,
 		XPToNextLevel:        progress.XPToNext,
 		LevelProgressPercent: progress.ProgressPercent,
@@ -345,6 +355,9 @@ func toAdminGrowthUserSummary(row adminGrowthUserRow, levels []domain.GrowthLeve
 		IsActive:           row.IsActive,
 		Level:              row.Level,
 		LevelTitle:         levelTitle(levels, row.Level),
+		IsOverridden:       row.LevelOverride != nil,
+		ActiveDays:         row.ActiveDays,
+		GuestActiveDays:    GuestActiveDaysRequired,
 		CurrentXP:          row.CurrentXP,
 		LifetimeEarnedXP:   row.LifetimeEarnedXP,
 		LifetimeReversedXP: row.LifetimeReversedXP,

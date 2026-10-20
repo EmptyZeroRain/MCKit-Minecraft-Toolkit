@@ -67,7 +67,7 @@ func createGrowthUser(t *testing.T, gdb *gorm.DB, username, role string) *domain
 	return u
 }
 
-// TestGrowthAdminControlsIntegration 覆盖单用户等级偏移、成就授予 / 撤销与奖励经验幂等。
+// TestGrowthAdminControlsIntegration 覆盖单用户等级人工覆盖、成就授予 / 撤销与奖励经验幂等。
 func TestGrowthAdminControlsIntegration(t *testing.T) {
 	gdb := setupGrowthAdminDB(t)
 	ctx := context.Background()
@@ -76,46 +76,97 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	user := createGrowthUser(t, gdb, "it-growth-user", domain.RoleUser)
 	operator := createGrowthUser(t, gdb, "it-growth-admin", domain.RoleAdmin)
 
-	// 初始 Lv.1，+2 后应为 Lv.3，偏移 +2。
+	// 新用户默认 Lv.0；直接覆盖到 Lv.3，不再使用“基础等级 + 偏移”。
 	result, err := svc.AdjustLevel(ctx, AdjustLevelInput{
-		TargetUserID: user.ID.String(),
-		DeltaLevel:   2,
+		TargetUserID: user.UserNo,
+		TargetLevel:  3,
 		Reason:       "集成测试升级",
 		OperatorID:   operator.ID.String(),
 	})
 	if err != nil {
 		t.Fatalf("等级调整失败: %v", err)
 	}
-	if result.Level != 3 || result.BaseLevel != 1 || result.LevelOffset != 2 {
+	if result.Level != 3 || result.BaseLevel != 0 || !result.Overridden {
 		t.Fatalf("等级调整结果异常: %+v", result)
 	}
 	var g domain.UserGrowth
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.Level != 3 || g.LevelOffset != 2 {
-		t.Fatalf("成长投影未持久化: level=%d offset=%d", g.Level, g.LevelOffset)
+	if g.Level != 3 || g.LevelOverride == nil || *g.LevelOverride != 3 {
+		t.Fatalf("成长投影未持久化覆盖等级: level=%d override=%v", g.Level, g.LevelOverride)
 	}
 
-	// 再 -1，应为 Lv.2，偏移 +1。
+	// 再覆盖为 Lv.2。
 	result, err = svc.AdjustLevel(ctx, AdjustLevelInput{
-		TargetUserID: user.ID.String(),
-		DeltaLevel:   -1,
+		TargetUserID: user.UserNo,
+		TargetLevel:  2,
 		Reason:       "集成测试降级",
 		OperatorID:   operator.ID.String(),
 	})
-	if err != nil || result.Level != 2 || result.LevelOffset != 1 {
+	if err != nil || result.Level != 2 || !result.Overridden {
 		t.Fatalf("二次等级调整异常: result=%+v err=%v", result, err)
+	}
+
+	// 覆盖期间经验继续累积，但展示等级不会被自动重算改回。
+	if _, err := svc.Adjust(ctx, AdjustInput{
+		TargetUserID: user.UserNo,
+		DeltaXP:      5000,
+		Reason:       "覆盖期间经验累积",
+		OperatorID:   operator.ID.String(),
+	}); err != nil {
+		t.Fatalf("覆盖期间调整经验失败: %v", err)
+	}
+	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.CurrentXP != 5000 || g.Level != 2 {
+		t.Fatalf("覆盖期间经验应累积且等级保持 Lv.2，实际 xp=%d level=%d", g.CurrentXP, g.Level)
 	}
 
 	// 超出等级范围应拒绝，且不写入。
 	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
-		TargetUserID: user.ID.String(),
-		DeltaLevel:   -99,
+		TargetUserID: user.UserNo,
+		TargetLevel:  99,
 		Reason:       "越界测试",
 		OperatorID:   operator.ID.String(),
 	}); !errors.Is(err, ErrLevelRange) {
 		t.Fatalf("越界等级应返回 ErrLevelRange，实际 %v", err)
+	}
+
+	// 该表单只接受对外 ID：内部 UUID 必须被明确拒绝。
+	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: user.ID.String(),
+		TargetLevel:  1,
+		Reason:       "UUID 输入测试",
+		OperatorID:   operator.ID.String(),
+	}); !errors.Is(err, ErrLevelAdjustUserIDRequired) {
+		t.Fatalf("内部 UUID 应返回 ErrLevelAdjustUserIDRequired，实际 %v", err)
+	}
+
+	// 后台账号同样有对外 ID，且统一账号可拥有成长投影；大小写不敏感。
+	adminTarget := createGrowthUser(t, gdb, "it-growth-target-admin", domain.RoleAdmin)
+	adminResult, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: strings.ToLower(adminTarget.UserNo),
+		TargetLevel:  2,
+		Reason:       "管理员等级调整测试",
+		OperatorID:   operator.ID.String(),
+	})
+	if err != nil {
+		t.Fatalf("管理员对外 ID 等级调整失败: %v", err)
+	}
+	if adminResult.UserID != adminTarget.ID.String() || adminResult.Level != 2 || !adminResult.Overridden {
+		t.Fatalf("管理员等级调整结果异常: %+v", adminResult)
+	}
+
+	// 用户名不是本表单的合法标识，应按对外 ID 未找到处理。
+	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: user.Username,
+		TargetLevel:  1,
+		Reason:       "用户名输入测试",
+		OperatorID:   operator.ID.String(),
+	}); !errors.Is(err, ErrLevelAdjustUserNotFound) {
+		t.Fatalf("用户名应返回 ErrLevelAdjustUserNotFound，实际 %v", err)
 	}
 
 	// 创建一个奖励经验成就，手动授予后应发一次经验。
@@ -226,11 +277,11 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 	operator := createGrowthUser(t, gdb, "it-level-manage-admin", domain.RoleAdmin)
 
 	levels, err := svc.ListLevels(ctx)
-	if err != nil || len(levels) != 10 {
-		t.Fatalf("初始等级应为 10 个: len=%d err=%v", len(levels), err)
+	if err != nil || len(levels) != 11 {
+		t.Fatalf("初始等级应为 11 个（Lv.0-10）: len=%d err=%v", len(levels), err)
 	}
 	if err := gdb.Create(&domain.UserGrowth{
-		UserID: user.ID, CurrentXP: 7000, Level: 10,
+		UserID: user.ID, CurrentXP: 7000, Level: 10, ActiveDays: GuestActiveDaysRequired,
 	}).Error; err != nil {
 		t.Fatalf("创建成长投影失败: %v", err)
 	}
@@ -273,7 +324,10 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 		t.Fatalf("阈值顺序错误应返回 ErrLevelOrder，实际 %v", err)
 	}
 
-	// Lv.1 永远保留。
+	// Lv.0 / Lv.1 永远保留。
+	if err := svc.DeleteLevel(ctx, 0, operator.ID.String()); !errors.Is(err, ErrLevelDeleteLv1) {
+		t.Fatalf("删除 Lv.0 应返回 ErrLevelDeleteLv1，实际 %v", err)
+	}
 	if err := svc.DeleteLevel(ctx, 1, operator.ID.String()); !errors.Is(err, ErrLevelDeleteLv1) {
 		t.Fatalf("删除 Lv.1 应返回 ErrLevelDeleteLv1，实际 %v", err)
 	}
@@ -290,8 +344,8 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 	for _, l := range levels {
 		byLevel[l.Level] = l
 	}
-	if len(levels) != 11 {
-		t.Fatalf("删除后应剩 11 个等级，实际 %d", len(levels))
+	if len(levels) != 12 {
+		t.Fatalf("删除后应剩 12 个等级，实际 %d", len(levels))
 	}
 	if byLevel[5].Title != "资源猎人" {
 		t.Fatalf("原 Lv.6 应重排为 Lv.5，实际 %+v", byLevel[5])
@@ -308,8 +362,8 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.Level != 9 || g.LevelOffset != 0 {
-		t.Fatalf("删除 Lv.5 后用户应重算为 Lv.9，实际 level=%d offset=%d", g.Level, g.LevelOffset)
+	if g.Level != 9 || g.LevelOverride != nil {
+		t.Fatalf("删除 Lv.5 后用户应重算为 Lv.9，实际 level=%d override=%v", g.Level, g.LevelOverride)
 	}
 
 	// level_reached 成就目标 > 被删等级时同步减 1，等于 / 小于时保持不变。

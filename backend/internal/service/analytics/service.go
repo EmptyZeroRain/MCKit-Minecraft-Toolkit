@@ -217,6 +217,10 @@ func (s *Service) ToolStats(ctx context.Context, from, to time.Time, limit int) 
 			rows[i].FailRate = float64(rows[i].Failures) / float64(rows[i].Uses)
 		}
 	}
+	// 空结果必须序列化为 []，否则前端收到 null 与 OpenAPI 的 array 契约不一致。
+	if rows == nil {
+		rows = []ToolStat{}
+	}
 	return rows, nil
 }
 
@@ -233,7 +237,13 @@ func (s *Service) ResourceStats(ctx context.Context, from, to time.Time, limit i
 		Order("SUM(views) DESC").
 		Limit(clampLimit(limit, 50)).
 		Scan(&rows).Error
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []ResourceStat{}
+	}
+	return rows, nil
 }
 
 // APIStats 返回路由模板级指标（含近似 P95），按请求量降序。
