@@ -4736,6 +4736,11 @@ paths:
       description: |
         返回当前有效经验、等级与称号、升级进度、今日任务完成数、今日经验与成就统计。
         **等级仅用于展示，不参与任何权限判定**。所有数值由服务端依据经验账本计算。
+
+        等级规则：新用户默认 Lv.0「访客」，累计满 7 个活跃日后进入 Lv.1 经验等级。
+        活跃日按业务时区统计，每个自然日至少产生一个成长事件（登录 / 收藏 / 工具使用等）计 1 天；
+        只读页面刷新不会增加活跃天数。Lv.0 的进度按活跃天数展示，不展示经验升级目标。
+        后台人工覆盖等级时 `is_level_overridden=true`，经验继续累积但不会自动改级。
       security: [{ cookieAuth: [] }]
       responses:
         "200":
@@ -5116,7 +5121,7 @@ paths:
     post:
       tags: [growth]
       summary: 新增等级（可指定等级号，需 ops.growth）
-      description: 可指定 level 并跳号（如 99、999）；省略 level 时追加为当前最高级 +1。阈值必须按等级号严格递增，新增后服务端会重算用户展示等级。
+      description: 可指定 level 并跳号（如 99、999）；省略 level 或传 0 时追加为当前最高级 +1。新增等级号必须 >= 2，阈值必须为正且按等级号严格递增；Lv.0 / Lv.1 是内置基础等级，不能重复创建。新增后服务端会重算用户展示等级。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5142,7 +5147,7 @@ paths:
     post:
       tags: [growth]
       summary: 更新等级阈值 / 标题 / 启用状态（需 ops.growth）
-      description: 仅编辑现有等级；阈值必须全局唯一且按等级严格递增，Lv.1 固定为 0。新增 / 删除请使用 create / delete。
+      description: 仅编辑现有等级；Lv.0 / Lv.1 阈值固定为 0，其余正阈值必须全局唯一且按等级严格递增。新增 / 删除请使用 create / delete。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5160,7 +5165,7 @@ paths:
     post:
       tags: [growth]
       summary: 删除等级并重排后续等级（需 ops.growth）
-      description: 可删除任意 Lv.2 及以上等级；删除后所有更高等级号减 1，level_reached 成就目标值大于被删等级时同步减 1，并按新阈值重算用户展示等级、收敛人工偏移。Lv.1 不可删除。
+      description: 可删除任意 Lv.2 及以上等级；删除后所有更高等级号减 1，level_reached 成就目标值大于被删等级时同步减 1，并按新阈值重算用户展示等级、收敛人工覆盖值。Lv.0 / Lv.1 不可删除。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5204,7 +5209,7 @@ paths:
     post:
       tags: [growth]
       summary: 单用户等级调整（需 ops.growth）
-      description: 直接覆盖用户展示等级，不修改等级定义本身；目标等级必须是当前启用等级。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
+      description: 直接用目标等级覆盖用户展示等级，不修改等级定义本身；覆盖是固定值，后续经验变化不会自动改级，直到下一次人工调整。目标等级必须是当前启用等级。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -7657,12 +7662,15 @@ components:
         current_xp: { type: integer, description: 当前有效经验 }
         lifetime_earned_xp: { type: integer, description: 累计获得 }
         lifetime_reversed_xp: { type: integer, description: 累计冲正 }
-        level: { type: integer, description: 等级（仅展示） }
+        level: { type: integer, description: 等级（仅展示；新用户默认 0，满 7 个活跃日后进入 Lv.1） }
         level_title: { type: string }
-        next_level_xp: { type: integer, nullable: true, description: 满级为 null }
+        next_level_xp: { type: integer, nullable: true, description: 下一级阈值；满级、访客阶段或人工覆盖时为 null }
         xp_to_next_level: { type: integer }
         level_progress_percent: { type: integer, minimum: 0, maximum: 100 }
         is_max_level: { type: boolean }
+        is_level_overridden: { type: boolean, description: 当前等级是否由后台人工直接覆盖 }
+        active_days: { type: integer, description: 已累计活跃天数（封顶 guest_active_days） }
+        guest_active_days: { type: integer, description: 脱离访客阶段所需活跃天数，当前为 7 }
         unlocked_achievements: { type: integer }
         achievement_total: { type: integer }
         today_tasks_completed: { type: integer }
@@ -7734,6 +7742,7 @@ components:
         avatar_url: { type: string }
         level: { type: integer }
         level_title: { type: string }
+        is_level_overridden: { type: boolean, description: 当前等级是否由后台人工直接覆盖 }
         current_xp: { type: integer }
         unlocked_achievements: { type: integer }
 
@@ -7976,8 +7985,8 @@ components:
       type: object
       required: [level, threshold_xp, title]
       properties:
-        level: { type: integer, minimum: 1 }
-        threshold_xp: { type: integer, minimum: 0 }
+        level: { type: integer, minimum: 0 }
+        threshold_xp: { type: integer, minimum: 0, description: Lv.0 / Lv.1 固定为 0；其余等级必须为正 }
         title: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
 
@@ -7985,8 +7994,8 @@ components:
       type: object
       required: [threshold_xp, title]
       properties:
-        level: { type: integer, minimum: 1, description: 可选；省略时追加为当前最高级 +1；允许跳号 }
-        threshold_xp: { type: integer, minimum: 0, description: 必须按等级号严格递增 }
+        level: { type: integer, minimum: 0, description: 可选；省略或传 0 时追加为当前最高级 +1；显式新增必须 >= 2；允许跳号 }
+        threshold_xp: { type: integer, minimum: 1, description: 新增等级必须使用正阈值，并按等级号严格递增 }
         title: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
 
