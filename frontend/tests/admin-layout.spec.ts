@@ -27,6 +27,7 @@ function makeRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: '/', component: { template: '<div>前台首页</div>' } },
+      { path: '/login', component: { template: '<div>登录</div>' } },
       { path: '/admin/login', component: { template: '<div>登录</div>' } },
       { path: '/admin/profile', component: { template: '<div>用户信息</div>' } },
       {
@@ -123,13 +124,13 @@ describe('管理后台顶栏 · 用户菜单', () => {
     expect(router.currentRoute.value.hash).toBe('#password')
   })
 
-  it('点击「退出登录」调用登出并回到后台登录页', async () => {
+  it('点击「退出登录」调用登出并回到统一登录页', async () => {
     const { wrapper, router } = await mountLayout()
     await openMenu(wrapper)
     const btn = wrapper.findAll('[role="menuitem"]').find((b) => b.text() === '退出登录')!
     await btn.trigger('click')
     await flushPromises()
     expect(authApi.logout).toHaveBeenCalledTimes(1)
-    expect(router.currentRoute.value.path).toBe('/admin/login')
+    expect(router.currentRoute.value.path).toBe('/login')
   })
 })

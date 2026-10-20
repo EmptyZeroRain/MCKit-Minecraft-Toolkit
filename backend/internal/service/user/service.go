@@ -253,6 +253,18 @@ func (s *Service) Login(ctx context.Context, identifier, password, ip string) (*
 	return &LoginResult{SessionID: sessionID, User: *u, CSRFToken: csrfToken, ExpiresAt: expiresAt}, nil
 }
 
+// FindByIdentifier 按用户名或邮箱查询账号（任意角色）。
+//
+// 仅供统一登录入口在密码校验前判定分流（普通用户 / 后台账号），
+// 不承担鉴权职责；账号不存在时返回 (nil, nil)。
+func (s *Service) FindByIdentifier(ctx context.Context, identifier string) (*domain.User, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, nil
+	}
+	return s.findAccount(ctx, identifier)
+}
+
 // GetSession 读取会话（供鉴权中间件使用）。
 func (s *Service) GetSession(ctx context.Context, sessionID string) (*auth.Session, error) {
 	return s.sessions.Get(ctx, sessionID)

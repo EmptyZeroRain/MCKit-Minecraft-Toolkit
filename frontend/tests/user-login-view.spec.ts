@@ -10,6 +10,7 @@ vi.mock('@/api/user', () => ({
   fetchCaptcha: vi.fn(),
   register: vi.fn(),
   login: vi.fn(),
+  unifiedLogin: vi.fn(),
   logout: vi.fn(),
   me: vi.fn(),
   changePassword: vi.fn(),

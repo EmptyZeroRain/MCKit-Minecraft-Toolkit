@@ -54,6 +54,17 @@ export const useAuthStore = defineStore('auth', {
       if (!outcome.mfa_required) this.user = outcome.user
       return outcome
     },
+    /** 统一登录成功后写入后台登录态（不发请求） */
+    applySession(user: AdminUser): void {
+      this.user = user
+      this.loaded = true
+      this.initialized = true
+    },
+    /** 强制重新拉取后台会话（统一登录成功后补齐权限与账号字段） */
+    async reloadSession(): Promise<void> {
+      this.initialized = false
+      await this.restoreSession()
+    },
     /** 第二因子校验，成功后写入登录态 */
     async verifyMFA(ticket: string, code: string): Promise<AdminUser> {
       const user = await adminAuthApi.verifyMFA(ticket, code)

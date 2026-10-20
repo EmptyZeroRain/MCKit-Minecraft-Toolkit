@@ -41,9 +41,9 @@
 |---|---|
 | <img src="./images/功能1.png" width="420" alt="前台功能"> | <img src="./images/代码浏览器.png" width="420" alt="MC 源码浏览器"> |
 
-| 后台登录 | 后台总览 |
+| 登录页（普通用户 / 管理员共用） | 后台总览 |
 |---|---|
-| <img src="./images/后台登陆.png" width="420" alt="后台登录"> | <img src="./images/后台.png" width="420" alt="后台总览"> |
+| <img src="./images/后台登陆.png" width="420" alt="登录页"> | <img src="./images/后台.png" width="420" alt="后台总览"> |
 
 | 后台内容管理 | 运营看板 |
 |---|---|
@@ -411,7 +411,8 @@ npm run build        # 类型检查 + 生产构建
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/user/captcha`、`/register`、`/login` | 注册验证码 / 注册 / 登录 |
+| POST | `/api/v1/auth/login` | 统一登录（普通用户 / 后台账号共用；后台启用 MFA 时返回 `mfa_required` 票据） |
+| POST | `/api/v1/user/captcha`、`/register`、`/login` | 注册验证码 / 注册 / 用户侧登录（保留兼容） |
 | POST | `/api/v1/user/logout`、`/me`、`/profile`、`/change-password`、`/delete` | 会话与自助资料 |
 | POST | `/api/v1/user/favorites/*`、`/recents/*`、`/seeds/*` | 收藏 / 最近使用 / 常用种子 |
 | POST | `/api/v1/user/submissions/submit`、`/submissions/list` | 资源投稿 / 我的投稿 |
@@ -513,7 +514,7 @@ SKIP_BACKUP=1 ./scripts/migrate.sh  # 本地开发跳过备份（不推荐）
 
 - 密码 Argon2id 加盐哈希存储；登录失败限流（5 次 / 15 分钟，IP 隔离）；注册图形验证码仅内存存储。
 - 后台账号管理基于**权限点**：`accounts.admins` / `accounts.users` / `roles.manage` / `content.*` / `review.*` / `ops.*`；内置 `admin` 角色拥有全部权限点。普通用户可被提升为后台角色，提升后必须修改密码才能进入后台。
-- 前台登录仅接受普通用户；后台账号必须走 `/admin/auth/login`（已绑定 MFA 时需第二因子），避免绕过后台二次验证。后台账号登录后同样可使用前台个人能力（收藏 / 投稿 / 成长 / 礼物）。
+- 统一登录入口 `/api/v1/auth/login` 按账号角色分流：普通用户走用户登录链路，后台账号走后台认证链路（MFA、登录审计与权限点不变）；旧 `/user/login` 与 `/admin/auth/login` 保留兼容。后台账号登录后同样可使用前台个人能力（收藏 / 投稿 / 成长 / 礼物）。
 - 改密、停用、改角色、重置密码、删除后，该账号所有会话立即失效；后台账号不可自助注销；MFA 密钥使用 AES-GCM 加密存储。
 - 系统管理提供全站会话管理（`ops.sessions`）：可按指纹踢下线，列表不回显 SessionID 原文，当前会话禁止自踢，操作写审计。
 - Cookie 会话 HttpOnly + SameSite；生产应开启 `SESSION_SECURE_COOKIE`。写操作 CSRF 双重提交校验。

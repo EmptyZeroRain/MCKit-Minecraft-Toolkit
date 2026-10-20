@@ -71,8 +71,9 @@ async function handleUnauthorized(config: AxiosRequestConfig) {
       refreshQueue = []
       queued.forEach((item) => item.reject(new ApiError('登录已失效', 'UNAUTHORIZED')))
       auth.reset()
-      if (router.currentRoute.value.path.startsWith('/admin')) {
-        router.push({ path: '/admin/login', query: { redirect: router.currentRoute.value.fullPath } })
+      const path = router.currentRoute.value.path
+      if (path.startsWith('/admin') && path !== '/admin/login') {
+        router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
       }
     } finally {
       isRefreshing = false
@@ -96,8 +97,15 @@ http.interceptors.response.use(
     const requestId = body?.request_id
     const code = body?.error?.code ?? 'UNKNOWN_ERROR'
 
-    // 401：会话失效，尝试刷新后重放
-    if (status === 401 && !router.currentRoute.value.path.includes('/admin/login')) {
+    // 401：会话失效，尝试刷新后重放。
+    // 统一登录页上的 401（密码 / MFA 验证码错误）必须原样交给页面展示，
+    // 不能触发会话刷新与跳转，否则会吞掉真实错误。
+    const currentPath = router.currentRoute.value.path
+    if (
+      status === 401 &&
+      currentPath !== '/login' &&
+      currentPath !== '/admin/login'
+    ) {
       try {
         const retried = await handleUnauthorized(error.config!)
         return retried

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 顶部导航：LOGO、主导航、全局搜索、移动端菜单按钮
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import GlobalSearch from '@/components/search/GlobalSearch.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
@@ -29,6 +29,10 @@ const scrolled = ref(false)
 const searchOpen = ref(false)
 const drawerOpen = ref(false)
 const userAuth = useUserAuthStore()
+/** 后台账号登录后仍可使用前台能力；仅在确认为后台账号时显示管理入口。 */
+const isAdminAccount = computed(
+  () => !!userAuth.user?.role && userAuth.user.role !== 'user',
+)
 
 function onScroll() {
   scrolled.value = window.scrollY > 8
@@ -121,9 +125,17 @@ function isActive(to: string): boolean {
           v-else
           to="/login"
           class="hidden h-10 items-center gap-1.5 rounded-md border border-border-dark px-3 text-sm text-text-secondary transition hover:bg-ink-700 hover:text-text-primary sm:inline-flex"
-          title="登录 / 注册"
+          title="登录"
         >
           登录
+        </RouterLink>
+        <RouterLink
+          v-if="!userAuth.isLoggedIn"
+          to="/login?mode=register"
+          class="hidden h-10 items-center gap-1.5 rounded-md border border-border-dark px-3 text-sm text-text-secondary transition hover:bg-ink-700 hover:text-text-primary sm:inline-flex"
+          title="注册"
+        >
+          注册
         </RouterLink>
         <button
           v-if="userAuth.isLoggedIn"
@@ -138,6 +150,7 @@ function isActive(to: string): boolean {
           </svg>
         </button>
         <RouterLink
+          v-if="isAdminAccount"
           to="/admin"
           class="hidden h-10 items-center gap-1.5 rounded-md border border-border-dark px-3 text-sm text-text-secondary transition hover:bg-ink-700 hover:text-text-primary sm:inline-flex"
           title="管理后台"

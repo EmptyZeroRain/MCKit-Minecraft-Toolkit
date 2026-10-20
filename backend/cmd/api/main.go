@@ -415,6 +415,10 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		WithPasswordPolicy(userPolicy).
 		WithAdminPasswordPolicy(policy)
 
+	// 统一登录入口：前台登录页同时服务普通用户与后台账号。
+	// 认证处理器复用用户服务完成角色分流；普通用户登录事件照常进入成长系统。
+	authHandler.WithUserService(userSvc).WithGrowthSink(growthSvc)
+
 	// 注册图形验证码（迁移 0024 起注册需填邮箱与验证码）。
 	// 仅内存存储，与 MemorySessionStore 一致，适用于单实例部署；
 	// CAPTCHA_ENABLED=false 时不创建（注册跳过验证码校验）。
@@ -433,6 +437,10 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 	resSvc := resource.NewService(gormDB)
 	submissionSvc := submission.NewService(gormDB, resSvc)
 	submissionHandler := handler.NewSubmissionHandler(submissionSvc).WithGrowthSink(growthSvc)
+
+	// 统一登录：同一页面 / 接口同时支持普通用户与后台账号。
+	// 后台账号仍走后台认证链路（MFA / 审计 / 权限点），普通用户走用户链路。
+	r.Post("/auth/login", authHandler.UnifiedLogin)
 
 	r.Route("/user", func(ur chi.Router) {
 		ur.Post("/captcha", userHandler.Captcha)

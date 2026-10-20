@@ -5,6 +5,7 @@
 //   - CSRF token 由 api/user-http.ts 统一附加到写请求。
 import { defineStore } from 'pinia'
 import type { RegisterPayload, UserAccount } from '@/types/user'
+import type { UnifiedLoginOutcome } from '@/api/user'
 import * as userApi from '@/api/user'
 import { useUserWorkspaceStore } from '@/stores/user-workspace'
 
@@ -26,7 +27,12 @@ export const useUserAuthStore = defineStore('user-auth', {
       this.initialized = true
       try {
         this.user = await userApi.me()
-        await useUserWorkspaceStore().loadFavorites()
+        // 个人数据加载失败不阻断会话恢复（例如网络抖动）。
+        try {
+          await useUserWorkspaceStore().loadFavorites()
+        } catch {
+          /* 忽略：工作台会自行重试 */
+        }
       } catch {
         this.user = null
       } finally {
@@ -40,6 +46,28 @@ export const useUserAuthStore = defineStore('user-auth', {
       this.initialized = true
       await useUserWorkspaceStore().loadFavorites()
       return account
+    },
+    /**
+     * 统一登录：普通用户直接写入登录态；后台账号由调用方写入管理端 store。
+     * MFA 场景只返回票据，此时不写入任何登录态。
+     */
+    async loginUnified(identifier: string, password: string): Promise<UnifiedLoginOutcome> {
+      const outcome = await userApi.unifiedLogin({ identifier, password })
+      if ('mfa_required' in outcome) return outcome
+      this.user = outcome
+      this.loaded = true
+      this.initialized = true
+      try {
+        await useUserWorkspaceStore().loadFavorites()
+      } catch {
+        /* 忽略：登录已成功，个人数据稍后重试 */
+      }
+      return outcome
+    },
+    /** 强制重新拉取会话（统一登录 / MFA 完成后回填前台登录态） */
+    async reloadSession(): Promise<void> {
+      this.initialized = false
+      await this.restoreSession()
     },
     /** 注册（不自动登录）；需携带图形验证码 */
     async register(payload: RegisterPayload): Promise<UserAccount> {

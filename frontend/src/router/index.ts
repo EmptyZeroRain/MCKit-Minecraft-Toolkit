@@ -324,11 +324,12 @@ const routes: RouteRecordRaw[] = [
     ],
   },
   // ===== 管理后台 =====
+  // 管理员登录已整合到统一登录页（/login）：旧入口保留重定向，兼容书签与旧链接。
   {
     path: '/admin/login',
     name: 'admin-login',
-    component: () => import('@/views/admin/AdminLoginView.vue'),
-    meta: { title: '管理员登录', requiresAdmin: false, noindex: true },
+    redirect: (to) => ({ path: '/login', query: to.query }),
+    meta: { title: '登录', noindex: true },
   },
   {
     path: '/admin',
@@ -552,20 +553,16 @@ const router = createRouter({
 // 管理路由守卫：仅改善前端体验；真正权限校验在后端
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  const userAuth = useUserAuthStore()
   const requiresAdmin = to.matched.some((r) => r.meta.requiresAdmin)
 
   if (requiresAdmin && !auth.initialized) {
     await auth.restoreSession()
   }
 
-  // 未登录访问管理页 -> 登录页（带 redirect）
+  // 未登录访问管理页 -> 统一登录页（带 redirect；登录后后台账号自动进入后台）
   if (requiresAdmin && !auth.isLoggedIn) {
-    return { path: '/admin/login', query: { redirect: to.fullPath } }
-  }
-
-  // 已登录访问登录页 -> 管理首页
-  if (to.name === 'admin-login' && auth.isLoggedIn) {
-    return { path: '/admin' }
+    return { path: '/login', query: { redirect: to.fullPath } }
   }
 
   // 必须改密：除「用户信息」页（改密锚点）外，全部后台页面强制跳转。
@@ -579,17 +576,29 @@ router.beforeEach(async (to) => {
     return { path: '/admin/profile', hash: '#password' }
   }
 
+  // 统一登录页：已登录用户按角色回到对应首页，避免重复登录。
+  if (to.name === 'user-login') {
+    if (!auth.initialized) {
+      await auth.restoreSession()
+    }
+    if (auth.isLoggedIn) {
+      return { path: '/admin' }
+    }
+    if (!userAuth.initialized) {
+      await userAuth.restoreSession()
+    }
+    if (userAuth.isLoggedIn) {
+      return { path: '/workspace' }
+    }
+  }
+
   // 普通用户受限页（工作台）：同样是前端体验优化，后端仍按会话鉴权。
-  const userAuth = useUserAuthStore()
   const requiresUser = to.matched.some((r) => r.meta.requiresUser)
   if (requiresUser && !userAuth.initialized) {
     await userAuth.restoreSession()
   }
   if (requiresUser && !userAuth.isLoggedIn) {
     return { path: '/login', query: { redirect: to.fullPath } }
-  }
-  if (to.name === 'user-login' && userAuth.isLoggedIn) {
-    return { path: '/workspace' }
   }
 
   return true

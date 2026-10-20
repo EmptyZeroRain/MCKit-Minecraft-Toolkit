@@ -144,10 +144,10 @@ async function handleSubmit() {
   try {
     await changePassword({ old_password: form.old_password, new_password: form.new_password })
     ui.success('密码已修改，请使用新密码重新登录')
-    // 会话已被服务端全部注销，清理本地状态后回到登录页。
+    // 会话已被服务端全部注销，清理本地状态后回到统一登录页。
     setCsrfToken('')
     auth.reset()
-    router.push({ path: '/admin/login' })
+    router.push({ path: '/login' })
   } catch (err) {
     // 把后端字段级错误（如「旧密码不正确」）就近渲染到对应输入框。
     const details = err instanceof ApiError ? err.details : undefined
@@ -202,7 +202,7 @@ async function handleRevoke(scope: 'others' | 'all') {
     if (scope === 'all') {
       setCsrfToken('')
       auth.reset()
-      router.push({ path: '/admin/login' })
+      router.push({ path: '/login' })
       return
     }
     ui.success(`已退出其它设备（${res.revoked} 个会话）`)

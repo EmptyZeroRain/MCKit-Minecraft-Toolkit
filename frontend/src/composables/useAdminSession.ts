@@ -9,12 +9,12 @@ export function useAdminSession() {
   const auth = useAuthStore()
   const ui = useUiStore()
 
-  /** 退出管理会话并回到后台登录页。 */
+  /** 退出管理会话并回到统一登录页。 */
   async function logout() {
     try {
       await auth.logout()
       ui.success('已退出登录')
-      router.push('/admin/login')
+      router.push('/login')
     } catch (err) {
       ui.error('退出失败，请重试')
       console.error(err)

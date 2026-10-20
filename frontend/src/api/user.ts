@@ -1,6 +1,7 @@
 // ===== 普通用户账号与个人数据 API（需求 §12，全 POST）=====
 // 契约来源：backend/internal/http/handler/user.go
 import userHttp, { setUserCsrfToken } from './user-http'
+import { setCsrfToken } from './http'
 import type { ApiResponse, ListResult, PageQuery } from '@/types/api'
 import type {
   CaptchaChallenge,
@@ -19,6 +20,41 @@ import type { ResourceSubmission, SubmitResourcePayload } from '@/types/submissi
 
 /** 登录 / me 响应额外携带 CSRF token */
 type UserAuthResponse = UserAccount & { csrf_token?: string }
+
+/**
+ * 统一登录成功响应：普通用户与后台账号共用。
+ * 后台账号额外携带 role / permissions，前端据此决定跳转后台还是工作台。
+ */
+export type UnifiedLoginSuccess = UserAccount & { role: string; permissions?: string[] }
+
+/**
+ * 统一登录结果：
+ *   - 普通用户：直接返回账号信息（已种下会话 Cookie）；
+ *   - 后台账号：未启用 MFA 时返回账号信息；启用 MFA 时只返回票据，
+ *     需继续调用 /admin/auth/mfa/verify 完成第二因子。
+ */
+export type UnifiedLoginOutcome =
+  | { mfa_required: true; mfa_ticket: string }
+  | UnifiedLoginSuccess
+
+/**
+ * 统一登录：前台登录页同时服务普通用户与后台账号。
+ * 服务端按账号角色分流，后台账号仍走完整的 MFA 与审计链路。
+ */
+export async function unifiedLogin(payload: LoginPayload): Promise<UnifiedLoginOutcome> {
+  const { data } = await userHttp.post<
+    ApiResponse<UnifiedLoginSuccess & { mfa_required?: boolean; mfa_ticket?: string }>
+  >('/auth/login', payload)
+  if (data.data.mfa_required) {
+    return { mfa_required: true, mfa_ticket: data.data.mfa_ticket ?? '' }
+  }
+  if (data.data.csrf_token) {
+    setUserCsrfToken(data.data.csrf_token)
+    // 同一会话 Cookie 也用于后台接口；后台账号登录后同步管理端 CSRF token。
+    if (data.data.role !== 'user') setCsrfToken(data.data.csrf_token)
+  }
+  return data.data
+}
 
 /** 获取图形验证码（注册前调用；一次性，校验后即失效） */
 export async function fetchCaptcha(): Promise<CaptchaChallenge> {

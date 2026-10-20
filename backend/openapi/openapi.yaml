@@ -23,6 +23,8 @@ tags:
     description: MC 版本信息与物品对照表（移植自 CreeperCode）
   - name: admin-auth
     description: 管理员认证
+  - name: auth
+    description: 统一登录入口（普通用户与后台账号共用同一页面 / 接口）
   - name: user
     description: 普通用户账号与个人数据（需登录，写操作 + CSRF）
   - name: admin
@@ -1112,6 +1114,43 @@ paths:
                 type: object
                 properties:
                   data: { $ref: "#/components/schemas/UserAccount" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429":
+          description: 登录尝试过多（按登录标识 + IP 限流）
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 统一登录（普通用户 / 后台账号）
+      description: >-
+        前台登录页共用的统一入口。`identifier` 支持用户名或邮箱；
+        服务端按账号角色分流：普通用户走用户登录链路，后台账号走后台认证链路
+        （MFA、登录审计与权限点保持一致）。后台账号启用 MFA 时返回
+        `mfa_required` 与短期票据，需继续调用 `/admin/auth/mfa/verify`。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier: { type: string, description: 用户名或邮箱 }
+                username: { type: string, description: 兼容字段；identifier 为空时回退使用 }
+                password: { type: string }
+      responses:
+        "200":
+          description: 登录成功（种下会话 Cookie），或后台账号需要 MFA 第二因子
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: "#/components/schemas/UserAccount"
+                      - type: object
+                        properties:
+                          mfa_required: { type: boolean }
+                          mfa_ticket: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429":
           description: 登录尝试过多（按登录标识 + IP 限流）

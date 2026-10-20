@@ -1,23 +1,37 @@
 <script setup lang="ts">
 // 移动端导航抽屉（需求 4.3）
+import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import { useUserAuthStore } from '@/stores/user-auth'
 
 defineProps<{ open: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 const route = useRoute()
+const userAuth = useUserAuthStore()
 
-// 与桌面端一致的顶层导航；具体工具在工具中心内提供
-const navItems = [
-  { label: '首页', to: '/' },
-  { label: '工具中心', to: '/tools' },
-  { label: '资源中心', to: '/resources' },
-  { label: '玩家社区', to: '/community' },
-  { label: '关于本站', to: '/about' },
-  { label: '问题反馈', to: '/feedback' },
-  { label: '资源投稿', to: '/submit-resource' },
-  { label: '管理后台', to: '/admin' },
-]
+// 与桌面端一致的顶层导航；具体工具在工具中心内提供。
+// 登录后显示工作台（后台账号额外显示管理入口），未登录显示登录 / 注册。
+const navItems = computed(() => {
+  const items = [
+    { label: '首页', to: '/' },
+    { label: '工具中心', to: '/tools' },
+    { label: '资源中心', to: '/resources' },
+    { label: '玩家社区', to: '/community' },
+    { label: '关于本站', to: '/about' },
+    { label: '问题反馈', to: '/feedback' },
+    { label: '资源投稿', to: '/submit-resource' },
+  ]
+  if (userAuth.isLoggedIn) {
+    items.push({ label: '我的工作台', to: '/workspace' })
+    if (userAuth.user?.role && userAuth.user.role !== 'user') {
+      items.push({ label: '管理后台', to: '/admin' })
+    }
+  } else {
+    items.push({ label: '登录', to: '/login' }, { label: '注册', to: '/login?mode=register' })
+  }
+  return items
+})
 
 function isActive(to: string): boolean {
   if (to === '/') return route.path === '/'

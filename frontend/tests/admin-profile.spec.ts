@@ -37,6 +37,7 @@ function makeRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: '/', component: { template: '<div />' } },
+      { path: '/login', component: { template: '<div />' } },
       { path: '/admin/login', component: { template: '<div />' } },
       { path: '/admin/profile', component: AdminProfileView },
     ],

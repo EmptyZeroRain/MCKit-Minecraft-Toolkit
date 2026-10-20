@@ -33,6 +33,8 @@ export interface UserAccount {
   id: string
   /** 对外随机用户 ID（如 U7K3M2QX9F），用于展示与社区作者署名 */
   user_no?: string
+  /** 账号角色：user=普通用户；admin/editor=后台账号（由 /user/me 返回） */
+  role?: string
   username: string
   /** 展示昵称（注册必填；空串时前端回退到 username） */
   nickname?: string

@@ -17,9 +17,12 @@ import (
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/http/response"
 	mfasvc "mckit/backend/internal/service/mfa"
+	"mckit/backend/internal/service/user"
 )
 
-// AuthHandler 管理员认证与账号管理处理器（需求 §8.3）。
+// AuthHandler 认证与账号管理处理器（需求 §8.3）：
+//   - 后台账号登录 / MFA / 会话管理；
+//   - 统一登录入口（/auth/login），普通用户与后台账号共用同一页面。
 type AuthHandler struct {
 	authService  *auth.Service
 	sessionStore auth.SessionStore
@@ -29,6 +32,10 @@ type AuthHandler struct {
 	perms        middleware.PermissionResolver
 	// mfa 双因子认证（未配置时相关接口返回 503）。
 	mfa *mfasvc.Service
+	// userSvc 普通用户服务（统一登录入口分流账号角色后复用其登录链路）。
+	userSvc *user.Service
+	// growth 成长事件接收端（统一登录的普通用户登录事件）。
+	growth domain.GrowthEventSink
 }
 
 // NewAuthHandler 创建认证处理器。
@@ -57,6 +64,18 @@ func (h *AuthHandler) WithPermissions(resolver middleware.PermissionResolver) *A
 // WithMFA 注入双因子认证服务。
 func (h *AuthHandler) WithMFA(svc *mfasvc.Service) *AuthHandler {
 	h.mfa = svc
+	return h
+}
+
+// WithUserService 注入普通用户服务，供统一登录入口复用用户登录链路。
+func (h *AuthHandler) WithUserService(svc *user.Service) *AuthHandler {
+	h.userSvc = svc
+	return h
+}
+
+// WithGrowthSink 注入成长事件接收端（统一登录成功时投递普通用户登录事件）。
+func (h *AuthHandler) WithGrowthSink(sink domain.GrowthEventSink) *AuthHandler {
+	h.growth = sink
 	return h
 }
 
@@ -100,8 +119,66 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.loginAdmin(w, r, req.Username, req.Password)
+}
+
+// unifiedLoginRequest 统一登录请求体：identifier 支持用户名或邮箱。
+// username 为兼容字段，identifier 为空时回退使用。
+type unifiedLoginRequest struct {
+	Identifier string `json:"identifier"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+}
+
+// UnifiedLogin POST /api/v1/auth/login
+//
+// 统一登录入口：前台登录页同时服务普通用户与后台账号。
+// 先按用户名 / 邮箱定位账号（任意角色），再按角色复用各自的登录链路：
+//   - 普通用户：用户服务，登录事件照常投递成长系统；
+//   - 后台账号：后台认证服务，MFA、登录审计与权限点完全保持一致。
+//
+// 这样前端只需一个登录页，也不会出现「先用错误入口试一次」导致的限流污染。
+func (h *AuthHandler) UnifiedLogin(w http.ResponseWriter, r *http.Request) {
+	var req unifiedLoginRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	identifier := strings.TrimSpace(req.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(req.Username)
+	}
+	if identifier == "" || req.Password == "" {
+		response.Validation(w, r, []response.ErrorDetail{
+			{Field: "identifier", Message: "用户名或邮箱必填"},
+			{Field: "password", Message: "密码必填"},
+		})
+		return
+	}
+	if h.userSvc == nil {
+		response.HandleError(w, r, errors.New("统一登录入口未装配用户服务"))
+		return
+	}
+
+	account, err := h.userSvc.FindByIdentifier(r.Context(), identifier)
+	if err != nil {
+		response.HandleError(w, r, err)
+		return
+	}
+	if account != nil && account.Role != domain.RoleUser {
+		// 后台账号统一走后台登录：账号可能用邮箱标识，但后台认证只接受用户名，
+		// 因此这里传定位到的 Username，而不是原始 identifier。
+		h.loginAdmin(w, r, account.Username, req.Password)
+		return
+	}
+
+	h.loginUser(w, r, identifier, req.Password)
+}
+
+// loginAdmin 后台账号登录（供 /admin/auth/login 与统一登录入口复用）。
+func (h *AuthHandler) loginAdmin(w http.ResponseWriter, r *http.Request, username, password string) {
 	ip := clientIP(r)
-	result, err := h.authService.Login(r.Context(), req.Username, req.Password, ip)
+	result, err := h.authService.Login(r.Context(), username, password, ip)
 	if err != nil {
 		// 记录失败审计（不记录密码）。
 		if h.audit != nil {
@@ -110,7 +187,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 				ObjectType: "admin",
 				SourceIP:   ip,
 				Result:     domain.AuditFailure,
-				After:      map[string]any{"username": req.Username},
+				After:      map[string]any{"username": username},
 			})
 		}
 		if errors.Is(err, auth.ErrLocked) {
@@ -159,17 +236,56 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	h.respondLogin(w, r, result)
 }
 
-// respondLogin 种下会话 Cookie 并返回登录态（密码登录与 MFA 登录共用）。
-func (h *AuthHandler) respondLogin(w http.ResponseWriter, r *http.Request, result *auth.LoginResult) {
+// loginUser 普通用户登录（统一登录入口复用 /user/login 的会话与成长逻辑）。
+func (h *AuthHandler) loginUser(w http.ResponseWriter, r *http.Request, identifier, password string) {
+	result, err := h.userSvc.Login(r.Context(), identifier, password, clientIP(r))
+	if err != nil {
+		if errors.Is(err, auth.ErrLocked) {
+			response.Error(w, r, http.StatusTooManyRequests, "LOGIN_LOCKED",
+				"登录尝试次数过多，请稍后再试", nil)
+			return
+		}
+		if errors.Is(err, auth.ErrCredentials) {
+			response.Unauthorized(w, r)
+			return
+		}
+		response.HandleError(w, r, err)
+		return
+	}
+	h.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	// 成长事件：登录成功（每日登录奖励与「每日登录」任务由成长侧按业务日期幂等处理）。
+	emitGrowth(r.Context(), h.growth, "user", domain.EventUserLoginSucceeded, result.User.ID.String(), "account", result.User.ID.String())
+	response.OK(w, map[string]any{
+		"id":                   result.User.ID,
+		"user_no":              result.User.UserNo,
+		"username":             result.User.Username,
+		"nickname":             result.User.Nickname,
+		"email":                result.User.Email,
+		"avatar_url":           result.User.AvatarURL,
+		"role":                 result.User.Role,
+		"must_change_password": result.User.MustChangePassword,
+		"permissions":          []string{},
+		"csrf_token":           result.CSRFToken,
+		"expires_at":           result.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// setSessionCookie 写入统一会话 Cookie（普通用户与后台账号共用）。
+func (h *AuthHandler) setSessionCookie(w http.ResponseWriter, sessionID string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.SessionCookieName(),
-		Value:    result.SessionID,
+		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   h.secure,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  result.ExpiresAt,
+		Expires:  expiresAt,
 	})
+}
+
+// respondLogin 种下会话 Cookie 并返回登录态（密码登录与 MFA 登录共用）。
+func (h *AuthHandler) respondLogin(w http.ResponseWriter, r *http.Request, result *auth.LoginResult) {
+	h.setSessionCookie(w, result.SessionID, result.ExpiresAt)
 
 	response.OK(w, map[string]any{
 		"id":                   result.Admin.ID,
