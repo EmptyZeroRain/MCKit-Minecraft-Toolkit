@@ -166,7 +166,9 @@ func resetData(t *testing.T, gdb *gorm.DB) {
 		feedback, resource_submissions, categories, tags, audit_logs, data_import_jobs, search_terms, dev_docs,
 		tool_stats_daily, resource_stats_daily, api_stats_daily, search_stats_daily,
 		growth_events, experience_ledger, user_growth, user_daily_tasks, user_achievements,
-		achievement_progress, growth_audit_logs
+		achievement_progress, growth_audit_logs,
+		gift_ledger, gift_wallets,
+		community_likes, community_comments, community_posts, content_keywords
 		RESTART IDENTITY CASCADE`).Error
 	if err != nil {
 		t.Fatalf("清理测试数据失败: %v", err)
@@ -950,11 +952,11 @@ func TestUnifiedAccountBoundaries(t *testing.T) {
 		t.Fatalf("普通用户访问后台接口期望 403，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 7) 后台会话访问普通用户接口 → 401（RequireUserRole 兜底）。
+	// 7) 后台会话可访问前台个人接口（统一账号后管理员同样拥有前台能力）。
 	adminCookie, adminCSRF := loginAs(t, router, itAdminUser)
 	rec = do(t, router, http.MethodPost, "/api/v1/user/me", `{}`, adminCookie, adminCSRF)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("后台会话访问 /user/me 期望 401，实际 %d（%s）", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("后台会话访问 /user/me 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
 	// 8) 后台「普通用户管理」只返回普通用户，后台账号不混入。
@@ -964,6 +966,7 @@ func TestUnifiedAccountBoundaries(t *testing.T) {
 	}
 	var userList struct {
 		Data []struct {
+			ID       string `json:"id"`
 			Username string `json:"username"`
 		} `json:"data"`
 		Meta struct {
@@ -1000,6 +1003,74 @@ func TestUnifiedAccountBoundaries(t *testing.T) {
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("创建 role=user 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 10) 统一账号管理：单列表同时返回普通用户与后台账号。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/accounts/list", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("统一账号列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var accountList struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+			Role     string `json:"role"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accountList); err != nil {
+		t.Fatalf("解析统一账号列表失败: %v", err)
+	}
+	var sawUser, sawAdmin bool
+	for _, a := range accountList.Data {
+		if a.Username == "it-normal" && a.Role == domain.RoleUser {
+			sawUser = true
+		}
+		if a.Username == itAdminUser {
+			sawAdmin = true
+		}
+	}
+	if !sawUser || !sawAdmin {
+		t.Fatalf("统一账号列表应同时包含普通用户与后台账号：%+v", accountList.Data)
+	}
+
+	// 11) 普通用户提升为后台角色（editor），再降级回普通用户。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/accounts/update",
+		`{"id":"`+userList.Data[0].ID+`","role":"editor"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("提升为 editor 期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var promoted struct {
+		Data struct {
+			Role string `json:"role"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &promoted); err != nil {
+		t.Fatalf("解析提升结果失败: %v", err)
+	}
+	if promoted.Data.Role != "editor" {
+		t.Fatalf("提升后角色应为 editor，实际 %q", promoted.Data.Role)
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/accounts/update",
+		`{"id":"`+userList.Data[0].ID+`","role":"user"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("降级为普通用户期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	// 11.1) 恢复普通用户后，统一列表中 admin 范围不再包含该账号。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/accounts/list",
+		`{"scope":"admin","q":"it-normal"}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("按后台范围查询期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	var adminScope struct {
+		Meta struct {
+			Total int64 `json:"total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &adminScope); err != nil {
+		t.Fatalf("解析后台范围分页失败: %v", err)
+	}
+	if adminScope.Meta.Total != 0 {
+		t.Fatalf("已降级账号不应出现在后台范围，实际 total=%d", adminScope.Meta.Total)
 	}
 }
 

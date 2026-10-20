@@ -70,6 +70,38 @@ func TestComputeLevelEmptyThresholds(t *testing.T) {
 	}
 }
 
+// TestComputeLevelWithOffset 人工等级偏移：经验等级叠加偏移并限制在有效等级范围。
+func TestComputeLevelWithOffset(t *testing.T) {
+	levels := []domain.GrowthLevel{
+		{Level: 1, ThresholdXP: 0, Title: "Lv.1", Enabled: true},
+		{Level: 2, ThresholdXP: 100, Title: "Lv.2", Enabled: true},
+		{Level: 3, ThresholdXP: 300, Title: "Lv.3", Enabled: true},
+	}
+	cases := []struct {
+		name      string
+		xp        int64
+		offset    int
+		wantLevel int
+	}{
+		{"无偏移保持经验等级", 150, 0, 2},
+		{"正偏移提升展示等级", 150, 1, 3},
+		{"负偏移降低展示等级", 350, -2, 1},
+		{"正偏移不超过最高等级", 300, 9, 3},
+		{"负偏移不低于最低等级", 0, -9, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			view := computeLevelWithOffset(levels, tc.xp, tc.offset)
+			if view.Level != tc.wantLevel {
+				t.Fatalf("等级 = %d，期望 %d", view.Level, tc.wantLevel)
+			}
+		})
+	}
+	if got := effectiveLevel(levels, 0, 2); got != 3 {
+		t.Fatalf("0 XP + 偏移 2 应为 Lv.3，实际 Lv.%d", got)
+	}
+}
+
 // TestBusinessDate 业务日期按站点时区换算。
 func TestBusinessDate(t *testing.T) {
 	loc, err := time.LoadLocation("Asia/Shanghai")

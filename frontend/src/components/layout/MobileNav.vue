@@ -12,6 +12,7 @@ const navItems = [
   { label: '首页', to: '/' },
   { label: '工具中心', to: '/tools' },
   { label: '资源中心', to: '/resources' },
+  { label: '玩家社区', to: '/community' },
   { label: '关于本站', to: '/about' },
   { label: '问题反馈', to: '/feedback' },
   { label: '资源投稿', to: '/submit-resource' },

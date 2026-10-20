@@ -17,6 +17,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"mckit/backend/internal/accountid"
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/domain"
 )
@@ -161,8 +162,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.Admin, er
 	if err != nil {
 		return nil, err
 	}
+	userNo, err := accountid.Generate()
+	if err != nil {
+		return nil, err
+	}
 	admin := &domain.Admin{
 		Username:     username,
+		UserNo:       userNo,
 		PasswordHash: hash,
 		Role:         in.Role,
 		IsActive:     true,

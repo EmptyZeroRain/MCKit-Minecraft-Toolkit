@@ -37,13 +37,17 @@ import (
 	"mckit/backend/internal/repository/types"
 	"mckit/backend/internal/search"
 	"mckit/backend/internal/service"
+	"mckit/backend/internal/service/accountadmin"
 	"mckit/backend/internal/service/adminaccount"
 	"mckit/backend/internal/service/alert"
 	"mckit/backend/internal/service/analytics"
 	"mckit/backend/internal/service/catalog"
+	communitysvc "mckit/backend/internal/service/community"
 	"mckit/backend/internal/service/content"
+	"mckit/backend/internal/service/contentfilter"
 	"mckit/backend/internal/service/contenttask"
 	"mckit/backend/internal/service/dataquality"
+	"mckit/backend/internal/service/gift"
 	"mckit/backend/internal/service/growth"
 	"mckit/backend/internal/service/jobs"
 	"mckit/backend/internal/service/linkhealth"
@@ -83,6 +87,27 @@ func main() {
 		slog.Error("数据库初始化失败", "err", err)
 		os.Exit(1)
 	}
+
+	// 启动时自动应用未执行的迁移：避免新迁移上线后忘记手动 migrate，
+	// 导致后台调度、社区、MFA 等模块持续报「relation does not exist」。
+	if cfg.AutoMigrate {
+		migrationsDir, err := resolveMigrationsDir(cfg.MigrationsDir)
+		if err != nil {
+			slog.Error("定位数据库迁移目录失败", "err", err)
+			os.Exit(1)
+		}
+		applied, err := db.Migrate(ctx, database, migrationsDir)
+		if err != nil {
+			slog.Error("数据库自动迁移失败", "err", err)
+			os.Exit(1)
+		}
+		if len(applied) > 0 {
+			slog.Info("数据库自动迁移完成", "count", len(applied), "versions", applied)
+		} else {
+			slog.Info("数据库结构已是最新")
+		}
+	}
+
 	sqlDB, err := database.DB()
 	if err != nil {
 		slog.Error("获取底层连接失败", "err", err)
@@ -179,6 +204,47 @@ func newStatsCollector(cfg *config.Config, database *gorm.DB) *metrics.Collector
 		RetentionDays: cfg.StatsRetentionDays,
 		Logger:        slog.Default(),
 	})
+}
+
+// resolveMigrationsDir 定位迁移目录，兼容以下运行方式：
+//   - backend 目录运行 go run ./cmd/api（默认 migrations）；
+//   - 仓库根目录运行二进制（自动发现 backend/migrations）；
+//   - Docker 镜像内 /app 运行（migrations 由镜像复制）。
+func resolveMigrationsDir(configured string) (string, error) {
+	if configured == "" {
+		configured = "migrations"
+	}
+	if filepath.IsAbs(configured) {
+		if isDir(configured) {
+			return configured, nil
+		}
+		return "", fmt.Errorf("迁移目录不存在: %s", configured)
+	}
+
+	var candidates []string
+	if wd, err := os.Getwd(); err == nil {
+		for dir := wd; ; dir = filepath.Dir(dir) {
+			candidates = append(candidates,
+				filepath.Join(dir, configured),
+				filepath.Join(dir, "backend", configured),
+			)
+			if filepath.Dir(dir) == dir {
+				break
+			}
+		}
+	}
+	candidates = append(candidates, configured)
+	for _, candidate := range candidates {
+		if isDir(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("未找到迁移目录 %q，可通过 MIGRATIONS_DIR 指定", configured)
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // registerRoutes 注册 API 路由。
@@ -283,10 +349,25 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 	growthSvc := growth.NewService(gormDB, cfgInstance.GrowthTimezone)
 	growthHandler := handler.NewGrowthHandler(growthSvc)
 
+	// 礼物币钱包：用户查看本人余额 / 流水，后台通过独立 ops.gifts 权限受控增减。
+	giftSvc := gift.NewService(gormDB).WithTimezone(cfgInstance.GrowthTimezone)
+	giftHandler := handler.NewGiftHandler(giftSvc).WithAudit(auditSvc)
+
+	// 社区（帖子 / 留言 / 点赞）：公开读匿名可用，写操作要求普通用户会话；
+	// 点赞与留言在业务确认后投递 post.* 成长事件（幂等由成长侧保证）。
+	// 内容关键字屏蔽在服务端同步校验，后台维护的规则启停立即生效。
+	contentFilterSvc := contentfilter.NewService(gormDB)
+	contentFilterHandler := handler.NewContentFilterHandler(contentFilterSvc).WithAudit(auditSvc)
+	communitySvc := communitysvc.NewService(gormDB).WithContentFilter(contentFilterSvc)
+	communityHandler := handler.NewCommunityHandler(communitySvc).
+		WithGrowthSink(growthSvc).
+		WithAudit(auditSvc)
+
 	authHandler := handler.NewAuthHandler(authSvc, sessionStore, cfgInstance).
 		WithAudit(auditSvc).
 		WithPermissions(roleSvc).
 		WithMFA(mfaSvc)
+	sessionAdminHandler := handler.NewSessionAdminHandler(authSvc).WithAudit(auditSvc)
 
 	r.Route("/admin/auth", func(ar chi.Router) {
 		ar.Post("/login", authHandler.Login)
@@ -315,11 +396,24 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		})
 	})
 
-	// 普通用户账号与个人工作台（需求 §12）：
-	// 统一账号（迁移 0022）后与后台共用 accounts 与会话 Cookie，
-	// 但接口仍只接受 role = 'user' 的会话（RequireUserRole），后台账号访问返回 401；
+	// 全站会话管理（系统管理）：查看普通用户与管理员的有效会话，按指纹踢下线。
+	// 高敏感能力：独立 ops.sessions 权限 + CSRF + 审计；列表不回显 SessionID 原文。
+	r.Route("/admin/sessions", func(sr chi.Router) {
+		sr.Use(middleware.RequireAuth(authSvc))
+		sr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsSessions))
+		sr.Use(middleware.CSRF)
+		sr.Post("/list", sessionAdminHandler.List)
+		sr.Post("/revoke", sessionAdminHandler.Revoke)
+	})
+
+	// 账号个人工作台（需求 §12）：
+	// 统一账号（迁移 0022）后管理员与普通用户共用 accounts 与会话 Cookie，
+	// 且后台账号同样拥有前台能力（收藏 / 最近使用 / 种子 / 投稿 / 成长），
+	// 因此这里只要求登录（RequireAccount），不再按角色拦截；
 	// 读接口仅需登录，写接口叠加 CSRF；登录按 (用户名, IP) 限流。
-	userSvc := user.NewService(user.NewRepo(gormDB), sessionStore, 5, 900).WithPasswordPolicy(userPolicy)
+	userSvc := user.NewService(user.NewRepo(gormDB), sessionStore, 5, 900).
+		WithPasswordPolicy(userPolicy).
+		WithAdminPasswordPolicy(policy)
 
 	// 注册图形验证码（迁移 0024 起注册需填邮箱与验证码）。
 	// 仅内存存储，与 MemorySessionStore 一致，适用于单实例部署；
@@ -346,7 +440,7 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ur.Post("/login", userHandler.Login)
 		ur.Group(func(authed chi.Router) {
 			authed.Use(middleware.RequireAuth(authSvc))
-			authed.Use(middleware.RequireUserRole())
+			authed.Use(middleware.RequireAccount())
 			authed.Post("/logout", userHandler.Logout)
 			authed.Post("/me", userHandler.Me)
 			authed.Post("/favorites/list", userHandler.ListFavorites)
@@ -377,16 +471,54 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		})
 	})
 
+	// 社区（帖子 / 留言 / 点赞）：读接口匿名可用，写接口仅普通用户。
+	// 公开读叠加 OptionalAuth，仅用于返回当前登录者的 liked 状态，不阻断匿名访问。
+	r.Route("/community", func(cr chi.Router) {
+		cr.Use(middleware.OptionalAuth(authSvc))
+		cr.Post("/posts", communityHandler.ListPosts)
+		cr.Post("/posts/detail", communityHandler.PostDetail)
+		cr.Post("/comments", communityHandler.ListComments)
+		cr.Group(func(authed chi.Router) {
+			authed.Use(middleware.RequireAuth(authSvc))
+			authed.Use(middleware.RequireAccount())
+			authed.Group(func(csrf chi.Router) {
+				csrf.Use(middleware.CSRF)
+				csrf.Use(middleware.RequirePasswordChanged())
+				csrf.Post("/posts/create", communityHandler.CreatePost)
+				csrf.Post("/posts/delete", communityHandler.DeletePost)
+				csrf.Post("/posts/like", communityHandler.ToggleLike)
+				csrf.Post("/comments/create", communityHandler.CreateComment)
+				csrf.Post("/comments/delete", communityHandler.DeleteComment)
+			})
+		})
+	})
+
 	// 用户成长中心（jingyan.md §9）：仅本人成长数据，等级仅展示用。
 	// 读接口只要求登录（普通用户角色），不做任何前端可影响的判定。
 	r.Route("/growth", func(gr chi.Router) {
 		gr.Use(middleware.RequireAuth(authSvc))
-		gr.Use(middleware.RequireUserRole())
+		gr.Use(middleware.RequireAccount())
 		gr.Post("/overview", growthHandler.Overview)
 		gr.Post("/ledger", growthHandler.Ledger)
 		gr.Post("/daily-tasks", growthHandler.DailyTasks)
 		gr.Post("/daily-tasks/history", growthHandler.DailyTaskHistory)
 		gr.Post("/achievements", growthHandler.Achievements)
+	})
+
+	// 礼物中心（本人）：余额 / 签到 / 礼物目录 / 兑换 / 流水。
+	// 读接口不要求 CSRF；签到与兑换会改变余额，必须校验 CSRF。
+	r.Route("/gifts", func(gr chi.Router) {
+		gr.Use(middleware.RequireAuth(authSvc))
+		gr.Use(middleware.RequireAccount())
+		gr.Post("/overview", giftHandler.SelfOverview)
+		gr.Post("/ledger/list", giftHandler.SelfLedger)
+		gr.Post("/catalog", giftHandler.SelfCatalog)
+		gr.Post("/redemptions/list", giftHandler.SelfRedemptions)
+		gr.Group(func(wr chi.Router) {
+			wr.Use(middleware.CSRF)
+			wr.Post("/checkin", giftHandler.SelfCheckin)
+			wr.Post("/redeem", giftHandler.SelfRedeem)
+		})
 	})
 
 	// 公开个人主页成长摘要（不含经验流水与登录信息）。
@@ -512,6 +644,31 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ar.Post("/export", userAdminHandler.Export)
 	})
 
+	// 统一账号管理（后台「账号管理」单列表）：
+	// 列表 / 详情 / 启停 / 改角色 / 重置密码 / 删除 / 导出 / 解绑 MFA。
+	// 路由只要求 accounts.admins 或 accounts.users 之一；处理器再按目标账号
+	// 角色做二次判定（后台账号需 accounts.admins，普通用户需 accounts.users），
+	// 避免仅持有 accounts.users 的运营看到或操作管理员账号。
+	accountAdminSvc := accountadmin.NewService(gormDB).
+		WithPasswordPolicies(policy, userPolicy).
+		WithSessionRevoker(sessionStore)
+	accountAdminHandler := handler.NewAccountAdminHandler(accountAdminSvc, authSvc, auditSvc).
+		WithPermissions(roleSvc)
+	r.Route("/admin/accounts", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequireAnyPermission(roleSvc, domain.PermAccountsAdmins, domain.PermAccountsUsers))
+		ar.Use(middleware.CSRF)
+		ar.Post("/list", accountAdminHandler.List)
+		ar.Post("/create", accountAdminHandler.Create)
+		ar.Post("/detail", accountAdminHandler.Detail)
+		ar.Post("/update", accountAdminHandler.Update)
+		ar.Post("/reset-password", accountAdminHandler.ResetPassword)
+		ar.Post("/delete-preview", accountAdminHandler.DeletePreview)
+		ar.Post("/delete", accountAdminHandler.Delete)
+		ar.Post("/mfa/reset", accountAdminHandler.ResetMFA)
+		ar.Post("/export", accountAdminHandler.Export)
+	})
+
 	// 用户成长管理（后台，需 ops.growth 权限）：概览 / 规则 / 等级 / 全局流水 /
 	// 人工调整与冲正 / 审计；定义类操作与经验变更均写成长审计日志。
 	r.Route("/admin/growth", func(ar chi.Router) {
@@ -519,6 +676,8 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsGrowth))
 		ar.Use(middleware.CSRF)
 		ar.Post("/overview", growthHandler.AdminOverview)
+		ar.Post("/users/list", growthHandler.AdminUsersList)
+		ar.Post("/users/detail", growthHandler.AdminUserDetail)
 		ar.Post("/ledger/list", growthHandler.AdminLedger)
 		ar.Post("/adjust", growthHandler.Adjust)
 		ar.Post("/reverse", growthHandler.Reverse)
@@ -529,8 +688,12 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ar.Post("/rules/toggle", growthHandler.RulesToggle)
 		ar.Post("/rules/delete", growthHandler.RulesDelete)
 		ar.Post("/levels/list", growthHandler.LevelsList)
+		ar.Post("/levels/create", growthHandler.LevelsCreate)
 		ar.Post("/levels/update", growthHandler.LevelsUpdate)
+		ar.Post("/levels/delete", growthHandler.LevelsDelete)
 		ar.Post("/levels/recalculate", growthHandler.LevelsRecalculate)
+		// 单用户等级调整：只改等级偏移，不修改等级定义。
+		ar.Post("/levels/adjust", growthHandler.LevelsAdjust)
 	})
 
 	// 每日任务定义管理（后台，需 ops.growth 权限）。
@@ -555,6 +718,29 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ar.Post("/update", growthHandler.AchievementsUpdate)
 		ar.Post("/toggle", growthHandler.AchievementsToggle)
 		ar.Post("/recalculate", growthHandler.AchievementsRecalculate)
+		// 单用户成就：查询 / 手动授予 / 手动撤销。
+		ar.Post("/user/list", growthHandler.AchievementsUserList)
+		ar.Post("/grant", growthHandler.AchievementsGrant)
+		ar.Post("/revoke", growthHandler.AchievementsRevoke)
+	})
+
+	// 礼物运营管理（后台，需独立 ops.gifts 权限）：钱包 / 目录 / 签到设置 / 排行榜。
+	r.Route("/admin/gifts", func(ar chi.Router) {
+		ar.Use(middleware.RequireAuth(authSvc))
+		ar.Use(middleware.RequirePermission(roleSvc, domain.PermOpsGifts))
+		ar.Use(middleware.CSRF)
+		ar.Post("/wallet/get", giftHandler.AdminWallet)
+		ar.Post("/wallet/adjust", giftHandler.AdminAdjust)
+		ar.Post("/ledger/list", giftHandler.AdminLedger)
+		ar.Post("/definitions/list", giftHandler.AdminDefinitions)
+		ar.Post("/definitions/create", giftHandler.AdminDefinitionCreate)
+		ar.Post("/definitions/update", giftHandler.AdminDefinitionUpdate)
+		ar.Post("/definitions/delete", giftHandler.AdminDefinitionDelete)
+		ar.Post("/settings/get", giftHandler.AdminSettingsGet)
+		ar.Post("/settings/update", giftHandler.AdminSettingsUpdate)
+		ar.Post("/rankings/checkin", giftHandler.AdminCheckinRanking)
+		ar.Post("/rankings/gifts", giftHandler.AdminGiftRanking)
+		ar.Post("/rankings/coins", giftHandler.AdminCoinRanking)
 	})
 
 	// 数据质量与导入任务（admin 专属，TODO §2 / §4）
@@ -827,6 +1013,25 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 			lr.Post("/list", linkHealthHandler.List)
 			lr.Post("/confirm", linkHealthHandler.Confirm)
 			lr.Post("/{id}/confirm", linkHealthHandler.Confirm)
+		})
+		// 社区内容审核（隐藏 / 删除帖子与留言），权限点 content.community。
+		ar.Route("/community", func(cr chi.Router) {
+			cr.Use(middleware.RequirePermission(roleSvc, domain.PermContentCommunity))
+			cr.Post("/posts/list", communityHandler.AdminListPosts)
+			cr.Post("/posts/status", communityHandler.AdminSetPostStatus)
+			cr.Post("/posts/delete", communityHandler.AdminDeletePost)
+			cr.Post("/comments/list", communityHandler.AdminListComments)
+			cr.Post("/comments/all", communityHandler.AdminListAllComments)
+			cr.Post("/comments/status", communityHandler.AdminSetCommentStatus)
+			cr.Post("/comments/delete", communityHandler.AdminDeleteComment)
+		})
+		// 内容健康：关键字屏蔽规则维护（ops.dataquality）。
+		ar.Route("/content-health", func(kr chi.Router) {
+			kr.Use(middleware.RequirePermission(roleSvc, domain.PermOpsDataQuality))
+			kr.Post("/keywords/list", contentFilterHandler.List)
+			kr.Post("/keywords/create", contentFilterHandler.Create)
+			kr.Post("/keywords/update", contentFilterHandler.Update)
+			kr.Post("/keywords/delete", contentFilterHandler.Delete)
 		})
 		ar.Route("/resources", func(rr chi.Router) {
 			rr.Use(middleware.RequirePermission(roleSvc, domain.PermContentResources))

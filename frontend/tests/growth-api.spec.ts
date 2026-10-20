@@ -13,8 +13,10 @@ import {
   adjustUserXP,
   createAchievementDef,
   createDailyTaskDef,
+  createGrowthLevel,
   createGrowthRule,
   deleteDailyTaskDef,
+  deleteGrowthLevel,
   deleteGrowthRule,
   fetchAchievementDefs,
   fetchAdminGrowthLedger,
@@ -186,6 +188,25 @@ describe('growth API · 管理端（http）', () => {
       title: '探索者',
       enabled: true,
     })
+
+    httpMock.post.mockResolvedValue({
+      data: { data: { level: 11, threshold_xp: 8000, title: '测试等级', enabled: true } },
+    })
+    const created = await createGrowthLevel({
+      threshold_xp: 8000,
+      title: '测试等级',
+      enabled: true,
+    })
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/create', {
+      threshold_xp: 8000,
+      title: '测试等级',
+      enabled: true,
+    })
+    expect(created.level).toBe(11)
+
+    httpMock.post.mockResolvedValue({ data: { data: null } })
+    await deleteGrowthLevel(11)
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/delete', { level: 11 })
 
     await createDailyTaskDef({ name: 't', description: '', event_type: 'post.liked', target_count: 3, reward_xp: 3, enabled: true, sort_order: 1 })
     expect(httpMock.post).toHaveBeenCalledWith('/admin/daily-tasks/create', {

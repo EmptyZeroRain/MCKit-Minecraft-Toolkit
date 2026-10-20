@@ -34,6 +34,8 @@ function makeRouter() {
         component: AdminLayout,
         children: [{ path: '', component: { template: '<div>仪表盘内容</div>' } }],
       },
+      // 侧边栏会渲染全部后台入口，补一个兜底路由避免测试日志被 no match 警告淹没。
+      { path: '/admin/:pathMatch(.*)*', component: { template: '<div />' } },
     ],
   })
 }

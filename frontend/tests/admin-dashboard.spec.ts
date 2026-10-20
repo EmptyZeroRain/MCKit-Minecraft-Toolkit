@@ -37,7 +37,7 @@ async function mountView() {
       { path: '/admin/resources', component: { template: '<div />' } },
       { path: '/admin/tools', component: { template: '<div />' } },
       { path: '/admin/wiki', component: { template: '<div />' } },
-      { path: '/admin/feedback', component: { template: '<div />' } },
+      { path: '/admin/engagement', component: { template: '<div />' } },
       { path: '/admin/users', component: { template: '<div />' } },
       { path: '/admin/accounts', component: { template: '<div />' } },
       { path: '/admin/resources/new', component: { template: '<div />' } },

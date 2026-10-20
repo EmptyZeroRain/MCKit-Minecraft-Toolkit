@@ -1,8 +1,11 @@
-// Package user 提供普通用户账号与个人数据（收藏 / 最近使用 / 常用种子）服务（需求 §12）。
+// Package user 提供账号个人数据（收藏 / 最近使用 / 常用种子）与前台自助服务（需求 §12）。
 //
 // 安全边界：
-//   - 统一账号（迁移 0022）后普通用户与后台账号同表（accounts），靠 role 区分，
-//     因此账号查询一律叠加 role = 'user'，否则管理员账号会被当成普通用户登录 / 改密；
+//   - 统一账号（迁移 0022）后普通用户与后台账号同表（accounts），靠 role 区分；
+//   - 账号查询按主键 / 用户名 / 邮箱全局检索（用户名与邮箱本就全局唯一），
+//     由服务层决定哪些入口允许后台账号使用；
+//   - 前台登录（/user/login）仍只接受 role = 'user'，后台账号必须走
+//     /admin/auth/login，避免绕过后台的 MFA；
 //   - 本包不涉及任何后台权限；个人数据查询一律以 user_id 过滤，杜绝越权访问他人数据。
 package user
 
@@ -52,11 +55,12 @@ type GormRepo struct{ db *gorm.DB }
 // NewRepo 创建 GORM 仓储。
 func NewRepo(db *gorm.DB) *GormRepo { return &GormRepo{db: db} }
 
-// FindByUsername 按用户名查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
+// FindByUsername 按用户名查询账号（用户名全局唯一）；不存在返回 (nil, nil)。
+// 是否允许该角色使用调用入口由服务层判定（例如前台登录只接受 role = 'user'）。
 func (r *GormRepo) FindByUsername(ctx context.Context, username string) (*domain.User, error) {
 	var u domain.User
 	err := r.db.WithContext(ctx).
-		Where("username = ? AND role = ?", username, domain.RoleUser).
+		Where("username = ?", username).
 		First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -67,14 +71,14 @@ func (r *GormRepo) FindByUsername(ctx context.Context, username string) (*domain
 	return &u, nil
 }
 
-// FindByEmail 按邮箱查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
+// FindByEmail 按邮箱查询账号（邮箱全局唯一，后台账号可为空串）；不存在返回 (nil, nil)。
 func (r *GormRepo) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
 	if email == "" {
 		return nil, nil
 	}
 	var u domain.User
 	err := r.db.WithContext(ctx).
-		Where("email = ? AND role = ?", email, domain.RoleUser).
+		Where("email = ?", email).
 		First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -85,11 +89,12 @@ func (r *GormRepo) FindByEmail(ctx context.Context, email string) (*domain.User,
 	return &u, nil
 }
 
-// FindByID 按 ID 查询普通用户（排除后台账号）；不存在返回 (nil, nil)。
+// FindByID 按 ID 查询账号（任意角色）；不存在返回 (nil, nil)。
+// 前台自助功能（资料 / 改密 / 显示信息）对管理员同样开放。
 func (r *GormRepo) FindByID(ctx context.Context, id string) (*domain.User, error) {
 	var u domain.User
 	err := r.db.WithContext(ctx).
-		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Where("id = ?", id).
 		First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -111,18 +116,18 @@ func (r *GormRepo) UpdateLastLogin(ctx context.Context, id string) error {
 		Where("id = ?", id).Update("last_login_at", gorm.Expr("now()")).Error
 }
 
-// ChangePassword 更新密码哈希（仅普通用户，避免改到后台账号），并清空强制改密标记。
+// ChangePassword 更新密码哈希（任意角色；密码策略由服务层按角色选择），并清空强制改密标记。
 func (r *GormRepo) ChangePassword(ctx context.Context, id, hash string) error {
 	return r.db.WithContext(ctx).Model(&domain.User{}).
-		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Where("id = ?", id).
 		Updates(map[string]any{"password_hash": hash, "must_change_password": false}).Error
 }
 
-// UpdateProfile 更新展示资料（昵称 / 头像 URL；仅普通用户，避免改到后台账号）。
+// UpdateProfile 更新展示资料（昵称 / 头像 URL；任意角色，管理员也有展示资料）。
 // 仅写入白名单字段，避免把请求体其余键带入 UPDATE（防字段注入）。
 func (r *GormRepo) UpdateProfile(ctx context.Context, id, nickname, avatarURL string) error {
 	return r.db.WithContext(ctx).Model(&domain.User{}).
-		Where("id = ? AND role = ?", id, domain.RoleUser).
+		Where("id = ?", id).
 		Updates(map[string]any{"nickname": nickname, "avatar_url": avatarURL}).Error
 }
 

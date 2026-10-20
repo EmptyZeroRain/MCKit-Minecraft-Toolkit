@@ -348,6 +348,8 @@ onMounted(() => {
         </div>
 
         <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+          <dt class="text-text-muted">用户 ID</dt>
+          <dd class="font-mono text-text-primary">{{ auth.user?.user_no || '—' }}</dd>
           <dt class="text-text-muted">用户名</dt>
           <dd class="text-text-primary">{{ auth.user?.username ?? '—' }}</dd>
           <dt class="text-text-muted">角色</dt>

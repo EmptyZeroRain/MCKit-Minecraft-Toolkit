@@ -19,6 +19,7 @@ const navItems: NavItem[] = [
   { label: '工具中心', to: '/tools' },
   { label: '开发文档', to: '/dev' },
   { label: '资源中心', to: '/resources' },
+  { label: '玩家社区', to: '/community' },
   { label: '关于本站', to: '/about' },
 ]
 

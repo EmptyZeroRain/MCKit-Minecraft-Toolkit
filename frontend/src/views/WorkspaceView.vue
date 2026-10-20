@@ -18,6 +18,8 @@ import { useUserAuthStore } from '@/stores/user-auth'
 import { useUserWorkspaceStore } from '@/stores/user-workspace'
 import { ALLOWED_AVATAR_TYPES, fileToAvatarDataUrl } from '@/utils/image'
 import { applyPageMeta } from '@/utils/seo'
+import { fetchGiftOverview } from '@/api/gift'
+import type { GiftOverview } from '@/types/gift'
 
 applyPageMeta({
   title: '我的工作台',
@@ -32,6 +34,7 @@ const workspace = useUserWorkspaceStore()
 const error = ref('')
 const notice = ref('')
 const busy = ref('')
+const giftOverview = ref<GiftOverview | null>(null)
 
 const inputClass =
   'w-full rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
@@ -91,6 +94,11 @@ function formatTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN')
 }
 
+/** 礼物币币种展示名。 */
+function giftCoinLabel(coinType: string): string {
+  return coinType === 'checkin' ? '签到礼物币' : '通用礼物币'
+}
+
 onMounted(async () => {
   if (!userAuth.initialized) await userAuth.restoreSession()
   // 用当前账号资料回填用户信息表单。
@@ -100,6 +108,11 @@ onMounted(async () => {
     await workspace.loadAll()
   } catch (e) {
     error.value = errText(e, '个人数据加载失败')
+  }
+  try {
+    giftOverview.value = await fetchGiftOverview()
+  } catch {
+    // 礼物钱包加载失败不影响工作台其他数据。
   }
 })
 
@@ -251,7 +264,11 @@ async function deleteAccount() {
     <div class="mb-6">
       <h1 class="mb-1 text-2xl font-bold text-text-primary md:text-3xl">我的工作台</h1>
       <p class="text-sm text-text-secondary">
-        当前账号：{{ userAuth.displayName }} ·
+        当前账号：{{ userAuth.displayName }}
+        <template v-if="userAuth.user?.user_no">
+          · 用户 ID <span class="font-mono text-text-primary">{{ userAuth.user.user_no }}</span>
+        </template>
+        ·
         <RouterLink to="/growth" class="text-grass-400 hover:underline">成长中心</RouterLink> ·
         <RouterLink to="/submit-resource" class="text-grass-400 hover:underline">资源投稿</RouterLink> ·
         <button type="button" class="text-grass-400 hover:underline" @click="userAuth.logout()">
@@ -270,6 +287,45 @@ async function deleteAccount() {
     <LoadingSkeleton v-if="workspace.loading && !workspace.loaded" :count="3" />
 
     <template v-else>
+      <!-- 礼物币钱包 -->
+      <section v-if="giftOverview" class="mb-8">
+        <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-lg font-bold text-text-primary">礼物币</h2>
+          <RouterLink to="/gifts" class="text-xs text-grass-400 underline-offset-2 hover:underline">
+            签到 / 兑换礼物 →
+          </RouterLink>
+        </div>
+        <div class="card p-4">
+          <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span class="text-sm text-text-secondary">当前余额</span>
+            <span class="text-2xl font-bold text-grass-300">{{ giftOverview.total_balance }}</span>
+            <span class="text-xs text-text-muted">礼物币（合计）</span>
+            <span class="ml-auto text-[11px] text-text-muted">仅用于站内礼物与虚拟装饰，不可提现或转账</span>
+          </div>
+          <div class="mt-1 flex flex-wrap gap-x-4 text-xs text-text-muted">
+            <span>通用礼物币：{{ giftOverview.general_balance }}</span>
+            <span>签到礼物币：{{ giftOverview.checkin_balance }}</span>
+          </div>
+          <div v-if="giftOverview.recent.length" class="mt-3 divide-y divide-border-dark border-t border-border-dark">
+            <div
+              v-for="item in giftOverview.recent"
+              :key="item.id"
+              class="flex items-center justify-between gap-3 py-2 text-sm"
+            >
+              <span class="text-text-secondary">
+                {{ item.reason }}
+                <span class="ml-2 text-[11px] text-text-muted">{{ giftCoinLabel(item.coin_type) }}</span>
+              </span>
+              <span :class="item.amount > 0 ? 'text-grass-300' : 'text-danger-mc'">
+                {{ item.amount > 0 ? '+' : '' }}{{ item.amount }}
+                <span class="ml-1 text-xs text-text-muted">余额 {{ item.balance_after }}</span>
+              </span>
+            </div>
+          </div>
+          <p v-else class="mt-2 text-xs text-text-muted">暂无礼物币流水。</p>
+        </div>
+      </section>
+
       <!-- 收藏 -->
       <section class="mb-8">
         <h2 class="mb-3 text-lg font-bold text-text-primary">我的收藏（{{ workspace.favoriteCount }}）</h2>

@@ -5,7 +5,8 @@ interface PageMetaOptions {
   description?: string
   /** 相对路径，如 /tools/coordinate */
   canonicalPath?: string
-  robot?: 'index,follow' | 'noindex,nofollow'
+  /** UGC 详情页可用 noindex,follow：不收录正文但保留站内链接抓取。 */
+  robot?: 'index,follow' | 'noindex,nofollow' | 'noindex,follow'
 }
 
 let globalSiteUrl = import.meta.env.VITE_SITE_URL || ''

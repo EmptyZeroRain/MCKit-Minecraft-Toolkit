@@ -29,6 +29,7 @@ function makeRows(): PlatformUserRow[] {
   return [
     {
       id: 'u1',
+      user_no: 'UAB12CD34E',
       username: 'alice',
       is_active: true,
       last_login_at: null,
@@ -39,6 +40,7 @@ function makeRows(): PlatformUserRow[] {
     },
     {
       id: 'u2',
+      user_no: 'UFG56HI78J',
       username: 'bob',
       is_active: false,
       last_login_at: '2026-10-02T00:00:00Z',
@@ -52,6 +54,7 @@ function makeRows(): PlatformUserRow[] {
 
 const detail: PlatformUserDetail = {
   id: 'u1',
+  user_no: 'UAB12CD34E',
   username: 'alice',
   is_active: true,
   last_login_at: null,
@@ -135,7 +138,8 @@ describe('后台普通用户管理', () => {
     const cells = wrapper.findAll('tbody tr').map((tr) =>
       tr.findAll('td').map((td) => td.text()),
     )
-    expect(cells[0].slice(0, 7)).toEqual([
+    expect(cells[0].slice(0, 8)).toEqual([
+      'UAB12CD34E',
       'alice',
       '启用',
       expect.any(String),
@@ -144,11 +148,12 @@ describe('后台普通用户管理', () => {
       '1',
       '3',
     ])
-    expect(cells[0][7]).toContain('详情')
-    expect(cells[0][7]).toContain('禁用')
-    expect(cells[0][7]).toContain('重置密码')
-    expect(cells[0][7]).toContain('删除')
-    expect(cells[1].slice(0, 7)).toEqual([
+    expect(cells[0][8]).toContain('详情')
+    expect(cells[0][8]).toContain('禁用')
+    expect(cells[0][8]).toContain('重置密码')
+    expect(cells[0][8]).toContain('删除')
+    expect(cells[1].slice(0, 8)).toEqual([
+      'UFG56HI78J',
       'bob',
       '禁用',
       expect.any(String),
@@ -157,7 +162,7 @@ describe('后台普通用户管理', () => {
       '0',
       '0',
     ])
-    expect(cells[1][7]).toContain('启用')
+    expect(cells[1][8]).toContain('启用')
   })
 
   it('新建用户：非法用户名或弱密码被拦截，合法提交调用 createUser 并刷新', async () => {

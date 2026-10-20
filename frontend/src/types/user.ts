@@ -31,6 +31,8 @@ export const FAVORITE_KIND_LABELS: Record<FavoriteKind, string> = {
 /** 当前登录用户（后端不返回密码等敏感字段） */
 export interface UserAccount {
   id: string
+  /** 对外随机用户 ID（如 U7K3M2QX9F），用于展示与社区作者署名 */
+  user_no?: string
   username: string
   /** 展示昵称（注册必填；空串时前端回退到 username） */
   nickname?: string

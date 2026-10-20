@@ -15,6 +15,8 @@ export interface AdminTableColumn {
 
 export interface AdminUser {
   id: string
+  /** 对外随机用户 ID（如 U7K3M2QX9F） */
+  user_no?: string
   username: string
   /** 展示昵称；空串表示未设置，展示时回退到 username */
   nickname?: string
@@ -113,6 +115,8 @@ export interface UpdateRolePayload {
 /** 普通用户列表行：账号基础信息 + 个人数据计数 */
 export interface PlatformUserRow {
   id: string
+  /** 对外随机用户 ID（如 U7K3M2QX9F） */
+  user_no: string
   username: string
   is_active: boolean
   last_login_at: string | null
@@ -155,6 +159,8 @@ export interface PlatformUserSeed {
 /** 普通用户详情（含个人数据明细） */
 export interface PlatformUserDetail {
   id: string
+  /** 对外随机用户 ID（如 U7K3M2QX9F） */
+  user_no: string
   username: string
   is_active: boolean
   last_login_at: string | null

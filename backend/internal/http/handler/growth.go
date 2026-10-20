@@ -161,6 +161,45 @@ func (h *GrowthHandler) AdminOverview(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, out)
 }
 
+// AdminUsersList POST /api/v1/admin/growth/users/list
+// 参数：q（用户名 / 昵称 / user_no）、page、page_size。
+func (h *GrowthHandler) AdminUsersList(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Q        string `json:"q"`
+		Page     int    `json:"page"`
+		PageSize int    `json:"page_size"`
+	}
+	_ = decodeOptionalBody(w, r, &req)
+	page, pageSize := normalizePage(req.Page, req.PageSize)
+	items, total, err := h.svc.ListAdminGrowthUsers(r.Context(), growth.AdminGrowthUserListFilter{
+		Q:        strings.TrimSpace(req.Q),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	writeGrowthPage(w, r, items, total, page, pageSize)
+}
+
+// AdminUserDetail POST /api/v1/admin/growth/users/detail
+// 参数：user_id（内部 UUID 或对外 user_no）。
+func (h *GrowthHandler) AdminUserDetail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	out, err := h.svc.GetAdminGrowthUserDetail(r.Context(), strings.TrimSpace(req.UserID))
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
 // AdminLedger POST /api/v1/admin/growth/ledger/list
 func (h *GrowthHandler) AdminLedger(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -369,6 +408,49 @@ func (h *GrowthHandler) LevelsUpdate(w http.ResponseWriter, r *http.Request) {
 	response.NoContent(w)
 }
 
+// LevelsCreate POST /api/v1/admin/growth/levels/create
+// 参数：threshold_xp、title、enabled；等级号由服务端追加为当前最高级 + 1。
+func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThresholdXP int64  `json:"threshold_xp"`
+		Title       string `json:"title"`
+		Enabled     *bool  `json:"enabled"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	out, err := h.svc.CreateLevel(r.Context(), growth.CreateLevelInput{
+		ThresholdXP: req.ThresholdXP,
+		Title:       req.Title,
+		Enabled:     enabled,
+	}, actorID(r))
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.Created(w, out)
+}
+
+// LevelsDelete POST /api/v1/admin/growth/levels/delete
+// 参数：level。只允许删除最高等级，Lv.1 不可删除。
+func (h *GrowthHandler) LevelsDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Level int `json:"level"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if err := h.svc.DeleteLevel(r.Context(), req.Level, actorID(r)); err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.NoContent(w)
+}
+
 // LevelsRecalculate POST /api/v1/admin/growth/levels/recalculate
 func (h *GrowthHandler) LevelsRecalculate(w http.ResponseWriter, r *http.Request) {
 	fixed, err := h.svc.RecalculateLevels(r.Context())
@@ -377,6 +459,33 @@ func (h *GrowthHandler) LevelsRecalculate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	response.OK(w, map[string]any{"fixed": fixed})
+}
+
+// LevelsAdjust POST /api/v1/admin/growth/levels/adjust
+// 参数：target_user_id、delta_level（可负）、reason、request_key（仅留痕）。
+func (h *GrowthHandler) LevelsAdjust(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetUserID string `json:"target_user_id"`
+		DeltaLevel   int    `json:"delta_level"`
+		Reason       string `json:"reason"`
+		RequestKey   string `json:"request_key"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	out, err := h.svc.AdjustLevel(r.Context(), growth.AdjustLevelInput{
+		TargetUserID: req.TargetUserID,
+		DeltaLevel:   req.DeltaLevel,
+		Reason:       req.Reason,
+		RequestKey:   req.RequestKey,
+		OperatorID:   actorID(r),
+		RequestID:    response.RequestIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, out)
 }
 
 // ---- 管理端：每日任务定义 ----
@@ -525,6 +634,73 @@ func (h *GrowthHandler) AchievementsRecalculate(w http.ResponseWriter, r *http.R
 	response.OK(w, map[string]any{"unlocked": total})
 }
 
+// AchievementsUserList POST /api/v1/admin/achievements/user/list
+// 参数：target_user_id。返回该用户全部成就的持有 / 撤销状态。
+func (h *GrowthHandler) AchievementsUserList(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetUserID string `json:"target_user_id"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	items, err := h.svc.ListAdminUserAchievements(r.Context(), req.TargetUserID)
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, map[string]any{"items": items, "total": len(items)})
+}
+
+// AchievementsGrant POST /api/v1/admin/achievements/grant
+// 参数：target_user_id、achievement_id、reason。
+func (h *GrowthHandler) AchievementsGrant(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetUserID  string `json:"target_user_id"`
+		AchievementID string `json:"achievement_id"`
+		Reason        string `json:"reason"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	out, err := h.svc.GrantAchievement(r.Context(), growth.AchievementGrantInput{
+		TargetUserID:  req.TargetUserID,
+		AchievementID: req.AchievementID,
+		Reason:        req.Reason,
+		OperatorID:    actorID(r),
+		RequestID:     response.RequestIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
+// AchievementsRevoke POST /api/v1/admin/achievements/revoke
+// 参数：target_user_id、achievement_id、reason。
+func (h *GrowthHandler) AchievementsRevoke(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetUserID  string `json:"target_user_id"`
+		AchievementID string `json:"achievement_id"`
+		Reason        string `json:"reason"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	out, err := h.svc.RevokeAchievement(r.Context(), growth.AchievementRevokeInput{
+		TargetUserID:  req.TargetUserID,
+		AchievementID: req.AchievementID,
+		Reason:        req.Reason,
+		OperatorID:    actorID(r),
+		RequestID:     response.RequestIDFrom(r.Context()),
+	})
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
 // ---- 辅助 ----
 
 // writeGrowthPage 统一输出分页响应。
@@ -549,7 +725,9 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 		response.NotFound(w, r)
 	case errors.Is(err, growth.ErrRuleCodeTaken),
 		errors.Is(err, growth.ErrTaskCodeTaken),
-		errors.Is(err, growth.ErrAchievementCodeTaken):
+		errors.Is(err, growth.ErrAchievementCodeTaken),
+		errors.Is(err, growth.ErrAchievementAlreadyUnlocked),
+		errors.Is(err, growth.ErrAchievementNotUnlocked):
 		response.Conflict(w, r, err.Error())
 	case errors.Is(err, growth.ErrAlreadyReversed),
 		errors.Is(err, growth.ErrRuleInUse),
@@ -558,6 +736,9 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, growth.ErrBadInput),
 		errors.Is(err, growth.ErrReasonRequired),
 		errors.Is(err, growth.ErrLevelThreshold),
+		errors.Is(err, growth.ErrLevelNewThreshold),
+		errors.Is(err, growth.ErrLevelDeleteTopOnly),
+		errors.Is(err, growth.ErrLevelRange),
 		errors.Is(err, growth.ErrBadCondition),
 		errors.Is(err, growth.ErrBadIconURL),
 		errors.Is(err, growth.ErrInvalidEvent),

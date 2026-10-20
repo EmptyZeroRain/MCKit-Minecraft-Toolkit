@@ -36,6 +36,12 @@ func TestLoadValid(t *testing.T) {
 	if cfg.LinkCheckTimeout != 8*time.Second {
 		t.Errorf("默认链接检查超时应为 8s，实际 %v", cfg.LinkCheckTimeout)
 	}
+	if !cfg.AutoMigrate {
+		t.Error("AUTO_MIGRATE 默认应为 true")
+	}
+	if cfg.MigrationsDir != "migrations" {
+		t.Errorf("默认迁移目录应为 migrations，实际 %q", cfg.MigrationsDir)
+	}
 }
 
 // TestLoadMissingRequired 覆盖需求 §12：缺少关键配置必须启动失败。

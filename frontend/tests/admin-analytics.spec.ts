@@ -114,6 +114,8 @@ describe('AdminAnalyticsView', () => {
 
     expect(api.fetchUsageOverview).toHaveBeenCalledWith({ days: 30, limit: 50 })
     expect(api.fetchUsageTrend).toHaveBeenCalledWith({ days: 30, limit: 50 })
+    // API 指标单独加载最多 500 条，用于前端翻页
+    expect(api.fetchApiUsage).toHaveBeenCalledWith({ days: 30, limit: 500 })
 
     const text = wrapper.text()
     expect(text).toContain('工具访问量')
@@ -127,6 +129,37 @@ describe('AdminAnalyticsView', () => {
     expect(text).toContain('200 ms')
     // 概览范围回显
     expect(text).toContain('2026-10-11 ~ 2026-10-17')
+  })
+
+  it('关键 API 指标按每页 10 条翻页', async () => {
+    mockSuccess()
+    api.fetchApiUsage.mockResolvedValue(
+      Array.from({ length: 12 }, (_, i) => ({
+        route: `/api/v1/route-${i}`,
+        method: 'POST',
+        total: 100 - i,
+        errors: 0,
+        client_errors: 0,
+        rate_limited: 0,
+        avg_ms: 5,
+        max_ms: 20,
+        p95_ms: 10,
+      })),
+    )
+
+    const wrapper = await mountView()
+    expect(wrapper.text()).toContain('共 12 条')
+    expect(wrapper.text()).toContain('/api/v1/route-0')
+    expect(wrapper.text()).toContain('/api/v1/route-9')
+    expect(wrapper.text()).not.toContain('/api/v1/route-10')
+
+    const next = wrapper.findAll('button').find((b) => b.attributes('aria-label') === '下一页')
+    expect(next).toBeTruthy()
+    await next!.trigger('click')
+
+    expect(wrapper.text()).not.toContain('/api/v1/route-0')
+    expect(wrapper.text()).toContain('/api/v1/route-10')
+    expect(wrapper.text()).toContain('/api/v1/route-11')
   })
 
   it('趋势图接线正确：5 条工具/内容 series，3 条 API series，x 轴为日期', async () => {

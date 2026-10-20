@@ -20,7 +20,10 @@ import (
 //
 // 安全边界（统一账号迁移 0022 后）：
 //   - 普通用户与后台账号同表（accounts），靠 role = 'user' 区分；
-//     路由层用 RequireAuth + RequireUserRole 双重限制，管理员会话无法进入；
+//     路由层用 RequireAuth + RequireAccount 要求登录，后台账号同样可使用
+//     前台个人功能（收藏 / 种子 / 资料 / 改密 / 成长）；
+//   - 前台登录只接受 role = 'user'，后台账号必须走后台登录（含 MFA）；
+//   - 自助注销仅适用于普通用户，后台账号由其他管理员在后台删除；
 //   - 会话 Cookie 与后台共用（SESSION_COOKIE_NAME），不再有独立 Cookie；
 //   - 写操作要求 CSRF（中间件校验会话绑定 token）；
 //   - 个人数据一律以当前会话账号 ID 过滤，无越权入口；
@@ -133,7 +136,8 @@ func writeUserError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, user.ErrBadNickname),
 		errors.Is(err, user.ErrWeakPassword),
 		errors.Is(err, user.ErrBadKind),
-		errors.Is(err, user.ErrBadInput):
+		errors.Is(err, user.ErrBadInput),
+		errors.Is(err, user.ErrAdminSelfDelete):
 		response.Validation(w, r, []response.ErrorDetail{{Message: err.Error()}})
 	case errors.Is(err, auth.ErrInvalidAvatar):
 		response.Validation(w, r, []response.ErrorDetail{
@@ -217,6 +221,7 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 	emitGrowth(r.Context(), h.growth, "user", domain.EventUserRegistered, u.ID.String(), "account", u.ID.String())
 	response.OK(w, map[string]any{
 		"id":         u.ID,
+		"user_no":    u.UserNo,
 		"username":   u.Username,
 		"nickname":   u.Nickname,
 		"email":      u.Email,
@@ -252,6 +257,7 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	emitGrowth(r.Context(), h.growth, "user", domain.EventUserLoginSucceeded, result.User.ID.String(), "account", result.User.ID.String())
 	response.OK(w, map[string]any{
 		"id":                   result.User.ID,
+		"user_no":              result.User.UserNo,
 		"username":             result.User.Username,
 		"nickname":             result.User.Nickname,
 		"email":                result.User.Email,
@@ -282,10 +288,12 @@ func (h *UserHandler) Me(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"id":                   session.AccountID,
 		"username":             session.Username,
+		"role":                 session.Role,
 		"must_change_password": session.MustChangePassword,
 		"csrf_token":           session.CSRFToken,
 	}
 	if u, err := h.svc.FindByID(r.Context(), session.AccountID); err == nil && u != nil {
+		out["user_no"] = u.UserNo
 		out["nickname"] = u.Nickname
 		out["email"] = u.Email
 		out["avatar_url"] = u.AvatarURL
@@ -316,6 +324,7 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	emitGrowth(r.Context(), h.growth, "user", domain.EventUserProfileCompleted, session.AccountID, "account", session.AccountID)
 	response.OK(w, map[string]any{
 		"id":         u.ID,
+		"user_no":    u.UserNo,
 		"username":   u.Username,
 		"nickname":   u.Nickname,
 		"email":      u.Email,

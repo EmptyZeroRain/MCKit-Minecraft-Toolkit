@@ -64,7 +64,7 @@ func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, er
 	if g == nil {
 		g = &domain.UserGrowth{Level: 1}
 	}
-	view := computeLevel(levels, g.CurrentXP)
+	view := computeLevelWithOffset(levels, g.CurrentXP, g.LevelOffset)
 
 	date := businessDate(s.now(), s.loc)
 	defs, err := s.repo.ListTaskDefs(ctx, true)
@@ -261,6 +261,7 @@ func (s *Service) MyAchievements(ctx context.Context, userID string) ([]domain.U
 // PublicProfile 公开个人主页成长摘要（不含经验流水、登录时间、风险标记等）。
 type PublicProfile struct {
 	UserID               string `json:"user_id"`
+	UserNo               string `json:"user_no"`
 	Username             string `json:"username"`
 	Nickname             string `json:"nickname"`
 	AvatarURL            string `json:"avatar_url"`
@@ -277,12 +278,13 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 		return nil, ErrBadInput
 	}
 	var acc struct {
+		UserNo    string
 		Username  string
 		Nickname  string
 		AvatarURL string
 	}
 	err = s.db.WithContext(ctx).Table("accounts").
-		Select("username, nickname, avatar_url").
+		Select("user_no, username, nickname, avatar_url").
 		Where("id = ? AND role = ?", id, domain.RoleUser).Scan(&acc).Error
 	if err != nil {
 		return nil, err
@@ -301,13 +303,14 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 	if g == nil {
 		g = &domain.UserGrowth{Level: 1}
 	}
-	view := computeLevel(levels, g.CurrentXP)
+	view := computeLevelWithOffset(levels, g.CurrentXP, g.LevelOffset)
 	unlocked, err := s.repo.ListUserAchievements(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	return &PublicProfile{
 		UserID:               userID,
+		UserNo:               acc.UserNo,
 		Username:             acc.Username,
 		Nickname:             acc.Nickname,
 		AvatarURL:            acc.AvatarURL,

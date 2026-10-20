@@ -159,8 +159,8 @@ async function submitReverse() {
     <form class="card mb-5 grid gap-3 p-4 sm:grid-cols-4" @submit.prevent="submitAdjust">
       <h2 class="text-sm font-medium text-text-secondary sm:col-span-4">人工调整经验</h2>
       <label class="text-xs text-text-muted sm:col-span-2">
-        目标用户 ID
-        <input v-model="adjust.target_user_id" :class="inputClass" type="text" placeholder="UUID" />
+        目标用户 ID（内部 UUID 或对外 ID）
+        <input v-model="adjust.target_user_id" :class="inputClass" type="text" placeholder="UUID / U7K3M2QX9F" />
       </label>
       <label class="text-xs text-text-muted">
         调整值（可负）
@@ -203,7 +203,7 @@ async function submitReverse() {
 
     <!-- 筛选 -->
     <form class="mb-4 grid gap-3 sm:grid-cols-4" @submit.prevent="search">
-      <input v-model="filters.user_id" :class="inputClass" type="text" placeholder="用户 ID" />
+      <input v-model="filters.user_id" :class="inputClass" type="text" placeholder="UUID / 对外用户 ID" />
       <input v-model="filters.rule_code" :class="inputClass" type="text" placeholder="规则编码" />
       <select v-model="filters.source_type" :class="inputClass">
         <option value="">全部来源</option>

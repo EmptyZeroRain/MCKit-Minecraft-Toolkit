@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"mckit/backend/internal/accountid"
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/domain"
 	"mckit/backend/internal/envutil"
@@ -67,8 +68,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	userNo, err := accountid.Generate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "生成用户 ID 失败: %v\n", err)
+		os.Exit(1)
+	}
 	admin := &domain.Admin{
 		Username:     username,
+		UserNo:       userNo,
 		PasswordHash: hash,
 		Role:         role,
 		IsActive:     true,

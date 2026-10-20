@@ -6,6 +6,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import BaseChart from '@/components/common/BaseChart.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
   fetchApiUsage,
@@ -56,6 +57,25 @@ const query = computed<AnalyticsRangeQuery>(() =>
     : { days: filters.days ?? 30, limit: 50 },
 )
 
+// API 指标需要在前端翻页，单次最多取后端允许的 500 条；
+// 其余明细仍按 50 条加载，避免无意义地放大查询结果。
+const apiQuery = computed<AnalyticsRangeQuery>(() => ({ ...query.value, limit: 500 }))
+
+/** 关键 API 指标：每页 10 条，客户端翻页。 */
+const apiPage = ref(1)
+const apiPageSize = 10
+const apiTotalPages = computed(() =>
+  Math.max(1, Math.ceil(apis.value.length / apiPageSize)),
+)
+const pagedApis = computed(() => {
+  const start = (apiPage.value - 1) * apiPageSize
+  return apis.value.slice(start, start + apiPageSize)
+})
+
+function changeApiPage(page: number) {
+  apiPage.value = page
+}
+
 /** 范围内是否存在任何数据（用于空态提示）。 */
 const isEmpty = computed(() => {
   const o = overview.value
@@ -83,6 +103,7 @@ function applyCustom() {
 async function load() {
   loading.value = true
   error.value = ''
+  apiPage.value = 1
   try {
     const params = query.value
     const [o, t, toolRows, resRows, apiRows] = await Promise.all([
@@ -90,7 +111,7 @@ async function load() {
       fetchUsageTrend(params),
       fetchToolUsage(params),
       fetchResourceUsage(params),
-      fetchApiUsage(params),
+      fetchApiUsage(apiQuery.value),
     ])
     overview.value = o
     trend.value = t
@@ -353,7 +374,12 @@ const failBarWidth = (v: number) => `${Math.min(100, Math.round(v * 100))}%`
 
         <!-- API 明细 -->
         <div class="card overflow-hidden">
-          <h2 class="border-b border-border-dark px-5 py-3 font-medium text-text-primary">关键 API 指标</h2>
+          <div class="flex items-center justify-between border-b border-border-dark px-5 py-3">
+            <h2 class="font-medium text-text-primary">关键 API 指标</h2>
+            <span v-if="apis.length > 0" class="text-xs text-text-muted">
+              共 {{ num(apis.length) }} 条
+            </span>
+          </div>
           <div v-if="apis.length === 0" class="px-5 py-6 text-sm text-text-muted">范围内暂无 API 调用记录。</div>
           <div v-else class="overflow-x-auto">
             <table class="w-full text-left text-sm">
@@ -367,7 +393,7 @@ const failBarWidth = (v: number) => `${Math.min(100, Math.round(v * 100))}%`
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="a in apis" :key="`${a.method} ${a.route}`" class="border-b border-border-dark/60 last:border-0">
+                <tr v-for="a in pagedApis" :key="`${a.method} ${a.route}`" class="border-b border-border-dark/60 last:border-0">
                   <td class="px-5 py-2">
                     <span class="mr-2 rounded bg-ink-600 px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
                       {{ a.method }}
@@ -385,6 +411,15 @@ const failBarWidth = (v: number) => `${Math.min(100, Math.round(v * 100))}%`
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div v-if="apiTotalPages > 1" class="border-t border-border-dark px-5 py-3">
+            <Pagination
+              :page="apiPage"
+              :page-size="apiPageSize"
+              :total="apis.length"
+              :total-pages="apiTotalPages"
+              @change="changeApiPage"
+            />
           </div>
         </div>
       </div>

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"mckit/backend/internal/accountid"
 	"mckit/backend/internal/domain"
 )
 
@@ -15,7 +16,7 @@ import (
 //
 // 用途：单元测试与「无数据库」的本地演示/冒烟测试。
 // 生产环境使用 GormRepo（见 repo.go）。行为需与 GormRepo 保持一致：
-//   - 账号查询叠加 role = 'user'（与 GormRepo 一致，排除后台账号）；
+//   - 账号查询按用户名 / 邮箱 / ID 全局检索（任意角色），由服务层决定入口限制；
 //   - 删除用户时级联清除其收藏 / 最近使用 / 常用种子；
 //   - 收藏与最近使用按 (user, kind, object) 去重；
 //   - 列表按时间倒序；最近使用按上限裁剪。
@@ -37,12 +38,12 @@ func NewMemoryRepo() *MemoryRepo {
 	}
 }
 
-// FindByUsername 按用户名查询普通用户；不存在返回 (nil, nil)。
+// FindByUsername 按用户名查询账号（任意角色）；不存在返回 (nil, nil)。
 func (m *MemoryRepo) FindByUsername(_ context.Context, username string) (*domain.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, u := range m.users {
-		if u.Username == username && u.Role == domain.RoleUser {
+		if u.Username == username {
 			cp := u
 			return &cp, nil
 		}
@@ -50,7 +51,7 @@ func (m *MemoryRepo) FindByUsername(_ context.Context, username string) (*domain
 	return nil, nil
 }
 
-// FindByEmail 按邮箱查询普通用户；邮箱统一小写，不存在返回 (nil, nil)。
+// FindByEmail 按邮箱查询账号（任意角色）；邮箱统一小写，不存在返回 (nil, nil)。
 func (m *MemoryRepo) FindByEmail(_ context.Context, email string) (*domain.User, error) {
 	if email == "" {
 		return nil, nil
@@ -58,7 +59,7 @@ func (m *MemoryRepo) FindByEmail(_ context.Context, email string) (*domain.User,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, u := range m.users {
-		if u.Email == email && u.Role == domain.RoleUser {
+		if u.Email == email {
 			cp := u
 			return &cp, nil
 		}
@@ -66,12 +67,12 @@ func (m *MemoryRepo) FindByEmail(_ context.Context, email string) (*domain.User,
 	return nil, nil
 }
 
-// FindByID 按 ID 查询普通用户。
+// FindByID 按 ID 查询账号（任意角色）。
 func (m *MemoryRepo) FindByID(_ context.Context, id string) (*domain.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.users[id]
-	if !ok || u.Role != domain.RoleUser {
+	if !ok {
 		return nil, nil
 	}
 	cp := u
@@ -85,9 +86,16 @@ func (m *MemoryRepo) Create(_ context.Context, u *domain.User) error {
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
 	}
-	// 内存实现不经过数据库默认值，需在此补齐角色，保持与 GormRepo 一致。
+	// 内存实现不经过数据库默认值，需在此补齐角色与对外用户 ID，保持与 GormRepo 一致。
 	if u.Role == "" {
 		u.Role = domain.RoleUser
+	}
+	if u.UserNo == "" {
+		userNo, err := accountid.Generate()
+		if err != nil {
+			return err
+		}
+		u.UserNo = userNo
 	}
 	u.CreatedAt = time.Now()
 	u.UpdatedAt = u.CreatedAt
@@ -124,7 +132,7 @@ func (m *MemoryRepo) ChangePassword(_ context.Context, id, hash string) error {
 func (m *MemoryRepo) UpdateProfile(_ context.Context, id, nickname, avatarURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if u, ok := m.users[id]; ok && u.Role == domain.RoleUser {
+	if u, ok := m.users[id]; ok {
 		u.Nickname, u.AvatarURL = nickname, avatarURL
 		u.UpdatedAt = time.Now()
 		m.users[id] = u

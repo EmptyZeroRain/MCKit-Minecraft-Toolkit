@@ -8,8 +8,13 @@ import http from './http'
 import userHttp from './user-http'
 import type { ApiResponse, ListResult, PageQuery } from '@/types/api'
 import type {
+  AdjustLevelInput,
   AdjustXPInput,
   AdminGrowthOverview,
+  AdminGrowthUserDetail,
+  AdminGrowthUserSummary,
+  AdminUserAchievement,
+  LevelAdjustResult,
   GrowthAchievement,
   GrowthAchievementDefinition,
   GrowthAchievementInput,
@@ -20,6 +25,7 @@ import type {
   GrowthLedgerFilter,
   GrowthLedgerItem,
   GrowthLevel,
+  GrowthLevelCreateInput,
   GrowthOverview,
   GrowthPublicProfile,
   GrowthRule,
@@ -106,6 +112,28 @@ export async function fetchAdminGrowthOverview(): Promise<AdminGrowthOverview> {
   return data.data
 }
 
+/** 后台成长用户列表（按用户名 / 昵称 / user_no 搜索） */
+export async function fetchAdminGrowthUsers(
+  params: { q?: string; page?: number; page_size?: number } = {},
+): Promise<ListResult<AdminGrowthUserSummary>> {
+  const { data } = await http.post<ApiResponse<AdminGrowthUserSummary[]>>(
+    '/admin/growth/users/list',
+    params,
+  )
+  return toListResult(data)
+}
+
+/** 后台单用户成长详情（等级 / 成就 / 经验 / 礼物 / 审计） */
+export async function fetchAdminGrowthUserDetail(
+  userId: string,
+): Promise<AdminGrowthUserDetail> {
+  const { data } = await http.post<ApiResponse<AdminGrowthUserDetail>>(
+    '/admin/growth/users/detail',
+    { user_id: userId },
+  )
+  return data.data
+}
+
 /** 全局经验流水（按用户 / 来源 / 规则过滤） */
 export async function fetchAdminGrowthLedger(
   filter: GrowthLedgerFilter = {},
@@ -186,9 +214,20 @@ export async function fetchGrowthLevels(): Promise<GrowthLevel[]> {
   return data.data.items ?? []
 }
 
+/** 新增等级（服务端自动追加到当前最高级之后） */
+export async function createGrowthLevel(input: GrowthLevelCreateInput): Promise<GrowthLevel> {
+  const { data } = await http.post<ApiResponse<GrowthLevel>>('/admin/growth/levels/create', input)
+  return data.data
+}
+
 /** 更新单个等级阈值 / 标题 / 启用状态 */
 export async function updateGrowthLevel(level: GrowthLevel): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/growth/levels/update', level)
+}
+
+/** 删除最高等级（Lv.1 不可删除；后端会重算用户展示等级） */
+export async function deleteGrowthLevel(level: number): Promise<void> {
+  await http.post<ApiResponse<null>>('/admin/growth/levels/delete', { level })
 }
 
 /** 依据当前阈值表重算所有用户等级，返回被修正的用户数 */
@@ -284,4 +323,50 @@ export async function recalculateAchievements(userId = ''): Promise<number> {
     { user_id: userId },
   )
   return data.data.unlocked
+}
+
+/** 单用户等级调整（只调整等级偏移，不修改等级定义本身） */
+export async function adjustUserLevel(payload: AdjustLevelInput): Promise<LevelAdjustResult> {
+  const { data } = await http.post<ApiResponse<LevelAdjustResult>>(
+    '/admin/growth/levels/adjust',
+    payload,
+  )
+  return data.data
+}
+
+/** 某用户全部成就的持有 / 撤销状态 */
+export async function fetchAdminUserAchievements(
+  targetUserId: string,
+): Promise<AdminUserAchievement[]> {
+  const { data } = await http.post<ApiResponse<{ items: AdminUserAchievement[] }>>(
+    '/admin/achievements/user/list',
+    { target_user_id: targetUserId },
+  )
+  return data.data.items ?? []
+}
+
+/** 手动授予成就（会按定义补发一次性奖励经验） */
+export async function grantUserAchievement(
+  targetUserId: string,
+  achievementId: string,
+  reason: string,
+): Promise<void> {
+  await http.post<ApiResponse<null>>('/admin/achievements/grant', {
+    target_user_id: targetUserId,
+    achievement_id: achievementId,
+    reason,
+  })
+}
+
+/** 撤销成就（软删除，不回收已发经验；自动补算不会重新解锁） */
+export async function revokeUserAchievement(
+  targetUserId: string,
+  achievementId: string,
+  reason: string,
+): Promise<void> {
+  await http.post<ApiResponse<null>>('/admin/achievements/revoke', {
+    target_user_id: targetUserId,
+    achievement_id: achievementId,
+    reason,
+  })
 }

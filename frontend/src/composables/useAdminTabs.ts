@@ -8,11 +8,14 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
-/** 一个 Tab 的声明：key 为标识，label 为展示名，perm 为所需权限点。 */
+/** 一个 Tab 的声明：key 为标识，label 为展示名，perm / permsAny 为所需权限点。 */
 export interface AdminTab {
   key: string
   label: string
-  perm: string
+  /** 单个权限点；与 permsAny 二选一。 */
+  perm?: string
+  /** 任一权限点满足即可；用于「管理员 / 普通用户」这类共享同一 Tab 的入口。 */
+  permsAny?: string[]
 }
 
 /**
@@ -26,7 +29,13 @@ export function useAdminTabs(allTabs: AdminTab[], queryKey = 'tab') {
   const auth = useAuthStore()
 
   // 仅保留当前账号有权限的 Tab。
-  const tabs = computed(() => allTabs.filter((t) => auth.hasPermission(t.perm)))
+  const tabs = computed(() =>
+    allTabs.filter((t) => {
+      if (t.perm) return auth.hasPermission(t.perm)
+      if (t.permsAny?.length) return t.permsAny.some((p) => auth.hasPermission(p))
+      return true
+    }),
+  )
 
   function isValid(value: unknown): value is string {
     return typeof value === 'string' && tabs.value.some((t) => t.key === value)

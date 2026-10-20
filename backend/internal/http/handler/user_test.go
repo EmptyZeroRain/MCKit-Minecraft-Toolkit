@@ -14,6 +14,7 @@ import (
 
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/captcha"
+	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/middleware"
 	"mckit/backend/internal/service/user"
 )
@@ -22,7 +23,7 @@ import (
 // 固定验证码 "135790"（生产由随机生成，测试经 FixedCode 钩子绕过图片识别）。
 const testCaptchaCode = "135790"
 
-func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionStore) {
+func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionStore, *user.MemoryRepo) {
 	t.Helper()
 	repo := user.NewMemoryRepo()
 	sessions := auth.NewMemorySessionStore()
@@ -38,7 +39,7 @@ func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionSto
 		ur.Post("/login", h.Login)
 		ur.Group(func(authed chi.Router) {
 			authed.Use(middleware.RequireAuth(svc))
-			authed.Use(middleware.RequireUserRole())
+			authed.Use(middleware.RequireAccount())
 			authed.Post("/logout", h.Logout)
 			authed.Post("/me", h.Me)
 			authed.Post("/favorites/list", h.ListFavorites)
@@ -48,7 +49,7 @@ func newUserTestRouter(t *testing.T) (chi.Router, *user.Service, auth.SessionSto
 			})
 		})
 	})
-	return r, svc, sessions
+	return r, svc, sessions, repo
 }
 
 // doJSON 发送 JSON 请求；cookie/csrf 为空则不附加。
@@ -71,7 +72,7 @@ func doJSON(r chi.Router, method, path, cookie, csrf string, body any) *httptest
 }
 
 func TestUserRoutesRequireLogin(t *testing.T) {
-	r, _, _ := newUserTestRouter(t)
+	r, _, _, _ := newUserTestRouter(t)
 
 	for _, path := range []string{"/user/me", "/user/favorites/list", "/user/favorites/toggle"} {
 		rec := doJSON(r, http.MethodPost, path, "", "", map[string]string{"kind": "tool", "object_id": "x"})
@@ -82,7 +83,7 @@ func TestUserRoutesRequireLogin(t *testing.T) {
 }
 
 func TestUserWritesRequireCSRF(t *testing.T) {
-	r, svc, _ := newUserTestRouter(t)
+	r, svc, _, _ := newUserTestRouter(t)
 	ctx := context.Background()
 	u, err := svc.Register(ctx, user.RegisterInput{
 		Username: "tester", Nickname: "测试者", Email: "tester@example.com", Password: "password123",
@@ -130,7 +131,7 @@ func TestUserWritesRequireCSRF(t *testing.T) {
 
 // TestUserCaptchaEndpoint 图形验证码签发：返回一次性 ID 与 PNG data URI。
 func TestUserCaptchaEndpoint(t *testing.T) {
-	r, _, _ := newUserTestRouter(t)
+	r, _, _, _ := newUserTestRouter(t)
 
 	rec := doJSON(r, http.MethodPost, "/user/captcha", "", "", map[string]string{})
 	if rec.Code != http.StatusOK {
@@ -159,7 +160,7 @@ func TestUserCaptchaEndpoint(t *testing.T) {
 
 // TestUserRegisterRequiresCaptcha 注册必须携带正确验证码。
 func TestUserRegisterRequiresCaptcha(t *testing.T) {
-	r, _, _ := newUserTestRouter(t)
+	r, _, _, _ := newUserTestRouter(t)
 
 	body := map[string]string{
 		"username": "captcha-user", "nickname": "验证码用户",
@@ -208,7 +209,7 @@ func TestUserRegisterRequiresCaptcha(t *testing.T) {
 
 // TestUserLoginByEmail 用户名与邮箱均可登录。
 func TestUserLoginByEmail(t *testing.T) {
-	r, _, _ := newUserTestRouter(t)
+	r, _, _, _ := newUserTestRouter(t)
 
 	rec := doJSON(r, http.MethodPost, "/user/register", "", "", map[string]string{
 		"username": "email-login", "nickname": "邮箱登录",
@@ -228,10 +229,11 @@ func TestUserLoginByEmail(t *testing.T) {
 	}
 }
 
-func TestUserRoutesRejectAdminSession(t *testing.T) {
-	r, _, sessions := newUserTestRouter(t)
+func TestUserRoutesAcceptAdminSession(t *testing.T) {
+	r, _, sessions, _ := newUserTestRouter(t)
 
-	// 伪造一个管理员角色的会话塞入同一存储，并携带其 Cookie 访问用户接口。
+	// 统一账号后管理员同样拥有前台能力：伪造一个管理员角色的会话，
+	// 携带其 Cookie 访问用户接口应放行（个人数据仍按会话账号 ID 隔离）。
 	if err := sessions.Create(context.Background(), auth.Session{
 		SessionID: "admin-sid",
 		AccountID: "admin-1",
@@ -243,7 +245,31 @@ func TestUserRoutesRejectAdminSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := doJSON(r, http.MethodPost, "/user/me", "admin-sid", "admin-csrf", map[string]string{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("管理员会话应可使用前台个人接口，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"admin"`) {
+		t.Fatalf("/user/me 应返回会话角色，实际 %s", rec.Body.String())
+	}
+}
+
+func TestUserLoginRejectsAdminAccount(t *testing.T) {
+	r, _, _, repo := newUserTestRouter(t)
+
+	// 直接在仓储层写入一个后台账号，模拟被提升为管理员的账号。
+	ctx := context.Background()
+	hash, err := auth.HashPassword("password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(ctx, &domain.User{
+		Username: "promoted-admin", PasswordHash: hash, Role: "admin", IsActive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doJSON(r, http.MethodPost, "/user/login", "", "",
+		map[string]string{"identifier": "promoted-admin", "password": "password123"})
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("管理会话不应通过用户鉴权，实际 %d", rec.Code)
+		t.Fatalf("后台账号不应能从前台登录（MFA 旁路），实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 }

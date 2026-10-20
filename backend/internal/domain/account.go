@@ -12,9 +12,14 @@ import (
 // 其余角色（admin / editor / 自定义角色）为后台账号。
 // 密码仅存 Argon2id 哈希，绝不落库明文。
 type Account struct {
-	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Username     string    `gorm:"uniqueIndex;size:80;not null" json:"username"`
-	PasswordHash string    `gorm:"not null" json:"-"`
+	ID       uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Username string    `gorm:"uniqueIndex;size:80;not null" json:"username"`
+	// UserNo 对外展示的用户 ID（迁移 0036），随机生成且不再变更。
+	// 内部主键仍是 UUID；该字段仅供前台 / 后台展示与社区作者署名。
+	// default:(-) 让 GORM 在零值时省略该列，交给数据库默认值（测试夹具等直接 Create 的场景）；
+	// 正常业务路径由服务层显式生成，保证字符集与长度一致。
+	UserNo       string `gorm:"column:user_no;size:12;not null;default:(-)" json:"user_no"`
+	PasswordHash string `gorm:"not null" json:"-"`
 	// Email 邮箱（迁移 0026）。普通用户注册必填，后台账号可留空（空串）。
 	// 服务端统一按小写存储，唯一性由部分唯一索引 idx_accounts_email_unique 保证。
 	Email string `gorm:"size:254;not null;default:''" json:"email"`

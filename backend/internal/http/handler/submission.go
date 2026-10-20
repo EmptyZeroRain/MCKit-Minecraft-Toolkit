@@ -19,7 +19,7 @@ import (
 
 // SubmissionHandler 普通用户资源投稿处理器（登录用户专属）。
 //
-// 安全边界：路由层已加 RequireAuth + RequireUserRole + CSRF，
+// 安全边界：路由层已加 RequireAuth + RequireAccount + CSRF，
 // 提交者账号一律取自会话，不接受请求体传入，避免越权代他人投稿。
 type SubmissionHandler struct {
 	svc *submission.Service

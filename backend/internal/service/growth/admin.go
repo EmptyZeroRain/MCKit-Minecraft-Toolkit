@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"mckit/backend/internal/domain"
 )
@@ -90,13 +91,13 @@ func (s *Service) GetAdminOverview(ctx context.Context) (*AdminOverview, error) 
 
 // RuleInput 经验规则创建 / 更新入参。
 type RuleInput struct {
-	Code            string `json:"code"`
-	Name            string `json:"name"`
-	EventType       string `json:"event_type"`
-	XPAmount        int    `json:"xp_amount"`
-	DailyLimit      *int   `json:"daily_limit"`
-	PerSubjectLimit *int   `json:"per_subject_limit"`
-	Enabled         bool   `json:"enabled"`
+	Code            string     `json:"code"`
+	Name            string     `json:"name"`
+	EventType       string     `json:"event_type"`
+	XPAmount        int        `json:"xp_amount"`
+	DailyLimit      *int       `json:"daily_limit"`
+	PerSubjectLimit *int       `json:"per_subject_limit"`
+	Enabled         bool       `json:"enabled"`
 	EffectiveFrom   *time.Time `json:"effective_from"`
 	EffectiveUntil  *time.Time `json:"effective_until"`
 }
@@ -302,6 +303,215 @@ func (s *Service) UpdateLevel(ctx context.Context, in domain.GrowthLevel, operat
 	})
 }
 
+// CreateLevelInput 新增等级入参（等级号由服务端追加）。
+type CreateLevelInput struct {
+	ThresholdXP int64  `json:"threshold_xp"`
+	Title       string `json:"title"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// CreateLevel 在现有等级序列末尾追加一个等级。
+//
+// 等级号自动取当前最大等级 + 1；新增等级的所需经验必须严格大于当前最高等级，
+// 以保证阈值按等级递增，不影响已有用户等级计算。
+func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operatorID string) (*domain.GrowthLevel, error) {
+	title := strings.TrimSpace(in.Title)
+	if in.ThresholdXP < 0 || title == "" || len(title) > 100 {
+		return nil, ErrLevelThreshold
+	}
+	var created *domain.GrowthLevel
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var levels []domain.GrowthLevel
+		if err := tx.Order("level ASC").Find(&levels).Error; err != nil {
+			return err
+		}
+		level := 1
+		if len(levels) > 0 {
+			last := levels[len(levels)-1]
+			if in.ThresholdXP <= last.ThresholdXP {
+				return ErrLevelNewThreshold
+			}
+			level = last.Level + 1
+		} else if in.ThresholdXP != 0 {
+			return ErrLevelNewThreshold
+		}
+		lvl := &domain.GrowthLevel{
+			Level: level, ThresholdXP: in.ThresholdXP, Title: title, Enabled: in.Enabled,
+		}
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(lvl)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrLevelNewThreshold
+		}
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: operatorID, Action: "level.create", EntityType: "growth_level", EntityID: itoa(level),
+			Reason: "新增等级 Lv." + itoa(level), After: levelSnapshot(lvl),
+		}); err != nil {
+			return err
+		}
+		created = lvl
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// DeleteLevel 删除最高等级，并重算所有用户等级。
+//
+// 只允许删除最高等级：保持等级序列连续，避免中间等级消失后成就条件与等级号错位。
+// Lv.1 永远保留；删除后用户展示等级按剩余阈值重算，人工等级偏移同步收敛到新范围。
+func (s *Service) DeleteLevel(ctx context.Context, level int, operatorID string) error {
+	if level <= 1 {
+		return ErrLevelDeleteTopOnly
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var levels []domain.GrowthLevel
+		if err := tx.Order("level ASC").Find(&levels).Error; err != nil {
+			return err
+		}
+		var target *domain.GrowthLevel
+		for i := range levels {
+			if levels[i].Level == level {
+				target = &levels[i]
+				break
+			}
+		}
+		if target == nil {
+			return ErrLevelNotFound
+		}
+		if levels[len(levels)-1].Level != level {
+			return ErrLevelDeleteTopOnly
+		}
+		res := tx.Where("level = ?", level).Delete(&domain.GrowthLevel{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrLevelNotFound
+		}
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: operatorID, Action: "level.delete", EntityType: "growth_level", EntityID: itoa(level),
+			Reason: "删除等级 Lv." + itoa(level), Before: levelSnapshot(target),
+		}); err != nil {
+			return err
+		}
+		_, err := recalculateUserLevels(tx, levels[:len(levels)-1], true)
+		return err
+	})
+}
+
+// AdjustLevelInput 单用户等级调整入参。
+type AdjustLevelInput struct {
+	TargetUserID string `json:"target_user_id"`
+	DeltaLevel   int    `json:"delta_level"`
+	Reason       string `json:"reason"`
+	RequestKey   string `json:"request_key"`
+	OperatorID   string `json:"-"`
+	RequestID    string `json:"-"`
+}
+
+// LevelAdjustResult 单用户等级调整结果。
+type LevelAdjustResult struct {
+	UserID      string `json:"user_id"`
+	BaseLevel   int    `json:"base_level"`
+	LevelOffset int    `json:"level_offset"`
+	Level       int    `json:"level"`
+	LevelTitle  string `json:"level_title"`
+	DeltaLevel  int    `json:"delta_level"`
+}
+
+// AdjustLevel 直接调整单个用户的展示等级。
+//
+// 等级本身由经验阈值推导，因此这里调整的是 user_growth.level_offset：
+// 有效等级 = 经验等级 + 偏移，后续经验变化仍会平滑叠加，不会把人工调整清零。
+// 只允许调整现有启用等级范围内的目标；等级定义本身由 CreateLevel / DeleteLevel 管理。
+func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelAdjustResult, error) {
+	targetID, err := s.resolveUserID(ctx, in.TargetUserID)
+	if err != nil {
+		return nil, err
+	}
+	if in.DeltaLevel == 0 || in.DeltaLevel < -100 || in.DeltaLevel > 100 {
+		return nil, ErrBadInput
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, ErrReasonRequired
+	}
+	levels, err := s.repo.ListLevels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	enabled := enabledLevels(levels)
+	if len(enabled) == 0 {
+		return nil, ErrLevelNotFound
+	}
+	minLevel, maxLevel := enabled[0].Level, enabled[len(enabled)-1].Level
+	enabledSet := make(map[int]bool, len(enabled))
+	for _, l := range enabled {
+		enabledSet[l.Level] = true
+	}
+
+	var result *LevelAdjustResult
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		g, err := lockGrowth(tx, targetID)
+		if err != nil {
+			return err
+		}
+		baseLevel := computeLevel(levels, g.CurrentXP).Level
+		currentLevel := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
+		targetLevel := currentLevel + in.DeltaLevel
+		if targetLevel < minLevel || targetLevel > maxLevel || !enabledSet[targetLevel] {
+			return ErrLevelRange
+		}
+		newOffset := targetLevel - baseLevel
+		if err := tx.Model(&domain.UserGrowth{}).Where("user_id = ?", targetID).
+			Updates(map[string]any{
+				"level":        targetLevel,
+				"level_offset": newOffset,
+				"version":      gorm.Expr("version + 1"),
+				"updated_at":   s.now(),
+			}).Error; err != nil {
+			return err
+		}
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: in.OperatorID, Action: "level.adjust", TargetUser: targetID.String(),
+			EntityType: "user_growth", EntityID: targetID.String(), Reason: reason,
+			Before: map[string]any{
+				"base_level":   baseLevel,
+				"level":        currentLevel,
+				"level_offset": g.LevelOffset,
+			},
+			After: map[string]any{
+				"base_level":   baseLevel,
+				"level":        targetLevel,
+				"level_offset": newOffset,
+				"delta_level":  in.DeltaLevel,
+				"request_key":  strings.TrimSpace(in.RequestKey),
+			},
+			RequestID: in.RequestID,
+		}); err != nil {
+			return err
+		}
+		result = &LevelAdjustResult{
+			UserID:      targetID.String(),
+			BaseLevel:   baseLevel,
+			LevelOffset: newOffset,
+			Level:       targetLevel,
+			LevelTitle:  levelTitle(levels, targetLevel),
+			DeltaLevel:  in.DeltaLevel,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // RecalculateLevels 依据当前阈值表重算所有用户等级（等级仅展示用，不影响权限）。
 // 返回被修正的用户数。
 func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
@@ -309,18 +519,36 @@ func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return recalculateUserLevels(s.db.WithContext(ctx), levels, false)
+}
+
+// recalculateUserLevels 按给定等级表重算用户展示等级。
+//
+// clampOffset 为 true 时会把 level_offset 收敛到新等级范围内；
+// 删除最高等级后必须收敛，否则偏移会在未来新增等级时产生意外跳级。
+func recalculateUserLevels(db *gorm.DB, levels []domain.GrowthLevel, clampOffset bool) (int, error) {
 	var rows []domain.UserGrowth
-	if err := s.db.WithContext(ctx).Select("user_id, current_xp, level").Find(&rows).Error; err != nil {
+	if err := db.Select("user_id, current_xp, level, level_offset").Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	fixed := 0
 	for _, g := range rows {
-		want := computeLevel(levels, g.CurrentXP).Level
-		if want == g.Level {
+		want := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
+		updates := map[string]any{}
+		if want != g.Level {
+			updates["level"] = want
+		}
+		if clampOffset {
+			base := computeLevel(levels, g.CurrentXP).Level
+			if newOffset := want - base; newOffset != g.LevelOffset {
+				updates["level_offset"] = newOffset
+			}
+		}
+		if len(updates) == 0 {
 			continue
 		}
-		if err := s.db.WithContext(ctx).Model(&domain.UserGrowth{}).
-			Where("user_id = ?", g.UserID).Update("level", want).Error; err != nil {
+		if err := db.Model(&domain.UserGrowth{}).
+			Where("user_id = ?", g.UserID).Updates(updates).Error; err != nil {
 			return fixed, err
 		}
 		fixed++
@@ -332,6 +560,13 @@ func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
 
 // AdminListLedger 分页查询全局经验流水。
 func (s *Service) AdminListLedger(ctx context.Context, f LedgerFilter) ([]LedgerItem, int64, error) {
+	if strings.TrimSpace(f.UserID) != "" {
+		id, err := s.resolveUserID(ctx, f.UserID)
+		if err != nil {
+			return nil, 0, err
+		}
+		f.UserID = id.String()
+	}
 	rows, total, err := s.repo.ListLedger(ctx, f)
 	if err != nil {
 		return nil, 0, err
@@ -353,9 +588,9 @@ type AdjustInput struct {
 // Adjust 人工调整用户经验（正负均可），写账本与审计。
 // 以「目标用户 + 请求键」为幂等键，重复提交不会重复调整。
 func (s *Service) Adjust(ctx context.Context, in AdjustInput) (*domain.ExperienceLedger, error) {
-	targetID, err := uuid.Parse(strings.TrimSpace(in.TargetUserID))
+	targetID, err := s.resolveUserID(ctx, in.TargetUserID)
 	if err != nil {
-		return nil, ErrBadInput
+		return nil, err
 	}
 	if in.DeltaXP == 0 {
 		return nil, ErrBadInput
@@ -363,9 +598,6 @@ func (s *Service) Adjust(ctx context.Context, in AdjustInput) (*domain.Experienc
 	reason := strings.TrimSpace(in.Reason)
 	if reason == "" {
 		return nil, ErrReasonRequired
-	}
-	if err := s.ensureUser(ctx, targetID); err != nil {
-		return nil, err
 	}
 	requestKey := strings.TrimSpace(in.RequestKey)
 	if requestKey == "" {
@@ -400,7 +632,7 @@ func (s *Service) Adjust(ctx context.Context, in AdjustInput) (*domain.Experienc
 		if err := writeAudit(tx, auditEntry{
 			OperatorID: in.OperatorID, Action: "xp.adjust", TargetUser: targetID.String(),
 			EntityType: "experience_ledger", EntityID: e.ID.String(), Reason: reason,
-			After:  map[string]any{"delta_xp": in.DeltaXP, "balance_after": e.BalanceAfter},
+			After:     map[string]any{"delta_xp": in.DeltaXP, "balance_after": e.BalanceAfter},
 			RequestID: in.RequestID,
 		}); err != nil {
 			return err
@@ -474,8 +706,8 @@ func (s *Service) Reverse(ctx context.Context, in ReverseInput) (*domain.Experie
 		if err := writeAudit(tx, auditEntry{
 			OperatorID: in.OperatorID, Action: "xp.reverse", TargetUser: orig.UserID.String(),
 			EntityType: "experience_ledger", EntityID: orig.ID.String(), Reason: reason,
-			Before: map[string]any{"delta_xp": orig.DeltaXP, "source_type": orig.SourceType},
-			After:  map[string]any{"reversed_delta_xp": e.DeltaXP, "reversal_ledger_id": e.ID.String()},
+			Before:    map[string]any{"delta_xp": orig.DeltaXP, "source_type": orig.SourceType},
+			After:     map[string]any{"reversed_delta_xp": e.DeltaXP, "reversal_ledger_id": e.ID.String()},
 			RequestID: in.RequestID,
 		}); err != nil {
 			return err
@@ -726,7 +958,7 @@ func (s *Service) UpdateAchievement(ctx context.Context, id string, in Achieveme
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "achievement.update", EntityType: "achievement", EntityID: old.ID.String(),
 			Reason: "更新成就 " + old.Code, Before: before,
-			After:  map[string]any{"name": in.Name, "condition_type": in.ConditionType, "target_value": in.TargetValue, "enabled": in.Enabled},
+			After: map[string]any{"name": in.Name, "condition_type": in.ConditionType, "target_value": in.TargetValue, "enabled": in.Enabled},
 		})
 	})
 	if err != nil {
@@ -796,6 +1028,281 @@ func (s *Service) RecalculateAchievements(ctx context.Context, userID, operatorI
 	return total, nil
 }
 
+// AchievementGrantInput 手动授予成就入参。
+type AchievementGrantInput struct {
+	TargetUserID  string `json:"target_user_id"`
+	AchievementID string `json:"achievement_id"`
+	Reason        string `json:"reason"`
+	OperatorID    string `json:"-"`
+	RequestID     string `json:"-"`
+}
+
+// AchievementRevokeInput 手动撤销成就入参。
+type AchievementRevokeInput struct {
+	TargetUserID  string `json:"target_user_id"`
+	AchievementID string `json:"achievement_id"`
+	Reason        string `json:"reason"`
+	OperatorID    string `json:"-"`
+	RequestID     string `json:"-"`
+}
+
+// AdminUserAchievementView 后台查看某用户成就状态。
+type AdminUserAchievementView struct {
+	AchievementID string     `json:"achievement_id"`
+	Code          string     `json:"code"`
+	Name          string     `json:"name"`
+	Category      string     `json:"category"`
+	Rarity        string     `json:"rarity"`
+	Enabled       bool       `json:"enabled"`
+	RewardXP      int        `json:"reward_xp"`
+	Unlocked      bool       `json:"unlocked"`
+	Revoked       bool       `json:"revoked"`
+	GrantSource   string     `json:"grant_source"`
+	UnlockedAt    *time.Time `json:"unlocked_at"`
+	RevokedAt     *time.Time `json:"revoked_at"`
+	RevokeReason  string     `json:"revoke_reason"`
+}
+
+// GrantAchievement 手动授予用户成就。
+//
+// 授予会补发成就定义中的奖励经验（若尚未发过），并写入成长审计。
+// 已撤销的成就可重新授予，但不会再次发放奖励经验（账本幂等键兜底）。
+func (s *Service) GrantAchievement(ctx context.Context, in AchievementGrantInput) (*domain.UserAchievement, error) {
+	targetID, err := s.resolveUserID(ctx, in.TargetUserID)
+	if err != nil {
+		return nil, err
+	}
+	def, err := s.repo.GetAchievementDef(ctx, strings.TrimSpace(in.AchievementID))
+	if err != nil {
+		return nil, err
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, ErrReasonRequired
+	}
+	if len([]rune(reason)) > 500 {
+		return nil, ErrBadInput
+	}
+
+	var result domain.UserAchievement
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ua domain.UserAchievement
+		if err := tx.Raw(`SELECT * FROM user_achievements
+			WHERE user_id = ? AND achievement_id = ? FOR UPDATE`, targetID, def.ID).
+			Scan(&ua).Error; err != nil {
+			return err
+		}
+		if ua.ID != uuid.Nil && ua.RevokedAt == nil {
+			return ErrAchievementAlreadyUnlocked
+		}
+
+		now := s.now()
+		if ua.ID == uuid.Nil {
+			ua = domain.UserAchievement{
+				UserID:                  targetID,
+				AchievementID:           def.ID,
+				AchievementCodeSnapshot: def.Code,
+				NameSnapshot:            def.Name,
+				DescriptionSnapshot:     def.Description,
+				DefinitionVersion:       def.Version,
+				UnlockedAt:              now,
+				IsPublic:                true,
+				GrantSource:             "manual",
+				GrantedByAdminID:        parseUUIDPtr(in.OperatorID),
+			}
+			if err := tx.Create(&ua).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Model(&domain.UserAchievement{}).Where("id = ?", ua.ID).
+				Updates(map[string]any{
+					"achievement_code_snapshot": def.Code,
+					"name_snapshot":             def.Name,
+					"description_snapshot":      def.Description,
+					"definition_version":        def.Version,
+					"unlocked_at":               now,
+					"is_public":                 true,
+					"grant_source":              "manual",
+					"granted_by_admin_id":       parseUUIDPtr(in.OperatorID),
+					"revoked_at":                nil,
+					"revoked_by_admin_id":       nil,
+					"revoke_reason":             "",
+				}).Error; err != nil {
+				return err
+			}
+			ua.AchievementCodeSnapshot = def.Code
+			ua.NameSnapshot = def.Name
+			ua.DescriptionSnapshot = def.Description
+			ua.DefinitionVersion = def.Version
+			ua.UnlockedAt = now
+			ua.IsPublic = true
+			ua.GrantSource = "manual"
+			ua.GrantedByAdminID = parseUUIDPtr(in.OperatorID)
+			ua.RevokedAt = nil
+			ua.RevokedByAdminID = nil
+			ua.RevokeReason = ""
+		}
+
+		// 成就奖励经验与自动解锁保持一致：同一成就只发一次，撤销不回收。
+		if def.RewardXP > 0 {
+			key := achievementRewardKey(def.Code, targetID.String())
+			absent, err := ledgerAbsent(tx, key)
+			if err != nil {
+				return err
+			}
+			if absent {
+				if _, err := s.applyLedger(tx, ledgerInput{
+					UserID:      targetID,
+					DeltaXP:     int64(def.RewardXP),
+					SourceType:  domain.LedgerSourceAchievement,
+					SourceID:    def.Code,
+					Key:         key,
+					RuleCode:    def.Code,
+					RuleVersion: def.Version,
+					Reason:      "手动授予成就：" + def.Name,
+					OperatorID:  parseUUIDPtr(in.OperatorID),
+				}); err != nil {
+					return err
+				}
+				if err := s.recalcLevel(tx, targetID); err != nil {
+					return err
+				}
+			}
+		}
+
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: in.OperatorID, Action: "achievement.grant", TargetUser: targetID.String(),
+			EntityType: "achievement", EntityID: def.ID.String(), Reason: reason,
+			After: map[string]any{
+				"code":         def.Code,
+				"name":         def.Name,
+				"grant_source": "manual",
+			},
+			RequestID: in.RequestID,
+		}); err != nil {
+			return err
+		}
+		result = ua
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// RevokeAchievement 手动撤销用户成就（软删除）。
+//
+// 撤销保留原始解锁快照与原因，不回收已发放的经验；自动重算不会重新解锁，
+// 需要后台再次手动授予。
+func (s *Service) RevokeAchievement(ctx context.Context, in AchievementRevokeInput) (*domain.UserAchievement, error) {
+	targetID, err := s.resolveUserID(ctx, in.TargetUserID)
+	if err != nil {
+		return nil, err
+	}
+	achievementID, err := uuid.Parse(strings.TrimSpace(in.AchievementID))
+	if err != nil {
+		return nil, ErrBadInput
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, ErrReasonRequired
+	}
+	if len([]rune(reason)) > 500 {
+		return nil, ErrBadInput
+	}
+
+	var result domain.UserAchievement
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ua domain.UserAchievement
+		if err := tx.Raw(`SELECT * FROM user_achievements
+			WHERE user_id = ? AND achievement_id = ? AND revoked_at IS NULL FOR UPDATE`,
+			targetID, achievementID).Scan(&ua).Error; err != nil {
+			return err
+		}
+		if ua.ID == uuid.Nil {
+			return ErrAchievementNotUnlocked
+		}
+		now := s.now()
+		if err := tx.Model(&domain.UserAchievement{}).Where("id = ?", ua.ID).
+			Updates(map[string]any{
+				"revoked_at":          now,
+				"revoked_by_admin_id": parseUUIDPtr(in.OperatorID),
+				"revoke_reason":       reason,
+			}).Error; err != nil {
+			return err
+		}
+		ua.RevokedAt = &now
+		ua.RevokedByAdminID = parseUUIDPtr(in.OperatorID)
+		ua.RevokeReason = reason
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: in.OperatorID, Action: "achievement.revoke", TargetUser: targetID.String(),
+			EntityType: "achievement", EntityID: achievementID.String(), Reason: reason,
+			Before: map[string]any{
+				"code":         ua.AchievementCodeSnapshot,
+				"name":         ua.NameSnapshot,
+				"unlocked_at":  ua.UnlockedAt,
+				"grant_source": ua.GrantSource,
+			},
+			After:     map[string]any{"revoked_at": now, "revoke_reason": reason},
+			RequestID: in.RequestID,
+		}); err != nil {
+			return err
+		}
+		result = ua
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListAdminUserAchievements 返回某用户全部成就的解锁 / 撤销状态。
+func (s *Service) ListAdminUserAchievements(ctx context.Context, userID string) ([]AdminUserAchievementView, error) {
+	id, err := s.resolveUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	defs, err := s.repo.ListAchievementDefs(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	var rows []domain.UserAchievement
+	if err := s.db.WithContext(ctx).Where("user_id = ?", id).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	byAchievement := make(map[uuid.UUID]domain.UserAchievement, len(rows))
+	for _, row := range rows {
+		byAchievement[row.AchievementID] = row
+	}
+	out := make([]AdminUserAchievementView, 0, len(defs))
+	for _, def := range defs {
+		view := AdminUserAchievementView{
+			AchievementID: def.ID.String(),
+			Code:          def.Code,
+			Name:          def.Name,
+			Category:      def.Category,
+			Rarity:        def.Rarity,
+			Enabled:       def.Enabled,
+			RewardXP:      def.RewardXP,
+		}
+		if ua, ok := byAchievement[def.ID]; ok {
+			view.GrantSource = ua.GrantSource
+			view.UnlockedAt = &ua.UnlockedAt
+			if ua.RevokedAt != nil {
+				view.Revoked = true
+				view.RevokedAt = ua.RevokedAt
+				view.RevokeReason = ua.RevokeReason
+			} else {
+				view.Unlocked = true
+			}
+		}
+		out = append(out, view)
+	}
+	return out, nil
+}
+
 // recalculateUser 在单事务内重算单个用户成就。
 func (s *Service) recalculateUser(ctx context.Context, userID uuid.UUID) (int, error) {
 	var unlocked int
@@ -818,6 +1325,36 @@ func (s *Service) ListAudit(ctx context.Context, f AuditFilter) ([]domain.Growth
 }
 
 // ---- 内部工具 ----
+
+// resolveUserID 将后台输入解析为普通用户 UUID。
+//
+// 后台列表默认展示对外随机用户 ID（user_no），因此这里同时接受内部 UUID
+// 与对外 ID，避免运营必须从数据库复制内部主键。
+func (s *Service) resolveUserID(ctx context.Context, raw string) (uuid.UUID, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return uuid.Nil, ErrBadInput
+	}
+	if id, err := uuid.Parse(raw); err == nil {
+		if err := s.ensureUser(ctx, id); err != nil {
+			return uuid.Nil, err
+		}
+		return id, nil
+	}
+	var row struct {
+		ID uuid.UUID
+	}
+	if err := s.db.WithContext(ctx).Table("accounts").
+		Select("id").
+		Where("user_no = ? AND role = ?", raw, domain.RoleUser).
+		Scan(&row).Error; err != nil {
+		return uuid.Nil, err
+	}
+	if row.ID == uuid.Nil {
+		return uuid.Nil, ErrUnknownUser
+	}
+	return row.ID, nil
+}
 
 // ensureUser 校验目标账号存在且为普通用户。
 func (s *Service) ensureUser(ctx context.Context, userID uuid.UUID) error {

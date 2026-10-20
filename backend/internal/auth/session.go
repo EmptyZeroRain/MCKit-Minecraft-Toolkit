@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,6 +53,65 @@ const lastSeenRefreshInterval = time.Minute
 // 出现该错误时必须**安全失败**（拒绝请求），不得跳过认证（gj.md §3.4）。
 var ErrSessionStoreUnavailable = errors.New("会话存储不可用")
 
+// ErrSessionNotFound 目标会话不存在或已过期（后台踢下线场景）。
+var ErrSessionNotFound = errors.New("会话不存在或已失效")
+
+// ErrCannotRevokeCurrent 不允许在后台会话管理中踢下线当前会话。
+var ErrCannotRevokeCurrent = errors.New("不能踢下线当前会话，请使用退出登录")
+
+// 会话列表的账号类型筛选值。
+const (
+	SessionAccountAll   = "all"
+	SessionAccountUser  = "user"
+	SessionAccountAdmin = "admin"
+)
+
+// SessionListFilter 后台全站会话列表筛选。
+//
+// AccountType：all / user / admin；user 指 role='user'，admin 指其余后台角色。
+// Q 仅匹配用户名（会话表不保存昵称 / user_no）。Page / PageSize 由服务层归一化。
+type SessionListFilter struct {
+	Q           string
+	AccountType string
+	Page        int
+	PageSize    int
+}
+
+// normalizeSessionListFilter 归一化筛选与分页，避免各存储实现重复处理边界。
+func normalizeSessionListFilter(f SessionListFilter) SessionListFilter {
+	f.Q = strings.TrimSpace(f.Q)
+	switch f.AccountType {
+	case SessionAccountUser, SessionAccountAdmin, SessionAccountAll:
+	default:
+		f.AccountType = SessionAccountAll
+	}
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize <= 0 {
+		f.PageSize = 20
+	}
+	if f.PageSize > 100 {
+		f.PageSize = 100
+	}
+	return f
+}
+
+// matchSession 判断会话是否满足关键字与账号类型筛选。
+func matchSession(s Session, f SessionListFilter) bool {
+	if f.Q != "" && !strings.Contains(strings.ToLower(s.Username), strings.ToLower(f.Q)) {
+		return false
+	}
+	switch f.AccountType {
+	case SessionAccountUser:
+		return s.Role == "user"
+	case SessionAccountAdmin:
+		return s.Role != "user"
+	default:
+		return true
+	}
+}
+
 // SessionStore 会话存储接口。
 //
 // 单实例部署使用 MemorySessionStore（进程重启即失效）；
@@ -69,6 +129,8 @@ type SessionStore interface {
 	DeleteByAccountID(ctx context.Context, accountID string) error
 	// ListByAccountID 列出账号的全部有效会话元数据（用于「查看与撤销会话」）。
 	ListByAccountID(ctx context.Context, accountID string) ([]Session, error)
+	// ListAll 后台全站会话列表（分页 + 用户名 / 账号类型筛选）。
+	ListAll(ctx context.Context, f SessionListFilter) ([]Session, int64, error)
 	// PurgeExpired 清理已过期会话，返回清理条数。
 	PurgeExpired(ctx context.Context) (int64, error)
 }
@@ -198,6 +260,32 @@ func (m *MemorySessionStore) ListByAccountID(_ context.Context, accountID string
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeenAt.After(out[j].LastSeenAt) })
 	return out, nil
+}
+
+// ListAll 后台全站有效会话（按最近活动倒序分页）。
+func (m *MemorySessionStore) ListAll(_ context.Context, f SessionListFilter) ([]Session, int64, error) {
+	f = normalizeSessionListFilter(f)
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	all := make([]Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if m.opts.expired(&s, now) || !matchSession(s, f) {
+			continue
+		}
+		all = append(all, s)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].LastSeenAt.After(all[j].LastSeenAt) })
+	total := int64(len(all))
+	start := (f.Page - 1) * f.PageSize
+	if start >= len(all) {
+		return []Session{}, total, nil
+	}
+	end := start + f.PageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end], total, nil
 }
 
 // PurgeExpired 清理已过期会话。

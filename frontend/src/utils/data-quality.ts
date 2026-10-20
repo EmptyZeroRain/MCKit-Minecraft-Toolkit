@@ -150,7 +150,7 @@ export function checkActionPath(category: string): string {
     case 'mods':
       return '/admin/review?tab=mods'
     case 'import':
-      return '/admin/data-quality#import-jobs'
+      return '/admin/content-health?tab=quality#import-jobs'
     default:
       return ''
   }

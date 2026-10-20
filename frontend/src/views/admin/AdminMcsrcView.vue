@@ -273,7 +273,7 @@ onMounted(load)
                       {{ purgingKey === keyOf(item) ? '清理中…' : '清理' }}
                     </button>
                   </div>
-                  <RouterLink to="/admin/jobs" class="mt-1 inline-block text-xs text-text-muted hover:underline">
+                  <RouterLink to="/admin/ops?tab=jobs" class="mt-1 inline-block text-xs text-text-muted hover:underline">
                     查看任务
                   </RouterLink>
                 </td>

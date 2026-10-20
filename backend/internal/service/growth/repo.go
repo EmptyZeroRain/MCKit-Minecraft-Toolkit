@@ -132,7 +132,7 @@ func (r *Repo) GetAchievementDef(ctx context.Context, id string) (*domain.Achiev
 // ListUserAchievements 返回用户已解锁成就（按解锁时间倒序）。
 func (r *Repo) ListUserAchievements(ctx context.Context, userID string) ([]domain.UserAchievement, error) {
 	var out []domain.UserAchievement
-	err := r.db.WithContext(ctx).Where("user_id = ?", userID).
+	err := r.db.WithContext(ctx).Where("user_id = ? AND revoked_at IS NULL", userID).
 		Order("unlocked_at DESC").Find(&out).Error
 	return out, err
 }
@@ -141,7 +141,7 @@ func (r *Repo) ListUserAchievements(ctx context.Context, userID string) ([]domai
 func (r *Repo) ListPublicUserAchievements(ctx context.Context, userID string) ([]domain.UserAchievement, error) {
 	var out []domain.UserAchievement
 	err := r.db.WithContext(ctx).
-		Where("user_id = ? AND is_public = true", userID).
+		Where("user_id = ? AND is_public = true AND revoked_at IS NULL", userID).
 		Order("unlocked_at DESC").Find(&out).Error
 	return out, err
 }
@@ -271,17 +271,17 @@ func (r *Repo) ListAudit(ctx context.Context, f AuditFilter) ([]domain.GrowthAud
 
 // GrowthOverviewStats 后台成长概览统计（口径见注释）。
 type GrowthOverviewStats struct {
-	ActiveUsers        int64 `json:"active_users"`         // 有成长记录的用户数
-	XPIssuedToday      int64 `json:"xp_issued_today"`      // 今日正向发放经验合计
-	XPIssued7Days      int64 `json:"xp_issued_7days"`      // 近 7 日正向发放经验合计
-	LedgerToday        int64 `json:"ledger_today"`         // 今日奖励笔数（正向流水）
-	ReversedTotal      int64 `json:"reversed_total"`       // 累计冲正经验（绝对值）
-	ManualAdjustCount  int64 `json:"manual_adjust_count"`  // 累计人工调整笔数
-	UnlockedTotal      int64 `json:"unlocked_total"`       // 累计成就解锁数
-	AchievementCount   int64 `json:"achievement_count"`    // 启用成就总数
-	LevelDistribution  []LevelBucket `json:"level_distribution"`
-	TasksCompletedToday int64 `json:"tasks_completed_today"` // 今日完成任务数
-	TaskParticipantsToday int64 `json:"task_participants_today"` // 今日任务参与人数
+	ActiveUsers           int64         `json:"active_users"`        // 有成长记录的用户数
+	XPIssuedToday         int64         `json:"xp_issued_today"`     // 今日正向发放经验合计
+	XPIssued7Days         int64         `json:"xp_issued_7days"`     // 近 7 日正向发放经验合计
+	LedgerToday           int64         `json:"ledger_today"`        // 今日奖励笔数（正向流水）
+	ReversedTotal         int64         `json:"reversed_total"`      // 累计冲正经验（绝对值）
+	ManualAdjustCount     int64         `json:"manual_adjust_count"` // 累计人工调整笔数
+	UnlockedTotal         int64         `json:"unlocked_total"`      // 累计成就解锁数
+	AchievementCount      int64         `json:"achievement_count"`   // 启用成就总数
+	LevelDistribution     []LevelBucket `json:"level_distribution"`
+	TasksCompletedToday   int64         `json:"tasks_completed_today"`   // 今日完成任务数
+	TaskParticipantsToday int64         `json:"task_participants_today"` // 今日任务参与人数
 }
 
 // LevelBucket 单个等级的用户分布。

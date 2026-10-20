@@ -3,8 +3,6 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -175,6 +173,7 @@ func (h *AuthHandler) respondLogin(w http.ResponseWriter, r *http.Request, resul
 
 	response.OK(w, map[string]any{
 		"id":                   result.Admin.ID,
+		"user_no":              result.Admin.UserNo,
 		"username":             result.Admin.Username,
 		"nickname":             result.Admin.Nickname,
 		"avatar_url":           result.Admin.AvatarURL,
@@ -214,14 +213,16 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	// 展示资料（昵称 / 头像）不缓存在会话中，实时回源以保证改资料后各端一致。
 	// 回源失败不阻断会话恢复：退化为空串，前端回退到 username 展示。
-	var nickname, avatarURL string
+	var nickname, avatarURL, userNo string
 	if profile, err := h.authService.Profile(r.Context(), session.AccountID); err == nil && profile != nil {
 		nickname = profile.Nickname
 		avatarURL = profile.AvatarURL
+		userNo = profile.UserNo
 	}
 
 	response.OK(w, map[string]any{
 		"id":                   session.AccountID,
+		"user_no":              userNo,
 		"username":             session.Username,
 		"nickname":             nickname,
 		"avatar_url":           avatarURL,
@@ -284,6 +285,7 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	response.OK(w, map[string]any{
 		"id":         admin.ID,
+		"user_no":    admin.UserNo,
 		"username":   admin.Username,
 		"nickname":   admin.Nickname,
 		"avatar_url": admin.AvatarURL,
@@ -409,10 +411,9 @@ type sessionItem struct {
 	Current    bool   `json:"current"`
 }
 
-// sessionFingerprint 会话 ID 的展示指纹（SHA-256 前 12 位十六进制）。
+// sessionFingerprint 会话 ID 的展示指纹（实现位于 auth 包，后台会话管理复用）。
 func sessionFingerprint(sessionID string) string {
-	sum := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(sum[:])[:12]
+	return auth.SessionFingerprint(sessionID)
 }
 
 // Sessions POST /api/v1/admin/auth/sessions/list

@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+
+	"mckit/backend/internal/domain"
 )
 
 // sessionRow sessions 表的存储模型（仅本包内使用）。
@@ -165,6 +167,40 @@ func (p *PostgresSessionStore) ListByAccountID(ctx context.Context, accountID st
 		out = append(out, r.toSession())
 	}
 	return out, nil
+}
+
+// ListAll 后台全站有效会话（分页 + 用户名 / 账号类型筛选）。
+func (p *PostgresSessionStore) ListAll(ctx context.Context, f SessionListFilter) ([]Session, int64, error) {
+	f = normalizeSessionListFilter(f)
+	now := time.Now()
+	q := p.db.WithContext(ctx).Model(&sessionRow{}).Where("expires_at > ?", now)
+	if p.opts.IdleTTL > 0 {
+		q = q.Where("last_seen_at > ?", now.Add(-p.opts.IdleTTL))
+	}
+	if f.Q != "" {
+		q = q.Where("username ILIKE ?", "%"+f.Q+"%")
+	}
+	switch f.AccountType {
+	case SessionAccountUser:
+		q = q.Where("role = ?", domain.RoleUser)
+	case SessionAccountAdmin:
+		q = q.Where("role <> ?", domain.RoleUser)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", ErrSessionStoreUnavailable, err)
+	}
+	var rows []sessionRow
+	if err := q.Order("last_seen_at DESC").
+		Offset((f.Page - 1) * f.PageSize).Limit(f.PageSize).
+		Find(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", ErrSessionStoreUnavailable, err)
+	}
+	out := make([]Session, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.toSession())
+	}
+	return out, total, nil
 }
 
 // PurgeExpired 清理已过期会话。

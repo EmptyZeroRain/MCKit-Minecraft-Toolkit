@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -109,5 +110,85 @@ func TestMemorySessionStorePurgeExpired(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("应清理 1 个过期会话，实际 %d", n)
+	}
+}
+
+func TestMemorySessionStoreListAllFilter(t *testing.T) {
+	store := NewMemorySessionStore()
+	ctx := context.Background()
+	rows := []Session{
+		{SessionID: "u1", AccountID: "u", Username: "alice", Role: "user"},
+		{SessionID: "a1", AccountID: "a", Username: "admin", Role: "admin"},
+		{SessionID: "a2", AccountID: "a2", Username: "editor", Role: "editor"},
+	}
+	for _, s := range rows {
+		if err := store.Create(ctx, s); err != nil {
+			t.Fatalf("Create 失败: %v", err)
+		}
+	}
+	if err := store.Create(ctx, Session{
+		SessionID: "expired", AccountID: "x", Username: "ghost", Role: "user",
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("Create 失败: %v", err)
+	}
+
+	all, total, err := store.ListAll(ctx, SessionListFilter{Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatalf("ListAll 失败: %v", err)
+	}
+	if total != 3 || len(all) != 2 {
+		t.Fatalf("全站分页不符: total=%d len=%d", total, len(all))
+	}
+
+	users, total, err := store.ListAll(ctx, SessionListFilter{AccountType: SessionAccountUser})
+	if err != nil || total != 1 || len(users) != 1 || users[0].Username != "alice" {
+		t.Fatalf("普通用户筛选不符: total=%d rows=%+v err=%v", total, users, err)
+	}
+	admins, total, err := store.ListAll(ctx, SessionListFilter{AccountType: SessionAccountAdmin})
+	if err != nil || total != 2 || len(admins) != 2 {
+		t.Fatalf("管理员筛选不符: total=%d rows=%+v err=%v", total, admins, err)
+	}
+	search, total, err := store.ListAll(ctx, SessionListFilter{Q: "EDIT"})
+	if err != nil || total != 1 || len(search) != 1 || search[0].Username != "editor" {
+		t.Fatalf("用户名搜索不符: total=%d rows=%+v err=%v", total, search, err)
+	}
+}
+
+func TestRevokeSessionByFingerprint(t *testing.T) {
+	store := NewMemorySessionStore()
+	ctx := context.Background()
+	for _, s := range []Session{
+		{SessionID: "user-session", AccountID: "u", Username: "alice", Role: "user"},
+		{SessionID: "admin-session", AccountID: "a", Username: "admin", Role: "admin"},
+	} {
+		if err := store.Create(ctx, s); err != nil {
+			t.Fatalf("Create 失败: %v", err)
+		}
+	}
+	svc := NewService(nil, store, 5, 900)
+
+	target, err := svc.RevokeSessionByFingerprint(ctx, SessionFingerprint("user-session"), "admin-session")
+	if err != nil {
+		t.Fatalf("按指纹撤销失败: %v", err)
+	}
+	if target.Username != "alice" {
+		t.Fatalf("撤销目标不符: %+v", target)
+	}
+	if got, _ := store.Get(ctx, "user-session"); got != nil {
+		t.Fatal("目标会话应已删除")
+	}
+	if got, _ := store.Get(ctx, "admin-session"); got == nil {
+		t.Fatal("当前会话不应被删除")
+	}
+
+	if _, err := svc.RevokeSessionByFingerprint(ctx, SessionFingerprint("admin-session"), "admin-session"); !errors.Is(err, ErrCannotRevokeCurrent) {
+		t.Fatalf("撤销当前会话应返回 ErrCannotRevokeCurrent，实际 %v", err)
+	}
+	if got, _ := store.Get(ctx, "admin-session"); got == nil {
+		t.Fatal("拒绝撤销后当前会话仍应存在")
+	}
+	if _, err := svc.RevokeSessionByFingerprint(ctx, "0123456789abcdef", ""); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("未知指纹应返回 ErrSessionNotFound，实际 %v", err)
 	}
 }

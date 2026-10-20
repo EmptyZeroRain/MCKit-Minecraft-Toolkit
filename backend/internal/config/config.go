@@ -20,6 +20,11 @@ type Config struct {
 	AppBaseURL string
 
 	DatabaseURL string
+	// AutoMigrate 启动时自动应用未执行的数据库迁移（默认 true）。
+	// 多实例同时启动时由 PostgreSQL advisory lock 串行化，避免重复执行。
+	AutoMigrate bool
+	// MigrationsDir 迁移目录（默认 migrations；相对路径按进程工作目录解析）。
+	MigrationsDir string
 
 	SessionSecret string
 	// SessionCookieName 统一会话 Cookie 名（迁移 0022 后管理员与普通用户共用一个会话）。
@@ -137,7 +142,9 @@ func Load() (*Config, error) {
 		AppAddr:    os.Getenv("APP_ADDR"),
 		AppBaseURL: os.Getenv("APP_BASE_URL"),
 
-		DatabaseURL: os.Getenv("DATABASE_URL"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		AutoMigrate:   parseBool(os.Getenv("AUTO_MIGRATE"), true),
+		MigrationsDir: os.Getenv("MIGRATIONS_DIR"),
 
 		SessionSecret:     os.Getenv("SESSION_SECRET"),
 		SessionCookieName: os.Getenv("SESSION_COOKIE_NAME"),
@@ -211,6 +218,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.SessionCookieName == "" {
 		cfg.SessionCookieName = "mc_session"
+	}
+	if cfg.MigrationsDir == "" {
+		cfg.MigrationsDir = "migrations"
 	}
 	cfg.SessionStore = strings.ToLower(strings.TrimSpace(cfg.SessionStore))
 	if cfg.SessionStore == "" {

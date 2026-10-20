@@ -78,3 +78,44 @@ func RequirePermission(resolver PermissionResolver, points ...string) func(http.
 		})
 	}
 }
+
+// RequireAnyPermission 校验当前会话角色具备指定权限点中的任意一个。
+//
+// 用于「合并页」：例如统一账号管理同时接受 accounts.admins 与 accounts.users，
+// 具体能查看 / 操作哪些账号由处理器按目标账号角色二次判定。
+// 其余行为（必须改密拦截、解析失败按 500）与 RequirePermission 保持一致。
+func RequireAnyPermission(resolver PermissionResolver, points ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			session := SessionFrom(r.Context())
+			if session == nil {
+				response.Unauthorized(w, r)
+				return
+			}
+			if session.MustChangePassword {
+				passwordChangeRequired(w, r)
+				return
+			}
+			if resolver == nil || len(points) == 0 {
+				response.Forbidden(w, r)
+				return
+			}
+			perms, err := resolver.PermissionsForRole(r.Context(), session.Role)
+			if err != nil {
+				response.HandleError(w, r, err)
+				return
+			}
+			have := make(map[string]struct{}, len(perms))
+			for _, p := range perms {
+				have[p] = struct{}{}
+			}
+			for _, need := range points {
+				if _, ok := have[need]; ok {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			response.Forbidden(w, r)
+		})
+	}
+}

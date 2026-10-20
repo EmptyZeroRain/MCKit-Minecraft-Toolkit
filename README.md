@@ -13,8 +13,10 @@
 - **开发栏目**：开发文档知识库（NeoForge / Forge / Fabric / 原版数据，含关键接口速查）与**版本映射查询**（类 / 方法 / 字段的 obf / mid / named 三列对照；映射数据需自行导入，仓库不预置）。
 - **百科与资源**：中文 Wiki 条目抓取与浏览；资源导航（类型 / 版本 / 加载器筛选、来源跳转、失效链接检查）。
 - **全站搜索**：跨 **工具 / 资源 / 百科 / 物品 / 开发文档** 统一检索，支持类型与版本筛选、相关度 / 最近更新排序与无结果引导。
-- **用户与后台**：可选账号（收藏 / 最近使用 / 常用种子；公开工具免登录）；**用户资源投稿**（结构化提交 → 人工审核 → 审核通过转为资源）；管理后台含内容 CRUD、投稿审核（红石 / Mod / 资源投稿 / 反馈）、链接健康复查、数据质量与导入历史、运营看板、审计日志。
-- **用户成长**：服务端判定的经验 / 等级（仅展示）/ 每日任务 / 成就体系；由已确认的业务事件驱动，经验账本只增不删、支持审计与人工冲正；后台可版本化维护规则与定义，并按 `ops.growth` 权限管理。
+- **用户与后台**：可选账号（收藏 / 最近使用 / 常用种子；公开工具免登录）；每个账号拥有随机生成的对外用户 ID（形如 `U7K3M2QX9F`，内部主键仍为 UUID）；**用户资源投稿**（结构化提交 → 人工审核 → 审核通过转为资源）；管理后台含内容 CRUD、投稿审核（红石 / Mod / 资源投稿 / 反馈）、链接健康复查、数据质量与导入历史、运营看板、审计日志。
+- **用户成长**：服务端判定的经验 / 等级（仅展示）/ 每日任务 / 成就体系；由已确认的业务事件驱动，经验账本只增不删、支持审计与人工冲正；后台可版本化维护规则与定义、按内部 UUID 或对外用户 ID 调整单用户等级偏移、手动授予 / 撤销成就，并按 `ops.growth` 权限管理。等级定义可编辑和重算，也可新增（追加到最高级之后）或删除最高级；Lv.1 固定保留，删除后会自动重算用户展示等级。后台「用户详情」可按用户树状展开等级进度、成就解锁时间、经验流水、礼物币收支与成长审计日志。
+- **礼物中心**：每日签到领取「签到礼物币」；礼物币分为**通用 / 签到**两类余额，后台按 `ops.gifts` 权限受控增减（支持内部 UUID / 对外用户 ID），任一余额不得为负，每次变动写入不可删除的账本并记录操作人。后台可维护礼物目录（名称、图标、价格、是否允许签到币兑换、排序、启停）与每日签到奖励，并在同一「礼物」页查看签到 / 礼物 / 礼物币排行榜；用户用礼物币兑换礼物并查看兑换记录与流水；已有兑换记录的礼物只能停用、不能删除。
+- **玩家社区**：帖子 / 留言 / 点赞与分类筛选；公开读免登录，发帖 / 留言 / 点赞要求普通用户会话并走 CSRF；作者可用对外用户 ID 署名；后台按 `content.community` 权限隐藏 / 恢复 / 删除内容，并在「用户评论」中跨帖子检索全部评论。内容健康模块支持维护屏蔽关键字，发帖 / 评论命中启用规则时由服务端直接拒绝。
 
 ## 界面预览
 
@@ -77,7 +79,9 @@ openssl rand -hex 32   # 生成 SESSION_SECRET
 
 docker compose -f deploy/compose.yaml up -d postgres
 
-# 2. 执行数据库迁移
+# 2.（可选）手动执行数据库迁移
+#    API 启动时会默认自动应用未执行的迁移（AUTO_MIGRATE=true）；
+#    手动执行便于提前发现失败，或在不启动服务时完成变更。
 cd backend && go run ./cmd/migrate
 
 # 2b. 迁移回滚（可选）
@@ -131,7 +135,7 @@ go run ./cmd/seed --type all --file seeds
 
 导入器按业务主键（item_id / recipe_key / slug）幂等更新，重复运行不产生重复记录；
 每行数据会做必填、枚举、数值与版本格式（含 `1.16-1.17`、`1.18+` 范围，以及 `all` 全版本通配）校验，
-失败逐行汇总；每次执行写入 `data_import_jobs`，可在后台 `系统 → 数据质量`（admin）
+失败逐行汇总；每次执行写入 `data_import_jobs`，可在后台 `审核与运营 → 内容健康 → 数据质量`（admin）
 查看导入历史与数据质量概览。
 
 资源导入额外校验**加载器枚举、依赖结构（`type ∈ dependency·prerequisite·conflict`）与发布版本结构**；
@@ -141,7 +145,7 @@ go run ./cmd/seed --type all --file seeds
 拉取失败时回退内置兜底清单，保证筛选始终可用。声明 `all` 表示适用于全部 MC 版本（必须独占），
 详情页可展开完整正式版清单。
 
-后台 `运营 → 搜索词统计`（admin）可查看热门搜索、高频无结果词与查询失败词——
+后台 `审核与运营 → 运营分析 → 搜索词统计`（admin）可查看热门搜索、高频无结果词与查询失败词——
 统计为**匿名化聚合**（仅关键词与计数，不含 IP / 会话 / 用户标识）。
 
 ## 抓取百科内容（可选）
@@ -213,13 +217,25 @@ npm run build        # 类型检查 + 生产构建
 | POST | `/api/v1/stats/event` | 匿名使用统计上报（工具访问 / 使用 / 失败；登录用户的「使用」同时驱动成长事件） |
 | POST | `/api/v1/growth/overview`、`/api/v1/growth/ledger`、`/api/v1/growth/daily-tasks`、`/api/v1/growth/daily-tasks/history`、`/api/v1/growth/achievements` | 用户成长中心（仅本人：经验概览 / 经验流水 / 每日任务 / 任务历史 / 成就目录；等级仅展示用） |
 | POST | `/api/v1/public/users/detail`、`/api/v1/public/users/achievements` | 公开个人主页成长摘要与公开成就（不含经验流水与登录信息） |
-| POST | `/api/v1/admin/growth/*` | 成长后台（需 `ops.growth`）：概览 / 规则版本化维护 / 等级阈值 / 全局流水 / 人工调整与冲正 / 成长审计 |
+| POST | `/api/v1/admin/growth/*` | 成长后台（需 `ops.growth`）：概览 / 用户详情（等级、成就、经验、礼物、审计聚合）/ 规则版本化维护 / 等级阈值与单用户等级调整 / 全局流水 / 人工调整与冲正 / 成长审计 |
+| POST | `/api/v1/admin/achievements/user/list`、`/grant`、`/revoke` | 单用户成就查询 / 手动授予 / 撤销（需 `ops.growth`；撤销为软删除，不回收已发经验） |
+| POST | `/api/v1/gifts/overview`、`/api/v1/gifts/ledger/list`、`/api/v1/gifts/catalog`、`/api/v1/gifts/checkin`、`/api/v1/gifts/redeem`、`/api/v1/gifts/redemptions/list` | 礼物中心（本人）：双币余额 / 流水 / 礼物目录 / 每日签到 / 兑换 / 兑换记录（写操作需 CSRF） |
+| POST | `/api/v1/admin/gifts/wallet/get`、`/wallet/adjust`、`/ledger/list` | 礼物币钱包查询 / 按币种受控增减 / 流水（需 `ops.gifts`；扣减不得使余额为负） |
+| POST | `/api/v1/admin/gifts/definitions/list`、`/create`、`/update`、`/delete`、`/settings/get`、`/settings/update`、`/rankings/checkin`、`/rankings/gifts`、`/rankings/coins` | 礼品目录、签到奖励与运营排行榜（需 `ops.gifts`；编码不可变，已兑换礼物只能停用） |
 | POST | `/api/v1/admin/daily-tasks/*`、`/api/v1/admin/achievements/*` | 每日任务与成就定义维护（含历史补算），需 `ops.growth` |
 | POST | `/api/v1/categories` | 分类列表 |
 | POST | `/api/v1/feedback` | 提交反馈/举报 |
 | POST | `/api/v1/user/submissions/submit`、`/api/v1/user/submissions/list` | 资源投稿（结构化提交 + 我的投稿，需登录 + CSRF） |
+| POST | `/api/v1/community/posts`、`/api/v1/community/posts/detail`、`/api/v1/community/comments` | 玩家社区公开读（帖子列表 / 详情 / 留言；仅返回已发布内容，登录后附带 `liked`） |
+| POST | `/api/v1/community/posts/create`、`/posts/delete`、`/posts/like`、`/comments/create`、`/comments/delete` | 社区写操作（需登录 + CSRF；普通用户与后台账号均可用，删除仅作者或帖子作者） |
+| POST | `/api/v1/admin/community/posts/list`、`/posts/status`、`/posts/delete`、`/comments/list`、`/comments/all`、`/comments/status`、`/comments/delete` | 社区审核（需 `content.community`；可查看隐藏内容并隐藏 / 恢复 / 删除；`comments/all` 跨帖子检索用户评论） |
+| POST | `/api/v1/admin/content-health/keywords/list`、`/create`、`/update`、`/delete` | 内容关键字屏蔽维护（需 `ops.dataquality`；社区帖子 / 评论创建时实时匹配） |
 | POST | `/api/v1/admin/auth/login` `logout` `me` `change-password` | 认证（change-password 成功后该账号全部会话失效） |
-| POST | `/api/v1/admin/admins/list|create|update|reset-password|delete` | 管理员账号管理（admin 专属，需登录 + CSRF） |
+| POST | `/api/v1/admin/accounts/list|create|detail|update|reset-password|delete-preview|delete|export` | 统一账号管理（普通用户与后台账号同一列表；`accounts.admins` / `accounts.users` 按目标账号角色二次校验） |
+| POST | `/api/v1/admin/accounts/mfa/reset` | 解绑指定后台账号 MFA（需 `accounts.admins`） |
+| POST | `/api/v1/admin/sessions/list`、`/api/v1/admin/sessions/revoke` | 全站会话管理（需 `ops.sessions`；列表仅返回展示指纹，踢下线写审计） |
+| POST | `/api/v1/admin/admins/list|create|update|reset-password|delete` | 旧管理员账号接口（保留兼容，需 `accounts.admins`） |
+| POST | `/api/v1/admin/users/*` | 旧普通用户接口（保留兼容，需 `accounts.users`） |
 | POST/PATCH/DELETE | `/api/v1/admin/resources|tools|wiki|...` | 后台 CRUD（需登录 + CSRF） |
 | POST | `/api/v1/admin/resources/releases/list`、`/api/v1/admin/resources/releases/replace` | 资源发布版本维护（需登录 + CSRF，整体替换幂等） |
 | POST | `/api/v1/admin/submissions/list`、`/detail`、`/review` | 资源投稿审核（`content.resources`）：通过按投稿字段生成资源（默认草稿，可 `publish=true` 直接发布） |
@@ -238,9 +254,10 @@ cp .env.example .env
 # SESSION_SECRET 用强随机值；SESSION_SECURE_COOKIE=true；DATABASE_URL 指向 compose 内服务
 
 # 构建并启动（前端、后端、Caddy、PostgreSQL）
+# 后端启动时默认自动应用未执行的迁移；如需在发布前显式检查，可执行下方 migrate
 docker compose -f deploy/compose.yaml --env-file .env up --build -d
 
-# 先执行迁移
+# （可选）显式执行迁移，便于在服务启动前确认变更结果
 docker compose -f deploy/compose.yaml exec backend /usr/local/bin/migrate
 
 # 初始化管理员
@@ -264,7 +281,10 @@ Caddy 自动申请 HTTPS 证书（生产环境将 `deploy/Caddyfile` 的 `:80` �
 ## 安全说明
 
 - 密码 Argon2id 加盐哈希存储；登录失败限流（5 次/15 分钟，IP 隔离）。
-- 管理员账号管理仅 `admin` 角色可用；改密、停用、改角色、重置密码、删除后，该账号所有会话立即失效。
+- 后台账号管理基于权限点：`accounts.admins` 管理后台账号并分配角色，`accounts.users` 管理普通用户；内置 `admin` 角色拥有全部权限点。普通用户可被提升为后台角色，提升后必须修改密码才能进入后台。
+- 前台登录仅接受普通用户；后台账号必须走 `/admin/auth/login`（含 MFA），避免绕过后台二次验证。
+- 改密、停用、改角色、重置密码、删除后，该账号所有会话立即失效；后台账号不可自助注销。
+- 系统管理提供全站会话管理（`ops.sessions`）：可查看普通用户与管理员的有效会话并按指纹踢下线，列表不回显 SessionID 原文，当前会话禁止自踢，操作写审计。
 - Cookie 会话 HttpOnly + SameSite；生产强制 Secure。
 - 写操作 CSRF 双重提交校验。
 - 链接检查内置 SSRF 防护（拒绝内网/回环/云元数据，重定向逐跳校验）。
@@ -281,11 +301,14 @@ Caddy 自动申请 HTTPS 证书（生产环境将 `deploy/Caddyfile` 的 `:80` �
 | CSRF 403 | 前端无 `X-CSRF-Token` 头，或 token 与会话不符 |
 | 前端访问接口 405 | 确认使用 POST（全站查询为 POST） |
 | 迁移文件改动不生效 | 迁移按版本号记录；新改动要新增序号文件，勿改已应用的 |
+| 启动报 `数据库自动迁移失败` | 检查数据库账号是否有 DDL 权限、`MIGRATIONS_DIR` 是否指向正确的迁移目录 |
+| 启动报 `未找到迁移目录` | 在 `backend` 目录启动，或通过 `MIGRATIONS_DIR` 指定绝对路径 |
+| 不需要启动时自动迁移 | 设置 `AUTO_MIGRATE=false`，改为发布流程中显式执行 `cmd/migrate` |
 
 ## 决策记录
 
 1. 查询接口全站 POST（用户确认）；SEO robots/sitemap 例外保持 GET。
-2. ORM 使用 GORM，数据库迁移仍用 SQL 文件（可回滚），不使用纯 AutoMigrate。
+2. ORM 使用 GORM，数据库迁移仍用 SQL 文件（可回滚），不使用纯 AutoMigrate；API 启动时自动执行待应用 SQL 迁移（`AUTO_MIGRATE=false` 可关闭）。
 3. 会话 MVP 用内存存储（单实例）；多实例部署需替换共享会话存储。
 4. 演示数据为自建整理（数据版本 demo-2026-01），来源标注在数据文件内。
 

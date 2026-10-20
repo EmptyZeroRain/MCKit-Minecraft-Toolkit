@@ -11,7 +11,10 @@ import type { AdminTableColumn } from '@/types/admin'
 import {
   createAchievementDef,
   fetchAchievementDefs,
+  fetchAdminUserAchievements,
+  grantUserAchievement,
   recalculateAchievements,
+  revokeUserAchievement,
   toggleAchievementDef,
   updateAchievementDef,
 } from '@/api/growth'
@@ -21,6 +24,7 @@ import {
   GROWTH_EVENT_LABELS,
   GROWTH_EVENT_TYPES,
   RARITY_LABELS,
+  type AdminUserAchievement,
   type GrowthAchievementDefinition,
   type GrowthAchievementInput,
 } from '@/types/growth'
@@ -34,6 +38,17 @@ const busyId = ref('')
 const recalcOpen = ref(false)
 const recalcUserId = ref('')
 const recalculating = ref(false)
+
+// 单用户成就授予 / 撤销。撤销为软删除，自动补算不会重新解锁。
+const userAchievements = ref<AdminUserAchievement[]>([])
+const userAchieveUserId = ref('')
+// 记录当前表格对应的目标用户，避免改了输入框后误操作上一批成就。
+const userAchieveLoadedFor = ref('')
+const userAchieveLoading = ref(false)
+const userAchieveError = ref('')
+const userAchieveNotice = ref('')
+const userAchieveBusy = ref('')
+const achievementActionReason = ref('')
 
 const showForm = ref(false)
 const saving = ref(false)
@@ -88,6 +103,14 @@ const columns: AdminTableColumn[] = [
   { key: 'version', label: '版本', width: '70px' },
   { key: 'enabled', label: '状态', width: '80px' },
   { key: 'action', label: '操作', align: 'right', width: '160px' },
+]
+
+const userColumns: AdminTableColumn[] = [
+  { key: 'name', label: '成就' },
+  { key: 'code', label: '编码', width: '180px' },
+  { key: 'reward_xp', label: '奖励', width: '70px' },
+  { key: 'status', label: '状态', width: '110px' },
+  { key: 'action', label: '操作', align: 'right', width: '150px' },
 ]
 
 function rarityLabel(r: string): string {
@@ -233,6 +256,87 @@ async function toggle(def: GrowthAchievementDefinition) {
   }
 }
 
+async function loadUserAchievements() {
+  userAchieveError.value = ''
+  userAchieveNotice.value = ''
+  userAchieveLoadedFor.value = ''
+  const target = userAchieveUserId.value.trim()
+  if (!target) {
+    userAchieveError.value = '请填写目标用户 ID'
+    return
+  }
+  userAchieveLoading.value = true
+  try {
+    userAchievements.value = await fetchAdminUserAchievements(target)
+    userAchieveLoadedFor.value = target
+  } catch (e) {
+    userAchievements.value = []
+    userAchieveError.value = e instanceof ApiError ? e.message : '用户成就加载失败'
+  } finally {
+    userAchieveLoading.value = false
+  }
+}
+
+async function grantAchievement(item: AdminUserAchievement) {
+  userAchieveError.value = ''
+  userAchieveNotice.value = ''
+  if (userAchieveLoadedFor.value !== userAchieveUserId.value.trim()) {
+    userAchieveError.value = '请先查询目标用户成就，再执行授予'
+    return
+  }
+  if (!achievementActionReason.value.trim()) {
+    userAchieveError.value = '请填写授予原因'
+    return
+  }
+  if (!window.confirm(`确定为该用户授予「${item.name}」吗？会按定义补发一次性奖励经验。`)) {
+    return
+  }
+  userAchieveBusy.value = item.achievement_id
+  try {
+    await grantUserAchievement(
+      userAchieveUserId.value.trim(),
+      item.achievement_id,
+      achievementActionReason.value.trim(),
+    )
+    await loadUserAchievements()
+    userAchieveNotice.value = `已授予「${item.name}」。`
+  } catch (e) {
+    userAchieveError.value = e instanceof ApiError ? e.message : '授予失败'
+  } finally {
+    userAchieveBusy.value = ''
+  }
+}
+
+async function revokeAchievement(item: AdminUserAchievement) {
+  userAchieveError.value = ''
+  userAchieveNotice.value = ''
+  if (userAchieveLoadedFor.value !== userAchieveUserId.value.trim()) {
+    userAchieveError.value = '请先查询目标用户成就，再执行撤销'
+    return
+  }
+  if (!achievementActionReason.value.trim()) {
+    userAchieveError.value = '请填写撤销原因'
+    return
+  }
+  if (!window.confirm(`确定撤销「${item.name}」吗？不会回收已发放的经验，自动补算也不会重新解锁。`)) {
+    return
+  }
+  userAchieveBusy.value = item.achievement_id
+  try {
+    await revokeUserAchievement(
+      userAchieveUserId.value.trim(),
+      item.achievement_id,
+      achievementActionReason.value.trim(),
+    )
+    await loadUserAchievements()
+    userAchieveNotice.value = `已撤销「${item.name}」。`
+  } catch (e) {
+    userAchieveError.value = e instanceof ApiError ? e.message : '撤销失败'
+  } finally {
+    userAchieveBusy.value = ''
+  }
+}
+
 async function confirmRecalculate() {
   recalculating.value = true
   error.value = ''
@@ -250,6 +354,88 @@ async function confirmRecalculate() {
 
 <template>
   <div>
+    <div class="card mb-5 grid gap-3 p-4 sm:grid-cols-4">
+      <h2 class="text-sm font-medium text-text-secondary sm:col-span-4">单用户成就授予 / 撤销</h2>
+      <p class="text-xs text-text-muted sm:col-span-4">
+        授予会按定义补发一次性奖励经验；撤销为软删除，不回收已发经验，自动补算不会重新解锁。
+      </p>
+      <label class="text-xs text-text-muted sm:col-span-2">
+        目标用户 ID（内部 UUID 或对外 ID）
+        <input
+          v-model="userAchieveUserId"
+          :class="inputClass"
+          type="text"
+          placeholder="UUID / U7K3M2QX9F"
+          @keyup.enter="loadUserAchievements"
+        />
+      </label>
+      <label class="text-xs text-text-muted sm:col-span-2">
+        操作原因（授予 / 撤销必填）
+        <input
+          v-model="achievementActionReason"
+          :class="inputClass"
+          type="text"
+          maxlength="500"
+          placeholder="如 活动补发 / 违规撤销"
+        />
+      </label>
+      <div class="flex items-center gap-2 sm:col-span-4">
+        <button
+          type="button"
+          class="rounded-md border border-border-light bg-ink-700 px-3 py-1.5 text-sm text-text-secondary transition hover:bg-ink-600"
+          :disabled="userAchieveLoading"
+          @click="loadUserAchievements"
+        >
+          查询用户成就
+        </button>
+        <span v-if="userAchieveLoading" class="text-xs text-text-muted">加载中…</span>
+      </div>
+      <p v-if="userAchieveError" class="text-xs text-danger-mc sm:col-span-4" role="alert">{{ userAchieveError }}</p>
+      <p v-if="userAchieveNotice" class="text-xs text-grass-400 sm:col-span-4" role="status">{{ userAchieveNotice }}</p>
+    </div>
+
+    <AdminTable
+      v-if="userAchievements.length && userAchieveLoadedFor === userAchieveUserId.trim()"
+      class="mb-5"
+      :columns="userColumns"
+      :rows="userAchievements"
+      :loading="userAchieveLoading"
+      row-key="achievement_id"
+      empty-text="暂无成就定义"
+    >
+      <template #cell-code="{ row }">
+        <span class="font-mono text-xs text-text-primary">{{ row.code }}</span>
+      </template>
+      <template #cell-reward_xp="{ row }">+{{ row.reward_xp }}</template>
+      <template #cell-status="{ row }">
+        <span v-if="row.revoked" class="text-danger-mc">已撤销</span>
+        <span v-else-if="row.unlocked" class="text-grass-300">已持有</span>
+        <span v-else class="text-text-muted">未解锁</span>
+      </template>
+      <template #cell-action="{ row }">
+        <div class="flex justify-end gap-2">
+          <button
+            v-if="!row.unlocked"
+            type="button"
+            class="rounded-md bg-grass-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-grass-500 disabled:opacity-50"
+            :disabled="userAchieveBusy === row.achievement_id"
+            @click="grantAchievement(row)"
+          >
+            {{ row.revoked ? '重新授予' : '授予' }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="rounded-md border border-danger-mc/40 px-2.5 py-1 text-xs text-danger-mc transition hover:bg-danger-mc/10 disabled:opacity-50"
+            :disabled="userAchieveBusy === row.achievement_id"
+            @click="revokeAchievement(row)"
+          >
+            撤销
+          </button>
+        </div>
+      </template>
+    </AdminTable>
+
     <div class="mb-4 flex items-center justify-between">
       <p class="text-xs text-text-muted">
         图标仅允许受控 HTTPS URL 或站内 / 路径；停用不影响已解锁记录。

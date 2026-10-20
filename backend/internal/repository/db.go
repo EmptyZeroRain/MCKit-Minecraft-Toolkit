@@ -55,9 +55,18 @@ type migration struct {
 	Down string
 }
 
+// migrationLockKey 迁移互斥锁的 advisory lock key。
+// 启动时自动迁移与手工执行 cmd/migrate 共用同一把锁，避免并发重复执行迁移。
+const migrationLockKey int64 = 2026102001
+
 // Migrate 顺序执行 migrations 目录中所有未应用的正向迁移。
 // 已应用的迁移通过 schema_migrations 表记录，重复执行安全。
 func Migrate(ctx context.Context, gormDB *gorm.DB, dir string) ([]string, error) {
+	release, err := acquireMigrationLock(ctx, gormDB)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := ensureMigrationTable(gormDB); err != nil {
 		return nil, err
 	}
@@ -86,6 +95,11 @@ func Migrate(ctx context.Context, gormDB *gorm.DB, dir string) ([]string, error)
 // MigrateTo 把数据库迁移到指定版本（可前进或回退）。
 // target 必须对应迁移目录中存在的版本；高于当前版本则前进，低于则回退。
 func MigrateTo(ctx context.Context, gormDB *gorm.DB, dir string, target int64) ([]string, error) {
+	release, err := acquireMigrationLock(ctx, gormDB)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := ensureMigrationTable(gormDB); err != nil {
 		return nil, err
 	}
@@ -140,6 +154,11 @@ func Rollback(ctx context.Context, gormDB *gorm.DB, dir string, steps int) ([]st
 	if steps <= 0 {
 		return nil, fmt.Errorf("回退步数必须为正数")
 	}
+	release, err := acquireMigrationLock(ctx, gormDB)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := ensureMigrationTable(gormDB); err != nil {
 		return nil, err
 	}
@@ -293,6 +312,28 @@ func collectMigrations(dir string) ([]migration, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
+}
+
+// acquireMigrationLock 获取数据库级迁移锁，返回释放函数。
+// 使用独立连接持有 advisory lock，不占用迁移事务连接；进程崩溃时连接关闭会自动释放。
+func acquireMigrationLock(ctx context.Context, gormDB *gorm.DB) (func(), error) {
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		return nil, fmt.Errorf("获取底层连接失败: %w", err)
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("获取迁移锁连接失败: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("获取迁移锁失败: %w", err)
+	}
+	return func() {
+		// 释放阶段使用独立 context，避免请求 context 已取消导致锁泄漏。
+		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+		_ = conn.Close()
+	}, nil
 }
 
 func ensureMigrationTable(gormDB *gorm.DB) error {

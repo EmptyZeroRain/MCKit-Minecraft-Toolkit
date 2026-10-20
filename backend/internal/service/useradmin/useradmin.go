@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"mckit/backend/internal/accountid"
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/domain"
 )
@@ -103,6 +104,7 @@ type ListFilter struct {
 // Item 列表条目：账号基础信息 + 个人数据计数。
 type Item struct {
 	ID            string     `json:"id"`
+	UserNo        string     `json:"user_no"`
 	Username      string     `json:"username"`
 	IsActive      bool       `json:"is_active"`
 	LastLoginAt   *time.Time `json:"last_login_at"`
@@ -148,6 +150,7 @@ type SeedItem struct {
 // 因此可一次性返回，无需再分页。
 type Detail struct {
 	ID            string         `json:"id"`
+	UserNo        string         `json:"user_no"`
 	Username      string         `json:"username"`
 	IsActive      bool           `json:"is_active"`
 	LastLoginAt   *time.Time     `json:"last_login_at"`
@@ -192,8 +195,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Item, error) {
 	if err != nil {
 		return nil, err
 	}
+	userNo, err := accountid.Generate()
+	if err != nil {
+		return nil, err
+	}
 	u := &domain.User{
 		Username:     username,
+		UserNo:       userNo,
 		PasswordHash: hash,
 		Role:         domain.RoleUser,
 		IsActive:     true,
@@ -203,6 +211,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Item, error) {
 	}
 	return &Item{
 		ID:          u.ID.String(),
+		UserNo:      u.UserNo,
 		Username:    u.Username,
 		IsActive:    u.IsActive,
 		LastLoginAt: u.LastLoginAt,
@@ -282,6 +291,7 @@ func (s *Service) Detail(ctx context.Context, id string) (*Detail, error) {
 
 	detail := &Detail{
 		ID:            u.ID.String(),
+		UserNo:        u.UserNo,
 		Username:      u.Username,
 		IsActive:      u.IsActive,
 		LastLoginAt:   u.LastLoginAt,
@@ -508,6 +518,7 @@ func (s *Service) attachCounts(ctx context.Context, users []domain.User) ([]Item
 		key := u.ID.String()
 		items = append(items, Item{
 			ID:            key,
+			UserNo:        u.UserNo,
 			Username:      u.Username,
 			IsActive:      u.IsActive,
 			LastLoginAt:   u.LastLoginAt,

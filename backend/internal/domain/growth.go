@@ -115,10 +115,10 @@ const (
 
 // 成就条件类型（后端允许列表，禁止任意代码执行条件）。
 const (
-	AchievementCondEventCount          = "event_count"           // 事件累计次数
+	AchievementCondEventCount           = "event_count"            // 事件累计次数
 	AchievementCondDistinctSubjectCount = "distinct_subject_count" // 去重目标数
-	AchievementCondLevelReached        = "level_reached"         // 达到等级
-	AchievementCondDailyTaskDays       = "daily_task_days"       // 完成任务的累计天数
+	AchievementCondLevelReached         = "level_reached"          // 达到等级
+	AchievementCondDailyTaskDays        = "daily_task_days"        // 完成任务的累计天数
 )
 
 // AchievementConditionTypes 全部合法成就条件类型。
@@ -148,9 +148,11 @@ type UserGrowth struct {
 	LifetimeEarnedXP   int64     `gorm:"column:lifetime_earned_xp;not null;default:0" json:"lifetime_earned_xp"`
 	LifetimeReversedXP int64     `gorm:"column:lifetime_reversed_xp;not null;default:0" json:"lifetime_reversed_xp"`
 	Level              int       `gorm:"column:level;not null;default:1" json:"level"`
-	Version            int64     `gorm:"column:version;not null;default:0" json:"version"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	// LevelOffset 人工等级偏移：有效等级 = 经验计算等级 + 偏移，经验变化时保留偏移。
+	LevelOffset int       `gorm:"column:level_offset;not null;default:0" json:"level_offset"`
+	Version     int64     `gorm:"column:version;not null;default:0" json:"version"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。
@@ -178,18 +180,18 @@ func (ExperienceLedger) TableName() string { return "experience_ledger" }
 
 // GrowthEventRecord 成长事件接收记录（幂等去重）。
 type GrowthEventRecord struct {
-	EventID      uuid.UUID  `gorm:"column:event_id;type:uuid;primaryKey" json:"event_id"`
-	EventType    string     `gorm:"column:event_type;size:100;not null" json:"event_type"`
-	ActorUserID  *uuid.UUID `gorm:"column:actor_user_id;type:uuid" json:"actor_user_id"`
-	SubjectType  string     `gorm:"column:subject_type;size:64;not null;default:''" json:"subject_type"`
-	SubjectID    string     `gorm:"column:subject_id;size:128;not null;default:''" json:"subject_id"`
-	SourceModule string     `gorm:"column:source_module;size:100;not null" json:"source_module"`
-	OccurredAt   time.Time  `gorm:"column:occurred_at;not null" json:"occurred_at"`
-	ProcessedAt  *time.Time `gorm:"column:processed_at" json:"processed_at"`
-	Status       string     `gorm:"column:status;size:20;not null;default:pending" json:"status"`
+	EventID      uuid.UUID   `gorm:"column:event_id;type:uuid;primaryKey" json:"event_id"`
+	EventType    string      `gorm:"column:event_type;size:100;not null" json:"event_type"`
+	ActorUserID  *uuid.UUID  `gorm:"column:actor_user_id;type:uuid" json:"actor_user_id"`
+	SubjectType  string      `gorm:"column:subject_type;size:64;not null;default:''" json:"subject_type"`
+	SubjectID    string      `gorm:"column:subject_id;size:128;not null;default:''" json:"subject_id"`
+	SourceModule string      `gorm:"column:source_module;size:100;not null" json:"source_module"`
+	OccurredAt   time.Time   `gorm:"column:occurred_at;not null" json:"occurred_at"`
+	ProcessedAt  *time.Time  `gorm:"column:processed_at" json:"processed_at"`
+	Status       string      `gorm:"column:status;size:20;not null;default:pending" json:"status"`
 	Payload      types.JSONB `gorm:"type:jsonb;not null;default:'{}'" json:"payload"`
-	ErrorMessage string     `gorm:"column:error_message;type:text;not null;default:''" json:"error_message"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ErrorMessage string      `gorm:"column:error_message;type:text;not null;default:''" json:"error_message"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 // TableName 指定表名。
@@ -271,41 +273,50 @@ func (UserDailyTask) TableName() string { return "user_daily_tasks" }
 
 // AchievementDefinition 成就定义（版本化）。
 type AchievementDefinition struct {
-	ID                  uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Code                string    `gorm:"size:100;not null;uniqueIndex" json:"code"`
-	Name                string    `gorm:"size:150;not null" json:"name"`
-	Description         string    `gorm:"type:text;not null;default:''" json:"description"`
-	Category            string    `gorm:"size:50;not null" json:"category"`
-	Rarity              string    `gorm:"size:30;not null;default:common" json:"rarity"`
-	IconURL             string    `gorm:"column:icon_url;type:text;not null;default:''" json:"icon_url"`
-	ConditionType       string    `gorm:"column:condition_type;size:100;not null" json:"condition_type"`
-	ConditionEventType  string    `gorm:"column:condition_event_type;size:100;not null;default:''" json:"condition_event_type"`
-	ConditionSubjectType string   `gorm:"column:condition_subject_type;size:64;not null;default:''" json:"condition_subject_type"`
-	TargetValue         int64     `gorm:"column:target_value;not null;default:1" json:"target_value"`
-	RewardXP            int       `gorm:"column:reward_xp;not null;default:0" json:"reward_xp"`
-	IsHidden            bool      `gorm:"column:is_hidden;not null;default:false" json:"is_hidden"`
-	Enabled             bool      `gorm:"not null;default:true" json:"enabled"`
-	Version             int       `gorm:"not null;default:1" json:"version"`
-	SortOrder           int       `gorm:"column:sort_order;not null;default:0" json:"sort_order"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                   uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Code                 string    `gorm:"size:100;not null;uniqueIndex" json:"code"`
+	Name                 string    `gorm:"size:150;not null" json:"name"`
+	Description          string    `gorm:"type:text;not null;default:''" json:"description"`
+	Category             string    `gorm:"size:50;not null" json:"category"`
+	Rarity               string    `gorm:"size:30;not null;default:common" json:"rarity"`
+	IconURL              string    `gorm:"column:icon_url;type:text;not null;default:''" json:"icon_url"`
+	ConditionType        string    `gorm:"column:condition_type;size:100;not null" json:"condition_type"`
+	ConditionEventType   string    `gorm:"column:condition_event_type;size:100;not null;default:''" json:"condition_event_type"`
+	ConditionSubjectType string    `gorm:"column:condition_subject_type;size:64;not null;default:''" json:"condition_subject_type"`
+	TargetValue          int64     `gorm:"column:target_value;not null;default:1" json:"target_value"`
+	RewardXP             int       `gorm:"column:reward_xp;not null;default:0" json:"reward_xp"`
+	IsHidden             bool      `gorm:"column:is_hidden;not null;default:false" json:"is_hidden"`
+	Enabled              bool      `gorm:"not null;default:true" json:"enabled"`
+	Version              int       `gorm:"not null;default:1" json:"version"`
+	SortOrder            int       `gorm:"column:sort_order;not null;default:0" json:"sort_order"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。
 func (AchievementDefinition) TableName() string { return "achievement_definitions" }
 
-// UserAchievement 用户已解锁成就（默认永久保留）。
+// UserAchievement 用户已解锁成就。
+//
+// 自动解锁记录默认永久保留；后台可手动授予或撤销。撤销采用软删除
+// （revoked_at + 操作人 + 原因），保留原始解锁快照用于审计。
 type UserAchievement struct {
-	ID                     uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	UserID                 uuid.UUID  `gorm:"column:user_id;type:uuid;not null" json:"user_id"`
-	AchievementID          uuid.UUID  `gorm:"column:achievement_id;type:uuid;not null" json:"achievement_id"`
-	AchievementCodeSnapshot string    `gorm:"column:achievement_code_snapshot;size:100;not null" json:"code"`
-	NameSnapshot           string     `gorm:"column:name_snapshot;size:150;not null" json:"name"`
-	DescriptionSnapshot    string     `gorm:"column:description_snapshot;type:text;not null;default:''" json:"description"`
-	DefinitionVersion      int        `gorm:"column:definition_version;not null;default:1" json:"definition_version"`
-	UnlockedAt             time.Time  `gorm:"column:unlocked_at;not null;default:now()" json:"unlocked_at"`
-	SourceEventID          *uuid.UUID `gorm:"column:source_event_id;type:uuid" json:"source_event_id"`
-	IsPublic               bool       `gorm:"column:is_public;not null;default:true" json:"is_public"`
+	ID                      uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	UserID                  uuid.UUID  `gorm:"column:user_id;type:uuid;not null" json:"user_id"`
+	AchievementID           uuid.UUID  `gorm:"column:achievement_id;type:uuid;not null" json:"achievement_id"`
+	AchievementCodeSnapshot string     `gorm:"column:achievement_code_snapshot;size:100;not null" json:"code"`
+	NameSnapshot            string     `gorm:"column:name_snapshot;size:150;not null" json:"name"`
+	DescriptionSnapshot     string     `gorm:"column:description_snapshot;type:text;not null;default:''" json:"description"`
+	DefinitionVersion       int        `gorm:"column:definition_version;not null;default:1" json:"definition_version"`
+	UnlockedAt              time.Time  `gorm:"column:unlocked_at;not null;default:now()" json:"unlocked_at"`
+	SourceEventID           *uuid.UUID `gorm:"column:source_event_id;type:uuid" json:"source_event_id"`
+	IsPublic                bool       `gorm:"column:is_public;not null;default:true" json:"is_public"`
+	// 后台控制字段只用于内部查询与审计，不随用户 / 公开成就接口返回。
+	GrantSource      string     `gorm:"column:grant_source;size:20;not null;default:automatic" json:"-"`
+	GrantedByAdminID *uuid.UUID `gorm:"column:granted_by_admin_id;type:uuid" json:"-"`
+	RevokedAt        *time.Time `gorm:"column:revoked_at" json:"-"`
+	RevokedByAdminID *uuid.UUID `gorm:"column:revoked_by_admin_id;type:uuid" json:"-"`
+	RevokeReason     string     `gorm:"column:revoke_reason;size:500;not null;default:''" json:"-"`
 }
 
 // TableName 指定表名。
@@ -326,17 +337,17 @@ func (AchievementProgress) TableName() string { return "achievement_progress" }
 
 // GrowthAuditLog 成长审计日志（人工调整 / 冲正 / 规则修改 / 历史补算等）。
 type GrowthAuditLog struct {
-	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	OperatorUserID *uuid.UUID `gorm:"column:operator_user_id;type:uuid" json:"operator_user_id"`
-	Action         string     `gorm:"size:100;not null" json:"action"`
-	TargetUserID   *uuid.UUID `gorm:"column:target_user_id;type:uuid" json:"target_user_id"`
-	EntityType     string     `gorm:"column:entity_type;size:100;not null" json:"entity_type"`
-	EntityID       string     `gorm:"column:entity_id;size:128;not null;default:''" json:"entity_id"`
-	Reason         string     `gorm:"type:text;not null" json:"reason"`
+	ID             uuid.UUID   `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	OperatorUserID *uuid.UUID  `gorm:"column:operator_user_id;type:uuid" json:"operator_user_id"`
+	Action         string      `gorm:"size:100;not null" json:"action"`
+	TargetUserID   *uuid.UUID  `gorm:"column:target_user_id;type:uuid" json:"target_user_id"`
+	EntityType     string      `gorm:"column:entity_type;size:100;not null" json:"entity_type"`
+	EntityID       string      `gorm:"column:entity_id;size:128;not null;default:''" json:"entity_id"`
+	Reason         string      `gorm:"type:text;not null" json:"reason"`
 	BeforeData     types.JSONB `gorm:"column:before_data;type:jsonb" json:"before_data,omitempty"`
 	AfterData      types.JSONB `gorm:"column:after_data;type:jsonb" json:"after_data,omitempty"`
-	RequestID      string     `gorm:"column:request_id;size:128;not null;default:''" json:"request_id"`
-	CreatedAt      time.Time  `json:"created_at"`
+	RequestID      string      `gorm:"column:request_id;size:128;not null;default:''" json:"request_id"`
+	CreatedAt      time.Time   `json:"created_at"`
 }
 
 // TableName 指定表名。

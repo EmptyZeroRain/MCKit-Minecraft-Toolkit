@@ -91,6 +91,9 @@ describe('后台信息架构合并', () => {
     { path: '/admin/taxonomy', name: 'admin-taxonomy' },
     { path: '/admin/review', name: 'admin-review' },
     { path: '/admin/insights', name: 'admin-insights' },
+    { path: '/admin/engagement', name: 'admin-engagement' },
+    { path: '/admin/content-health', name: 'admin-content-health' },
+    { path: '/admin/ops', name: 'admin-ops' },
     { path: '/admin/accounts', name: 'admin-accounts' },
   ] as const
 
@@ -101,27 +104,46 @@ describe('后台信息架构合并', () => {
   })
 
   const legacy = [
-    { path: '/admin/categories', name: 'admin-taxonomy', tab: 'categories' },
-    { path: '/admin/tags', name: 'admin-taxonomy', tab: 'tags' },
-    { path: '/admin/redstone', name: 'admin-review', tab: 'redstone' },
-    { path: '/admin/mods', name: 'admin-review', tab: 'mods' },
-    { path: '/admin/analytics', name: 'admin-insights', tab: 'analytics' },
-    { path: '/admin/search-terms', name: 'admin-insights', tab: 'search-terms' },
-    { path: '/admin/admins', name: 'admin-accounts', tab: 'admins' },
-    { path: '/admin/users', name: 'admin-accounts', tab: 'users' },
+    { path: '/admin/categories', name: 'admin-taxonomy', query: { tab: 'categories' } },
+    { path: '/admin/tags', name: 'admin-taxonomy', query: { tab: 'tags' } },
+    { path: '/admin/redstone', name: 'admin-review', query: { tab: 'redstone' } },
+    { path: '/admin/mods', name: 'admin-review', query: { tab: 'mods' } },
+    { path: '/admin/analytics', name: 'admin-insights', query: { tab: 'analytics' } },
+    { path: '/admin/search-terms', name: 'admin-insights', query: { tab: 'search-terms' } },
+    { path: '/admin/content-tasks', name: 'admin-insights', query: { tab: 'content-tasks' } },
+    { path: '/admin/feedback', name: 'admin-engagement', query: { tab: 'feedback' } },
+    { path: '/admin/community', name: 'admin-engagement', query: { tab: 'community' } },
+    { path: '/admin/data-quality', name: 'admin-content-health', query: { tab: 'quality' } },
+    { path: '/admin/link-health', name: 'admin-content-health', query: { tab: 'links' } },
+    { path: '/admin/alerts', name: 'admin-ops', query: { tab: 'alerts' } },
+    { path: '/admin/jobs', name: 'admin-ops', query: { tab: 'jobs' } },
+    { path: '/admin/mcsrc-cache', name: 'admin-ops', query: { tab: 'mcsrc' } },
+    { path: '/admin/admins', name: 'admin-accounts', query: { scope: 'admin' } },
+    { path: '/admin/users', name: 'admin-accounts', query: { scope: 'user' } },
+    { path: '/admin/roles', name: 'admin-accounts', query: { tab: 'roles' } },
   ] as const
 
-  it.each(legacy)('旧入口 $path 重定向到 $name?tab=$tab', async ({ path, name, tab }) => {
+  it.each(legacy)('旧入口 $path 重定向到 $name 并携带查询参数', async ({ path, name, query }) => {
     await router.push(path)
     await router.isReady()
     expect(router.currentRoute.value.name).toBe(name)
-    expect(router.currentRoute.value.query.tab).toBe(tab)
+    for (const [key, value] of Object.entries(query)) {
+      expect(router.currentRoute.value.query[key]).toBe(value)
+    }
   })
 
-  it('新增「内容建设任务」页已接线（gj.md §8.3）', async () => {
-    await router.push('/admin/content-tasks')
+  it('新增合并页「用户互动」「内容健康」「系统运维」已接线', async () => {
+    for (const path of ['/admin/engagement', '/admin/content-health', '/admin/ops']) {
+      await router.push(path)
+      await router.isReady()
+      expect(router.currentRoute.value.name).not.toBe('not-found')
+    }
+  })
+
+  it('系统管理新增「会话管理」路由已接线', async () => {
+    await router.push('/admin/sessions')
     await router.isReady()
-    expect(router.currentRoute.value.name).toBe('admin-content-tasks')
+    expect(router.currentRoute.value.name).toBe('admin-sessions')
   })
 })
 

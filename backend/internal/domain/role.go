@@ -30,6 +30,8 @@ const (
 	PermContentCategories = "content.categories"
 	PermContentTags       = "content.tags"
 	PermContentFeedback   = "content.feedback"
+	// PermContentCommunity 社区内容审核（帖子隐藏 / 删除、留言删除）。
+	PermContentCommunity = "content.community"
 
 	PermReviewRedstone = "review.redstone"
 	PermReviewMods     = "review.mods"
@@ -48,10 +50,14 @@ const (
 	PermOpsMCsrc        = "ops.mcsrc"
 	// PermOpsGrowth 用户成长（经验规则 / 等级 / 每日任务 / 成就 / 人工调整与冲正）。
 	PermOpsGrowth = "ops.growth"
+	// PermOpsGifts 礼物钱包（余额查询 / 受控增减 / 流水审计）。
+	PermOpsGifts = "ops.gifts"
 	// PermOpsJobs 后台运维任务（入队 / 重试 / 取消 / 查看失败详情）。
 	PermOpsJobs = "ops.jobs"
 	// PermOpsAlerts 运营告警中心（告警列表 / 确认 / 关闭 / 手动评估）。
 	PermOpsAlerts = "ops.alerts"
+	// PermOpsSessions 全站会话管理（查看普通用户 / 管理员会话并踢下线）。
+	PermOpsSessions = "ops.sessions"
 )
 
 // Permission 单个权限点（key 为存储值，label 为中文展示名）。
@@ -79,6 +85,7 @@ var PermissionGroups = []PermissionGroup{
 			{PermContentCategories, "分类管理"},
 			{PermContentTags, "标签管理"},
 			{PermContentFeedback, "反馈管理"},
+			{PermContentCommunity, "社区管理"},
 		},
 	},
 	{
@@ -110,15 +117,17 @@ var PermissionGroups = []PermissionGroup{
 			{PermOpsLinkHealth, "链接健康"},
 			{PermOpsMCsrc, "MC 源码库"},
 			{PermOpsGrowth, "用户成长"},
+			{PermOpsGifts, "礼物钱包"},
 			{PermOpsJobs, "后台任务"},
 			{PermOpsAlerts, "运营告警"},
+			{PermOpsSessions, "会话管理"},
 		},
 	},
 }
 
 // AllPermissions 全部权限点（内置 admin 角色的权限集合）。
 func AllPermissions() []string {
-	out := make([]string, 0, 21)
+	out := make([]string, 0, 24)
 	for _, g := range PermissionGroups {
 		for _, p := range g.Permissions {
 			out = append(out, p.Key)
@@ -144,7 +153,7 @@ func IsValidPermission(key string) bool {
 // （避免角色数据异常导致后台完全不可管理）。
 var builtinRolePermissions = map[string][]string{
 	RoleAdmin:  AllPermissions(),
-	RoleEditor: {PermContentResources, PermContentTools, PermContentWiki, PermContentCategories, PermContentTags, PermContentFeedback},
+	RoleEditor: {PermContentResources, PermContentTools, PermContentWiki, PermContentCategories, PermContentTags, PermContentFeedback, PermContentCommunity},
 	RoleUser:   {},
 }
 

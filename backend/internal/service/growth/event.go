@@ -226,7 +226,7 @@ func lockGrowth(tx *gorm.DB, userID uuid.UUID) (*domain.UserGrowth, error) {
 		return nil, err
 	}
 	var g domain.UserGrowth
-	if err := tx.Raw(`SELECT user_id, current_xp, lifetime_earned_xp, lifetime_reversed_xp, level, version
+	if err := tx.Raw(`SELECT user_id, current_xp, lifetime_earned_xp, lifetime_reversed_xp, level, level_offset, version
 		FROM user_growth WHERE user_id = ? FOR UPDATE`, userID).Scan(&g).Error; err != nil {
 		return nil, err
 	}
@@ -246,12 +246,12 @@ func (s *Service) recalcLevel(tx *gorm.DB, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	view := computeLevel(levels, g.CurrentXP)
-	if view.Level == g.Level {
+	level := effectiveLevel(levels, g.CurrentXP, g.LevelOffset)
+	if level == g.Level {
 		return nil
 	}
 	return tx.Model(&domain.UserGrowth{}).Where("user_id = ?", userID).
-		Update("level", view.Level).Error
+		Update("level", level).Error
 }
 
 // loadLevels 读取全部等级（按阈值升序）。

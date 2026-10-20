@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +63,21 @@ func TestHealthCheckGetMethodNotAllowed(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET 访问应返回 405，实际 %d", rec.Code)
+	}
+}
+
+func TestResolveMigrationsDir(t *testing.T) {
+	dir, err := resolveMigrationsDir("migrations")
+	if err != nil {
+		t.Fatalf("应能从包目录向上找到迁移目录: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(dir), "backend/migrations") {
+		t.Fatalf("迁移目录定位异常: %s", dir)
+	}
+
+	missing := filepath.Join(t.TempDir(), "not-exists")
+	if _, err := resolveMigrationsDir(missing); err == nil {
+		t.Fatal("绝对路径不存在时应报错")
 	}
 }
 

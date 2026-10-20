@@ -71,18 +71,19 @@ func (s *Service) Write(r *http.Request, e Entry) {
 // SecurityActionPrefixes 与账号安全直接相关的动作前缀。
 //
 // 「安全事件视图」只筛这些动作（登录、改密、MFA、会话撤销），
-// 避免把内容审核等业务操作混进安全审计。
+// 避免把内容审核等业务操作混进安全审计。session.admin_revoke 为后台强制踢下线。
 var SecurityActionPrefixes = []string{
 	"admin.login",
 	"admin.password",
 	"admin.mfa",
 	"admin.revoke_sessions",
+	"session.admin_revoke",
 }
 
 // ListFilter 审计日志查询筛选。
 type ListFilter struct {
-	ActorID  string
-	Action   string
+	ActorID string
+	Action  string
 	// ObjectType 对象类型精确匹配（如 resource / admin_job / ops_alert）。
 	ObjectType string
 	// Result 结果精确匹配：success / failure。

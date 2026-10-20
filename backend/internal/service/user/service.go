@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"mckit/backend/internal/accountid"
 	"mckit/backend/internal/auth"
 	"mckit/backend/internal/domain"
 )
@@ -47,6 +48,9 @@ var (
 	ErrWeakPassword = auth.ErrWeakPassword
 	ErrBadKind      = errors.New("不支持的对象类型")
 	ErrBadInput     = errors.New("输入不合法")
+	// ErrAdminSelfDelete 后台账号不能在个人中心自助注销，避免绕过「至少保留一名
+	// 启用 admin」的保护；必须由其他管理员在后台账号管理中删除。
+	ErrAdminSelfDelete = errors.New("后台账号不能在个人中心注销，请由其他管理员在后台账号管理中删除")
 )
 
 // MaxNicknameLength 昵称长度上限（按 Unicode 字符计，与 accounts.nickname 列宽、
@@ -73,6 +77,9 @@ type Service struct {
 	throttle *auth.LoginThrottle
 	// policy 普通用户密码策略（默认 DefaultUserPolicy，可由装配层按配置覆盖）。
 	policy auth.PasswordPolicy
+	// adminPolicy 后台账号密码策略：后台账号使用前台自助改密时按此校验，
+	// 避免管理员通过前台把密码改成低于后台要求的长度。
+	adminPolicy auth.PasswordPolicy
 }
 
 // NewService 创建用户服务。maxLoginTries / loginWindowSeconds 控制登录限流。
@@ -84,10 +91,11 @@ func NewService(repo Repo, sessions auth.SessionStore, maxLoginTries, loginWindo
 		loginWindowSeconds = 900
 	}
 	return &Service{
-		repo:     repo,
-		sessions: sessions,
-		throttle: auth.NewLoginThrottle(maxLoginTries, time.Duration(loginWindowSeconds)*time.Second),
-		policy:   auth.DefaultUserPolicy(),
+		repo:        repo,
+		sessions:    sessions,
+		throttle:    auth.NewLoginThrottle(maxLoginTries, time.Duration(loginWindowSeconds)*time.Second),
+		policy:      auth.DefaultUserPolicy(),
+		adminPolicy: auth.DefaultAdminPolicy(),
 	}
 }
 
@@ -95,6 +103,20 @@ func NewService(repo Repo, sessions auth.SessionStore, maxLoginTries, loginWindo
 func (s *Service) WithPasswordPolicy(p auth.PasswordPolicy) *Service {
 	s.policy = p
 	return s
+}
+
+// WithAdminPasswordPolicy 覆盖后台账号密码策略（前台自助改密时按角色选择）。
+func (s *Service) WithAdminPasswordPolicy(p auth.PasswordPolicy) *Service {
+	s.adminPolicy = p
+	return s
+}
+
+// policyFor 按账号角色返回密码策略：普通用户 8 位口径，后台账号沿用后台策略。
+func (s *Service) policyFor(role string) auth.PasswordPolicy {
+	if role == domain.RoleUser {
+		return s.policy
+	}
+	return s.adminPolicy
 }
 
 // LoginResult 登录成功返回的会话信息。
@@ -151,8 +173,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*domain.User,
 	if err != nil {
 		return nil, err
 	}
+	userNo, err := accountid.Generate()
+	if err != nil {
+		return nil, err
+	}
 	u := &domain.User{
 		Username:     username,
+		UserNo:       userNo,
 		Nickname:     nickname,
 		Email:        email,
 		PasswordHash: hash,
@@ -190,6 +217,13 @@ func (s *Service) Login(ctx context.Context, identifier, password, ip string) (*
 		}
 		return nil, err
 	}
+	// 前台登录只接受普通用户：后台账号必须走 /admin/auth/login，
+	// 否则会绕过后台的 MFA 与登录审计。统一返回凭证错误，不泄露账号身份。
+	// 放在密码校验之后，避免通过响应耗时差异枚举后台账号。
+	if u.Role != domain.RoleUser {
+		s.throttle.RecordFailure(identifier, ip)
+		return &LoginResult{Remaining: s.throttle.Remaining(identifier, ip)}, auth.ErrCredentials
+	}
 
 	s.throttle.RecordSuccess(identifier, ip)
 
@@ -207,7 +241,7 @@ func (s *Service) Login(ctx context.Context, identifier, password, ip string) (*
 		SessionID: sessionID,
 		AccountID: u.ID.String(),
 		Username:  u.Username,
-		Role:      domain.RoleUser,
+		Role:      u.Role,
 		CSRFToken: csrfToken,
 		ExpiresAt: expiresAt,
 	}
@@ -249,7 +283,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 		}
 		return err
 	}
-	if err := auth.ValidatePassword(newPassword, s.policy, u.Username); err != nil {
+	// 按账号角色选择密码策略：后台账号从后台页面或前台页面改密都必须满足
+	// 后台最小长度，避免借前台绕过更强的密码要求。
+	if err := auth.ValidatePassword(newPassword, s.policyFor(u.Role), u.Username); err != nil {
 		return err
 	}
 	hash, err := auth.HashPassword(newPassword)
@@ -296,6 +332,11 @@ func (s *Service) DeleteAccount(ctx context.Context, userID, password string) er
 	}
 	if u == nil {
 		return auth.ErrCredentials
+	}
+	// 后台账号不走自助注销：必须由其他管理员在后台处理，
+	// 以保留「至少一名启用 admin」的最后防线。
+	if u.Role != domain.RoleUser {
+		return ErrAdminSelfDelete
 	}
 	if err := auth.VerifyPassword(u.PasswordHash, password); err != nil {
 		if errors.Is(err, auth.ErrInvalidPassword) {

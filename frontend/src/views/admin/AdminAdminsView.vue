@@ -351,6 +351,7 @@ onMounted(() => {
         <table class="w-full min-w-[760px] text-left text-sm">
           <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
             <tr>
+              <th scope="col" class="px-4 py-2.5">用户 ID</th>
               <th scope="col" class="px-4 py-2.5">用户名</th>
               <th scope="col" class="px-4 py-2.5">角色</th>
               <th scope="col" class="px-4 py-2.5">状态</th>
@@ -361,6 +362,7 @@ onMounted(() => {
           </thead>
           <tbody class="divide-y divide-border-dark">
             <tr v-for="item in items" :key="item.id" class="hover:bg-ink-800/60">
+              <td class="px-4 py-3 font-mono text-xs text-text-secondary">{{ item.user_no || '—' }}</td>
               <td class="px-4 py-3">
                 <span class="font-medium text-text-primary">{{ item.username }}</span>
                 <span v-if="isSelf(item)" class="ml-2 rounded bg-grass-500/15 px-1.5 py-0.5 text-xs text-grass-300">我</span>

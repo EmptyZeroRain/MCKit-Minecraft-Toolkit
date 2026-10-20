@@ -357,6 +357,7 @@ onMounted(load)
         <table class="w-full min-w-[1040px] text-left text-sm">
           <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
             <tr>
+              <th scope="col" class="px-4 py-2.5">用户 ID</th>
               <th scope="col" class="px-4 py-2.5">用户名</th>
               <th scope="col" class="px-4 py-2.5">状态</th>
               <th scope="col" class="px-4 py-2.5">注册</th>
@@ -369,6 +370,7 @@ onMounted(load)
           </thead>
           <tbody class="divide-y divide-border-dark">
             <tr v-for="item in items" :key="item.id" class="hover:bg-ink-800/60">
+              <td class="px-4 py-3 font-mono text-xs text-text-secondary">{{ item.user_no }}</td>
               <td class="px-4 py-3 font-medium text-text-primary">{{ item.username }}</td>
               <td class="px-4 py-3">
                 <span
@@ -516,6 +518,7 @@ onMounted(load)
                 </span>
               </h2>
               <p class="mt-1 text-xs text-text-muted">
+                用户 ID <span class="font-mono">{{ detailTarget.user_no }}</span> ·
                 注册 {{ timeAgo(detailTarget.created_at) }} ·
                 最后登录 {{ detailTarget.last_login_at ? timeAgo(detailTarget.last_login_at) : '从未登录' }}
               </p>

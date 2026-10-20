@@ -105,6 +105,7 @@ export interface GrowthUserAchievement {
 /** 公开个人主页成长摘要（不含经验流水与登录信息） */
 export interface GrowthPublicProfile {
   user_id: string
+  user_no: string
   username: string
   nickname: string
   avatar_url: string
@@ -191,6 +192,13 @@ export interface GrowthLevel {
   enabled: boolean
   created_at?: string
   updated_at?: string
+}
+
+/** 新增等级入参（等级号由服务端追加到最高级之后） */
+export interface GrowthLevelCreateInput {
+  threshold_xp: number
+  title: string
+  enabled: boolean
 }
 
 /** 每日任务定义 */
@@ -383,4 +391,118 @@ export const RARITY_LABELS: Record<string, string> = {
   rare: '稀有',
   epic: '史诗',
   legendary: '传说',
+}
+
+/** 单用户等级调整入参（delta_level 可负；不修改等级定义本身） */
+export interface AdjustLevelInput {
+  target_user_id: string
+  delta_level: number
+  reason: string
+  request_key?: string
+}
+
+/** 单用户等级调整结果 */
+export interface LevelAdjustResult {
+  user_id: string
+  base_level: number
+  level_offset: number
+  level: number
+  level_title: string
+  delta_level: number
+}
+
+/** 后台查看某用户成就的持有 / 撤销状态 */
+export interface AdminUserAchievement {
+  achievement_id: string
+  code: string
+  name: string
+  category: string
+  rarity: string
+  enabled: boolean
+  reward_xp: number
+  unlocked: boolean
+  revoked: boolean
+  grant_source: string
+  unlocked_at: string | null
+  revoked_at: string | null
+  revoke_reason: string
+}
+
+/** 后台成长用户摘要 */
+export interface AdminGrowthUserSummary {
+  user_id: string
+  user_no: string
+  username: string
+  nickname: string
+  role: string
+  is_active: boolean
+  level: number
+  level_title: string
+  current_xp: number
+  lifetime_earned_xp: number
+  lifetime_reversed_xp: number
+  achievement_count: number
+  gift_balance: number
+  gift_general_balance: number
+  gift_checkin_balance: number
+  created_at: string
+  updated_at: string | null
+}
+
+/** 后台用户详情中的已解锁成就 */
+export interface AdminGrowthAchievement {
+  id: string
+  code: string
+  name: string
+  description: string
+  category: string
+  rarity: string
+  reward_xp: number
+  unlocked_at: string
+  grant_source: string
+  is_public: boolean
+  definition_id: string
+}
+
+/** 后台用户详情中的礼物币流水 */
+export interface AdminGiftLedgerItem {
+  id: string
+  amount: number
+  coin_type: 'general' | 'checkin'
+  balance_after: number
+  event_type: string
+  source_type: string
+  source_id: string
+  reason: string
+  created_at: string
+}
+
+/** 后台用户详情中的成长审计日志 */
+export interface AdminGrowthAuditItem {
+  id: string
+  action: string
+  entity_type: string
+  entity_id: string
+  reason: string
+  operator_user_id: string
+  created_at: string
+}
+
+/** 后台单用户成长详情（树状展示数据源） */
+export interface AdminGrowthUserDetail {
+  user: AdminGrowthUserSummary
+  base_level: number
+  level_offset: number
+  next_level_xp: number | null
+  xp_to_next_level: number
+  level_progress_percent: number
+  is_max_level: boolean
+  achievement_total: number
+  experience_total: number
+  gift_total: number
+  audit_total: number
+  experience: GrowthLedgerItem[]
+  achievements: AdminGrowthAchievement[]
+  gifts: AdminGiftLedgerItem[]
+  audits: AdminGrowthAuditItem[]
 }

@@ -222,13 +222,14 @@ func (h *UserAdminHandler) Export(w http.ResponseWriter, r *http.Request) {
 	// 前置 UTF-8 BOM，保证 Excel 正确识别中文。
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"用户名", "状态", "注册时间", "最后登录", "收藏数", "最近使用数", "常用种子数"})
+	_ = cw.Write([]string{"用户ID", "用户名", "状态", "注册时间", "最后登录", "收藏数", "最近使用数", "常用种子数"})
 	for _, it := range items {
 		last := ""
 		if it.LastLoginAt != nil {
 			last = it.LastLoginAt.UTC().Format(time.RFC3339)
 		}
 		_ = cw.Write([]string{
+			csvSafe(it.UserNo),
 			csvSafe(it.Username),
 			statusLabel(it.IsActive),
 			it.CreatedAt.UTC().Format(time.RFC3339),

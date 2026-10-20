@@ -234,6 +234,48 @@ func (s *Service) ListSessions(ctx context.Context, accountID string) ([]Session
 	return s.sessions.ListByAccountID(ctx, accountID)
 }
 
+// ListAllSessions 列出全站有效会话（后台会话管理，含普通用户与管理员）。
+func (s *Service) ListAllSessions(ctx context.Context, f SessionListFilter) ([]Session, int64, error) {
+	return s.sessions.ListAll(ctx, normalizeSessionListFilter(f))
+}
+
+// RevokeSessionByFingerprint 按展示指纹定位并删除单个会话。
+//
+// 不向前端暴露会话 ID 原文，撤销时逐页扫描有效会话比对指纹；该操作低频，
+// 扫描成本可接受。keepSessionID 非空时拒绝撤销当前会话，避免管理员误踢自己。
+func (s *Service) RevokeSessionByFingerprint(ctx context.Context, fingerprint, keepSessionID string) (*Session, error) {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	if len(fingerprint) != sessionFingerprintHexLength {
+		return nil, ErrSessionNotFound
+	}
+	const scanPageSize = 100
+	for page := 1; ; page++ {
+		rows, total, err := s.sessions.ListAll(ctx, SessionListFilter{
+			Page: page, PageSize: scanPageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			sess := rows[i]
+			if SessionFingerprint(sess.SessionID) != fingerprint {
+				continue
+			}
+			if keepSessionID != "" && sess.SessionID == keepSessionID {
+				return &sess, ErrCannotRevokeCurrent
+			}
+			if err := s.sessions.Delete(ctx, sess.SessionID); err != nil {
+				return nil, err
+			}
+			return &sess, nil
+		}
+		if int64(page*scanPageSize) >= total {
+			break
+		}
+	}
+	return nil, ErrSessionNotFound
+}
+
 // RevokeOtherSessions 注销账号除 keepSessionID 外的全部会话，返回注销条数。
 func (s *Service) RevokeOtherSessions(ctx context.Context, accountID, keepSessionID string) (int, error) {
 	sessions, err := s.sessions.ListByAccountID(ctx, accountID)
