@@ -126,11 +126,12 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("覆盖期间调整经验失败: %v", err)
 	}
-	if err := gdb.Where("user_id = ?", xpUser.ID).First(&g).Error; err != nil {
+	var xpGrowth domain.UserGrowth
+	if err := gdb.Where("user_id = ?", xpUser.ID).First(&xpGrowth).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.CurrentXP != 5000 || g.Level != 5 {
-		t.Fatalf("覆盖期间经验应累积且等级保持 Lv.5，实际 xp=%d level=%d", g.CurrentXP, g.Level)
+	if xpGrowth.CurrentXP != 5000 || xpGrowth.Level != 5 {
+		t.Fatalf("覆盖期间经验应累积且等级保持 Lv.5，实际 xp=%d level=%d", xpGrowth.CurrentXP, xpGrowth.Level)
 	}
 
 	// 超出等级范围应拒绝，且不写入。
