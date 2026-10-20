@@ -119,6 +119,52 @@ describe('成长中心页', () => {
     vi.clearAllMocks()
   })
 
+  it('不展示「均由服务端判定」的说明文案', async () => {
+    mockSuccess()
+    const wrapper = await mountView()
+    expect(wrapper.text()).not.toContain('经验、等级、任务与成就均由服务端判定')
+    expect(wrapper.text()).toContain('成长中心')
+  })
+
+  it('访客阶段展示活跃天数，不展示经验升级目标', async () => {
+    mockSuccess()
+    ;(fetchGrowthOverview as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...overview,
+      level: 0,
+      level_title: '访客',
+      next_level_xp: null,
+      xp_to_next_level: 0,
+      level_progress_percent: 42,
+      active_days: 3,
+    })
+    const wrapper = await mountView()
+    const text = wrapper.text()
+
+    expect(text).toContain('Lv.0 · 访客')
+    expect(text).toContain('访客阶段：活跃 3/7 天')
+    expect(text).not.toContain('距下一级还需')
+    expect(text).toContain('42%')
+  })
+
+  it('人工覆盖等级时展示覆盖说明，不展示自动升级目标', async () => {
+    mockSuccess()
+    ;(fetchGrowthOverview as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...overview,
+      level: 2,
+      level_title: '方块学徒',
+      next_level_xp: null,
+      xp_to_next_level: 0,
+      level_progress_percent: 100,
+      is_level_overridden: true,
+    })
+    const wrapper = await mountView()
+    const text = wrapper.text()
+
+    expect(text).toContain('人工覆盖')
+    expect(text).toContain('当前等级由管理员调整，经验继续累积但不自动升级')
+    expect(text).not.toContain('距下一级还需')
+  })
+
   it('展示等级、经验、进度与今日数据', async () => {
     mockSuccess()
     const wrapper = await mountView()

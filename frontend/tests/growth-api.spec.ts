@@ -13,10 +13,10 @@ import {
   adjustUserXP,
   createAchievementDef,
   createDailyTaskDef,
-  createGrowthLevel,
+  createGrowthLevelTitle,
   createGrowthRule,
   deleteDailyTaskDef,
-  deleteGrowthLevel,
+  deleteGrowthLevelTitle,
   deleteGrowthRule,
   fetchAchievementDefs,
   fetchAdminGrowthLedger,
@@ -27,7 +27,8 @@ import {
   fetchGrowthDailyTaskHistory,
   fetchGrowthDailyTasks,
   fetchGrowthLedger,
-  fetchGrowthLevels,
+  fetchGrowthLevelConfig,
+  fetchGrowthLevelTitles,
   fetchGrowthOverview,
   fetchGrowthRules,
   fetchPublicAchievements,
@@ -40,7 +41,8 @@ import {
   toggleGrowthRule,
   updateAchievementDef,
   updateDailyTaskDef,
-  updateGrowthLevel,
+  updateGrowthLevelConfig,
+  updateGrowthLevelTitle,
   updateGrowthRule,
 } from '@/api/growth'
 
@@ -119,8 +121,13 @@ describe('growth API · 管理端（http）', () => {
     await fetchGrowthRules()
     expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/rules/list', {})
 
-    await fetchGrowthLevels()
-    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/list', {})
+    httpMock.post.mockResolvedValue({ data: { data: { max_level: 9999, step_xp: 100 } } })
+    await fetchGrowthLevelConfig()
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/config', {})
+
+    httpMock.post.mockResolvedValue({ data: { data: { items: [] } } })
+    await fetchGrowthLevelTitles()
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/level-titles/list', {})
 
     await fetchDailyTaskDefs()
     expect(httpMock.post).toHaveBeenCalledWith('/admin/daily-tasks/list', {})
@@ -174,41 +181,57 @@ describe('growth API · 管理端（http）', () => {
     expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/rules/delete', { id: 'r1' })
   })
 
-  it('等级更新 / 重算、任务与成就定义管理路径正确', async () => {
+  it('等级曲线 / 称号规则 / 重算、任务与成就定义管理路径正确', async () => {
     httpMock.post.mockResolvedValue({ data: { data: { fixed: 2 } } })
     const fixed = await recalculateGrowthLevels()
     expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/recalculate', {})
     expect(fixed).toBe(2)
 
-    httpMock.post.mockResolvedValue({ data: { data: null } })
-    await updateGrowthLevel({ level: 3, threshold_xp: 300, title: '探索者', enabled: true })
-    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/update', {
-      level: 3,
-      threshold_xp: 300,
+    httpMock.post.mockResolvedValue({ data: { data: { fixed: 4 } } })
+    const curveFixed = await updateGrowthLevelConfig({ max_level: 5000, step_xp: 200 })
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/config/update', {
+      max_level: 5000,
+      step_xp: 200,
+    })
+    expect(curveFixed).toBe(4)
+
+    httpMock.post.mockResolvedValue({
+      data: { data: { id: 't1', min_level: 20, max_level: 30, title: '探索者', enabled: true } },
+    })
+    const created = await createGrowthLevelTitle({
+      min_level: 20,
+      max_level: 30,
       title: '探索者',
       enabled: true,
     })
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/level-titles/create', {
+      min_level: 20,
+      max_level: 30,
+      title: '探索者',
+      enabled: true,
+    })
+    expect(created.id).toBe('t1')
 
     httpMock.post.mockResolvedValue({
-      data: { data: { level: 99, threshold_xp: 8000, title: '测试等级', enabled: true } },
+      data: { data: { id: 't1', min_level: 20, max_level: 30, title: '探索者·改', enabled: true } },
     })
-    const created = await createGrowthLevel({
-      level: 99,
-      threshold_xp: 8000,
-      title: '测试等级',
+    await updateGrowthLevelTitle('t1', {
+      min_level: 20,
+      max_level: 30,
+      title: '探索者·改',
       enabled: true,
     })
-    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/create', {
-      level: 99,
-      threshold_xp: 8000,
-      title: '测试等级',
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/level-titles/update', {
+      id: 't1',
+      min_level: 20,
+      max_level: 30,
+      title: '探索者·改',
       enabled: true,
     })
-    expect(created.level).toBe(99)
 
     httpMock.post.mockResolvedValue({ data: { data: null } })
-    await deleteGrowthLevel(99)
-    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/levels/delete', { level: 99 })
+    await deleteGrowthLevelTitle('t1')
+    expect(httpMock.post).toHaveBeenCalledWith('/admin/growth/level-titles/delete', { id: 't1' })
 
     await createDailyTaskDef({ name: 't', description: '', event_type: 'post.liked', target_count: 3, reward_xp: 3, enabled: true, sort_order: 1 })
     expect(httpMock.post).toHaveBeenCalledWith('/admin/daily-tasks/create', {

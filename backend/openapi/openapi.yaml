@@ -2565,6 +2565,38 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /admin/link-health/confirm:
+    post:
+      tags: [admin]
+      summary: 人工确认链接结论（body 传 ID，admin 专属）
+      description: 与 `/admin/link-health/{id}/confirm` 等价，兼容把记录 ID 放在请求体的调用方式。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action]
+              properties:
+                id: { type: string, description: 链接检查记录 ID }
+                action: { type: string, enum: [confirm_broken, confirm_ok, ignore] }
+                note: { type: string, description: 确认备注 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/LinkHealthItem" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /admin/redstone/designs/list:
     post:
       tags: [admin]
@@ -4140,6 +4172,106 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /admin/content-health/keywords/list:
+    post:
+      tags: [admin]
+      summary: 内容屏蔽关键字列表（需 ops.dataquality）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 关键字列表（启用优先）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/ContentKeyword" } }
+                      total: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/content-health/keywords/create:
+    post:
+      tags: [admin]
+      summary: 新增内容屏蔽关键字（需 ops.dataquality）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyword]
+              properties:
+                keyword: { type: string, maxLength: 100 }
+                note: { type: string, maxLength: 255 }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ContentKeyword" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/content-health/keywords/update:
+    post:
+      tags: [admin]
+      summary: 更新内容屏蔽关键字（需 ops.dataquality）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, keyword, enabled]
+              properties:
+                id: { type: string, format: uuid }
+                keyword: { type: string, maxLength: 100 }
+                note: { type: string, maxLength: 255 }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ContentKeyword" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/content-health/keywords/delete:
+    post:
+      tags: [admin]
+      summary: 删除内容屏蔽关键字（需 ops.dataquality）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /admin/categories/list:
     post: { tags: [admin], summary: 分类列表, security: [{ cookieAuth: [] }], responses: { "200": { $ref: "#/components/responses/Envelope" } } }
   /admin/categories/create:
@@ -4971,6 +5103,65 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /admin/growth/users/list:
+    post:
+      tags: [growth]
+      summary: 用户成长列表（需 ops.growth）
+      description: 分页查询全部账号（含后台账号）的成长摘要，可按用户名 / 昵称 / 对外用户 ID 搜索。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: 用户名 / 昵称 / 对外用户 ID 模糊搜索 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 用户成长摘要分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/AdminGrowthUserSummary" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/users/detail:
+    post:
+      tags: [growth]
+      summary: 单用户成长详情（需 ops.growth）
+      description: 返回等级、经验、成就、礼物币流水与成长审计日志的聚合数据。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, description: 内部 UUID 或对外用户 ID（如 U7K3M2QX9F） }
+      responses:
+        "200":
+          description: 单用户成长详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/AdminGrowthUserDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /admin/growth/ledger/list:
     post:
       tags: [growth]
@@ -5166,10 +5357,56 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
-  /admin/growth/levels/list:
+  /admin/growth/levels/config:
     post:
       tags: [growth]
-      summary: 等级阈值列表（需 ops.growth）
+      summary: 读取等级曲线（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200":
+          description: 等级曲线
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthLevelConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/growth/levels/config/update:
+    post:
+      tags: [growth]
+      summary: 更新等级曲线并重算全部用户等级（需 ops.growth）
+      description: 达到 Lv.N 所需经验 = step_xp × N × (N-1) / 2；Lv.0 / Lv.1 均为 0 XP。保存后立即按新曲线重算全部用户等级，人工覆盖值限制在 0..max_level。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrowthLevelConfigInput" }
+      responses:
+        "200":
+          description: 已更新并返回被修正的用户数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      fixed: { type: integer, minimum: 0 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/level-titles/list:
+    post:
+      tags: [growth]
+      summary: 称号规则列表（需 ops.growth）
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       responses:
@@ -5177,18 +5414,18 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  /admin/growth/levels/create:
+  /admin/growth/level-titles/create:
     post:
       tags: [growth]
-      summary: 新增等级（可指定等级号，需 ops.growth）
-      description: 可指定 level 并跳号（如 99、999）；省略 level 或传 0 时追加为当前最高级 +1。新增等级号必须 >= 2，阈值必须为正且按等级号严格递增；Lv.0 / Lv.1 是内置基础等级，不能重复创建。新增后服务端会重算用户展示等级。
+      summary: 新增称号规则（需 ops.growth）
+      description: min_level = max_level 表示指定等级称号，优先级高于区间称号；启用区间之间不能重叠，同一等级只能有一个启用的指定称号。等级范围不能超过当前 max_level。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/GrowthLevelCreateInput" }
+            schema: { $ref: "#/components/schemas/GrowthLevelTitleInput" }
       responses:
         "201":
           description: 已创建
@@ -5197,35 +5434,17 @@ paths:
               schema:
                 type: object
                 properties:
-                  data: { $ref: "#/components/schemas/GrowthLevel" }
+                  data: { $ref: "#/components/schemas/GrowthLevelTitle" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /admin/growth/levels/update:
+  /admin/growth/level-titles/update:
     post:
       tags: [growth]
-      summary: 更新等级阈值 / 标题 / 启用状态（需 ops.growth）
-      description: 仅编辑现有等级；Lv.0 / Lv.1 阈值固定为 0，其余正阈值必须全局唯一且按等级严格递增。新增 / 删除请使用 create / delete。
-      security: [{ cookieAuth: [] }]
-      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/GrowthLevel" }
-      responses:
-        "204": { description: 已更新 }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
-  /admin/growth/levels/delete:
-    post:
-      tags: [growth]
-      summary: 删除等级并重排后续等级（需 ops.growth）
-      description: 可删除任意 Lv.2 及以上等级；删除后所有更高等级号减 1，level_reached 成就目标值大于被删等级时同步减 1，并按新阈值重算用户展示等级、收敛人工覆盖值。Lv.0 / Lv.1 不可删除。
+      summary: 更新称号规则（需 ops.growth）
+      description: 与新增使用相同的范围 / 冲突校验；可修改 min_level、max_level、称号与启用状态。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5234,15 +5453,44 @@ paths:
           application/json:
             schema:
               type: object
-              required: [level]
+              required: [id, min_level, max_level, title, enabled]
               properties:
-                level: { type: integer, minimum: 2 }
+                id: { type: string, format: uuid }
+                min_level: { type: integer, minimum: 0 }
+                max_level: { type: integer, minimum: 0 }
+                title: { type: string, maxLength: 100 }
+                enabled: { type: boolean, default: true }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/GrowthLevelTitle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/growth/level-titles/delete:
+    post:
+      tags: [growth]
+      summary: 删除称号规则（需 ops.growth）
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdBody" }
       responses:
         "204": { description: 已删除 }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
 
   /admin/growth/levels/recalculate:
     post:
@@ -5269,7 +5517,7 @@ paths:
     post:
       tags: [growth]
       summary: 单用户等级调整（需 ops.growth）
-      description: 直接用目标等级覆盖用户展示等级，不修改等级定义本身；覆盖是固定值，后续经验变化不会自动改级，直到下一次人工调整。目标等级必须是当前启用等级。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
+      description: 直接用目标等级覆盖用户展示等级，不修改等级曲线与称号规则；覆盖是固定值，后续经验变化不会自动改级，直到下一次人工调整。目标等级必须在 0..max_level 之间。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5280,7 +5528,7 @@ paths:
               required: [target_user_id, target_level, reason]
               properties:
                 target_user_id: { type: string, description: 对外用户 ID（如 U7K3M2QX9F）；不接受内部 UUID 或用户名 }
-                target_level: { type: integer, description: 绝对目标等级，必须存在且已启用 }
+                target_level: { type: integer, minimum: 0, description: 绝对目标等级；上限由当前等级曲线 max_level 决定 }
                 reason: { type: string, maxLength: 500 }
                 request_key: { type: string, description: 可选，仅用于审计留痕 }
       responses:
@@ -6155,6 +6403,36 @@ paths:
                   data: { type: array, items: { $ref: "#/components/schemas/CommunityComment" } }
                   meta: { $ref: "#/components/schemas/PageMeta" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/community/comments/all:
+    post:
+      tags: [community, admin]
+      security: [{ cookieAuth: [] }]
+      summary: 全站留言列表（含隐藏，需 content.community）
+      description: 跨帖子检索留言，支持审核状态与关键词筛选，返回所属帖子标题。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [published, hidden] }
+                q: { type: string, description: 留言正文 / 帖子标题 / 作者模糊搜索 }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/CommunityComment" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /admin/community/comments/status:
     post:
       tags: [community, admin]
@@ -8041,21 +8319,39 @@ components:
         effective_from: { type: string, format: date-time, nullable: true }
         effective_until: { type: string, format: date-time, nullable: true }
 
-    GrowthLevel:
+    GrowthLevelConfig:
       type: object
-      required: [level, threshold_xp, title]
+      required: [max_level, step_xp]
       properties:
-        level: { type: integer, minimum: 0 }
-        threshold_xp: { type: integer, minimum: 0, description: Lv.0 / Lv.1 固定为 0；其余等级必须为正 }
-        title: { type: string, maxLength: 100 }
-        enabled: { type: boolean, default: true }
+        max_level: { type: integer, minimum: 1, maximum: 9999, default: 9999, description: 等级上限；Lv.1 - Lv.max_level 连续存在 }
+        step_xp: { type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 100, description: 每级递增值；达到 Lv.N 所需经验 = step_xp × N × (N-1) / 2 }
+        updated_at: { type: string, format: date-time }
 
-    GrowthLevelCreateInput:
+    GrowthLevelConfigInput:
       type: object
-      required: [threshold_xp, title]
+      required: [max_level, step_xp]
       properties:
-        level: { type: integer, minimum: 0, description: 可选；省略或传 0 时追加为当前最高级 +1；显式新增必须 >= 2；允许跳号 }
-        threshold_xp: { type: integer, minimum: 1, description: 新增等级必须使用正阈值，并按等级号严格递增 }
+        max_level: { type: integer, minimum: 1, maximum: 9999 }
+        step_xp: { type: integer, format: int64, minimum: 1, maximum: 1000000000 }
+
+    GrowthLevelTitle:
+      type: object
+      required: [id, min_level, max_level, title, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        min_level: { type: integer, minimum: 0 }
+        max_level: { type: integer, minimum: 0 }
+        title: { type: string, maxLength: 100 }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GrowthLevelTitleInput:
+      type: object
+      required: [min_level, max_level, title]
+      properties:
+        min_level: { type: integer, minimum: 0, description: 区间起点；与 max_level 相同表示指定等级称号 }
+        max_level: { type: integer, minimum: 0, description: 区间终点；必须 >= min_level 且不超过当前 max_level }
         title: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
 

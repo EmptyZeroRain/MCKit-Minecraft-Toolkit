@@ -88,6 +88,14 @@ func TestGrowthEventDrivenAndIdempotent(t *testing.T) {
 	if xp != 10 || level != 0 || tasks != 1 {
 		t.Fatalf("首次登录后期望 XP=10 Lv.0 任务完成 1，实际 XP=%d Lv.%d 完成=%d", xp, level, tasks)
 	}
+	// 注册与登录发生在同一业务日，活跃天数只记 1 天。
+	g = domain.UserGrowth{}
+	if err := gdb.Where("user_id = ?", userID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.ActiveDays != 1 {
+		t.Fatalf("注册 + 同日登录后活跃天数应为 1，实际 %d", g.ActiveDays)
+	}
 
 	// 同日再次登录：规则按业务日期幂等、任务已完成不再自增，经验不变。
 	cookie, csrf = loginUser(t, router, "growth-1")
@@ -132,6 +140,15 @@ func TestGrowthEventDrivenAndIdempotent(t *testing.T) {
 	xp, _, _ = growthOverview(t, router, cookie)
 	if xp != 16 {
 		t.Fatalf("收藏第二个资源后期望 XP=16，实际 %d", xp)
+	}
+
+	// 同一天内重复登录 / 收藏不应增加活跃天数。
+	g = domain.UserGrowth{}
+	if err := gdb.Where("user_id = ?", userID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.ActiveDays != 1 {
+		t.Fatalf("同一天多个事件后活跃天数仍应为 1，实际 %d", g.ActiveDays)
 	}
 }
 
@@ -328,57 +345,83 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 		t.Fatalf("成就补算期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 等级阈值非法（Lv.1 必须 0 XP）应被拒绝。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/update",
-		`{"level":1,"threshold_xp":50,"title":"Lv.1","enabled":true}`, adminCookie, adminCSRF)
+	// 等级曲线读取与非法参数。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/config", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取等级曲线期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if maxLevel := toInt(decodeData(t, rec)["max_level"]); maxLevel != 9999 {
+		t.Fatalf("默认等级上限期望 9999，实际 %d", maxLevel)
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/config/update",
+		`{"max_level":9999,"step_xp":0}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("非法等级阈值期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("非法等级曲线期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 新增等级：可指定等级号并跳号（直接创建 Lv.99）。
-	const apiLevel = 99
-	_ = itDB.Where("level = ?", apiLevel).Delete(&domain.GrowthLevel{}).Error
-	t.Cleanup(func() {
-		_ = itDB.Where("level = ?", apiLevel).Delete(&domain.GrowthLevel{}).Error
-	})
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
-		`{"level":99,"threshold_xp":8000,"title":"接口测试等级","enabled":true}`, adminCookie, adminCSRF)
+	// 称号规则列表。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/list", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("称号规则列表期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if total := toInt(decodeData(t, rec)["total"]); total != 3 {
+		t.Fatalf("默认称号规则应为 3 条，实际 %d", total)
+	}
+
+	// 新增区间称号 -> 201；重叠区间 -> 409。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/create",
+		`{"min_level":101,"max_level":110,"title":"接口测试区间","enabled":true}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("新增等级期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("新增区间称号期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	if lv := toInt(decodeData(t, rec)["level"]); lv != 99 {
-		t.Fatalf("新增等级期望 Lv.99，实际 %d", lv)
-	}
-
-	// 等级号重复应返回 409。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
-		`{"level":99,"threshold_xp":8100,"title":"重复等级号","enabled":true}`, adminCookie, adminCSRF)
+	rangeID := decodeData(t, rec)["id"].(string)
+	t.Cleanup(func() {
+		_ = itDB.Where("id = ?", rangeID).Delete(&domain.GrowthLevelTitle{}).Error
+	})
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/create",
+		`{"min_level":105,"max_level":115,"title":"重叠区间","enabled":true}`, adminCookie, adminCSRF)
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("重复等级号期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("重叠区间期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// 阈值顺序非法应返回 422。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/create",
-		`{"level":50,"threshold_xp":5999,"title":"阈值顺序错误","enabled":true}`, adminCookie, adminCSRF)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("阈值顺序错误期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	// 指定等级称号可覆盖区间；重复指定等级 -> 409。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/create",
+		`{"min_level":105,"max_level":105,"title":"接口测试指定等级","enabled":true}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("新增指定等级称号期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	exactID := decodeData(t, rec)["id"].(string)
+	t.Cleanup(func() {
+		_ = itDB.Where("id = ?", exactID).Delete(&domain.GrowthLevelTitle{}).Error
+	})
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/create",
+		`{"min_level":105,"max_level":105,"title":"重复指定等级","enabled":true}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("重复指定等级称号期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 
-	// Lv.0 / Lv.1 不可删除。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
-		`{"level":0}`, adminCookie, adminCSRF)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("删除 Lv.0 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
+	// 更新与删除。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/update",
+		fmt.Sprintf(`{"id":%q,"min_level":105,"max_level":105,"title":"接口测试指定等级改","enabled":true}`, exactID),
+		adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("更新指定等级称号期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
-		`{"level":1}`, adminCookie, adminCSRF)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("删除 Lv.1 期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
-	}
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/delete",
-		`{"level":99}`, adminCookie, adminCSRF)
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/delete",
+		fmt.Sprintf(`{"id":%q}`, exactID), adminCookie, adminCSRF)
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("删除 Lv.99 期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+		t.Fatalf("删除指定等级称号期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/delete",
+		fmt.Sprintf(`{"id":%q}`, rangeID), adminCookie, adminCSRF)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("删除区间称号期望 204，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+
+	// 历史重算可用。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/recalculate", `{}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("等级重算期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
 }
 

@@ -47,7 +47,9 @@ async function mountLayout() {
   const auth = useAuthStore()
   auth.user = {
     id: 'a1',
+    user_no: 'UE389F2938F',
     username: 'admin',
+    nickname: '运营管理员',
     role: 'admin',
     is_active: true,
     last_login_at: null,
@@ -63,9 +65,9 @@ async function mountLayout() {
   return { wrapper, router }
 }
 
-/** 展开顶栏「用户」菜单并返回菜单项文本列表。 */
+/** 展开顶栏用户菜单并返回菜单项文本列表。 */
 async function openMenu(wrapper: Awaited<ReturnType<typeof mountLayout>>['wrapper']) {
-  const trigger = wrapper.findAll('header button').find((b) => b.text().includes('用户'))!
+  const trigger = wrapper.find('.admin-user-menu button[aria-haspopup="menu"]')
   await trigger.trigger('click')
   await flushPromises()
   return wrapper.findAll('[role="menuitem"]').map((i) => i.text())
@@ -77,15 +79,25 @@ describe('管理后台顶栏 · 用户菜单', () => {
     authApi.logout.mockClear()
   })
 
-  it('顶栏提供「用户」入口', async () => {
+  it('顶栏展示当前账号并提供用户菜单入口', async () => {
     const { wrapper } = await mountLayout()
-    const texts = wrapper.findAll('header button').map((b) => b.text())
-    expect(texts.some((t) => t.includes('用户'))).toBe(true)
+    const trigger = wrapper.find('.admin-user-menu button[aria-haspopup="menu"]')
+    expect(trigger.exists()).toBe(true)
+    expect(trigger.text()).toContain('运营管理员')
     // 未展开时不应直接暴露菜单项
     expect(wrapper.findAll('[role="menuitem"]')).toHaveLength(0)
   })
 
-  it('点击「用户」展开菜单，包含四个入口', async () => {
+  it('展开菜单后集中展示账号、角色与用户 ID', async () => {
+    const { wrapper } = await mountLayout()
+    await openMenu(wrapper)
+    const menu = wrapper.find('.admin-user-menu')
+    expect(menu.text()).toContain('运营管理员')
+    expect(menu.text()).toContain('管理员')
+    expect(menu.text()).toContain('UE389F2938F')
+  })
+
+  it('点击用户菜单展开后包含四个入口', async () => {
     const { wrapper } = await mountLayout()
     const items = await openMenu(wrapper)
     expect(items).toContain('返回前台')

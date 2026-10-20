@@ -24,8 +24,9 @@ import type {
   GrowthDailyTasks,
   GrowthLedgerFilter,
   GrowthLedgerItem,
-  GrowthLevel,
-  GrowthLevelCreateInput,
+  GrowthLevelConfig,
+  GrowthLevelTitle,
+  GrowthLevelTitleInput,
   GrowthOverview,
   GrowthPublicProfile,
   GrowthRule,
@@ -205,32 +206,65 @@ export async function deleteGrowthRule(id: string): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/growth/rules/delete', { id })
 }
 
-/** 等级阈值列表 */
-export async function fetchGrowthLevels(): Promise<GrowthLevel[]> {
-  const { data } = await http.post<ApiResponse<{ items: GrowthLevel[] }>>(
-    '/admin/growth/levels/list',
+/** 读取等级曲线配置 */
+export async function fetchGrowthLevelConfig(): Promise<GrowthLevelConfig> {
+  const { data } = await http.post<ApiResponse<GrowthLevelConfig>>(
+    '/admin/growth/levels/config',
+    {},
+  )
+  return data.data
+}
+
+/** 更新等级曲线；后端会重算全部用户等级并返回修正人数 */
+export async function updateGrowthLevelConfig(input: {
+  max_level: number
+  step_xp: number
+}): Promise<number> {
+  const { data } = await http.post<ApiResponse<{ fixed: number }>>(
+    '/admin/growth/levels/config/update',
+    input,
+  )
+  return data.data.fixed
+}
+
+/** 称号规则列表（含停用项） */
+export async function fetchGrowthLevelTitles(): Promise<GrowthLevelTitle[]> {
+  const { data } = await http.post<ApiResponse<{ items: GrowthLevelTitle[] }>>(
+    '/admin/growth/level-titles/list',
     {},
   )
   return data.data.items ?? []
 }
 
-/** 新增等级（可指定等级号并跳号；不传 level 时追加到当前最高级之后） */
-export async function createGrowthLevel(input: GrowthLevelCreateInput): Promise<GrowthLevel> {
-  const { data } = await http.post<ApiResponse<GrowthLevel>>('/admin/growth/levels/create', input)
+/** 新增称号规则；min_level === max_level 表示指定等级称号 */
+export async function createGrowthLevelTitle(
+  input: GrowthLevelTitleInput,
+): Promise<GrowthLevelTitle> {
+  const { data } = await http.post<ApiResponse<GrowthLevelTitle>>(
+    '/admin/growth/level-titles/create',
+    input,
+  )
   return data.data
 }
 
-/** 更新单个等级阈值 / 标题 / 启用状态 */
-export async function updateGrowthLevel(level: GrowthLevel): Promise<void> {
-  await http.post<ApiResponse<null>>('/admin/growth/levels/update', level)
+/** 更新称号规则 */
+export async function updateGrowthLevelTitle(
+  id: string,
+  input: GrowthLevelTitleInput,
+): Promise<GrowthLevelTitle> {
+  const { data } = await http.post<ApiResponse<GrowthLevelTitle>>(
+    '/admin/growth/level-titles/update',
+    { id, ...input },
+  )
+  return data.data
 }
 
-/** 删除任意非 Lv.1 等级（后端会重排后续等级并重算用户展示等级） */
-export async function deleteGrowthLevel(level: number): Promise<void> {
-  await http.post<ApiResponse<null>>('/admin/growth/levels/delete', { level })
+/** 删除称号规则 */
+export async function deleteGrowthLevelTitle(id: string): Promise<void> {
+  await http.post<ApiResponse<null>>('/admin/growth/level-titles/delete', { id })
 }
 
-/** 依据当前阈值表重算所有用户等级，返回被修正的用户数 */
+/** 依据当前等级曲线重算所有用户等级，返回被修正的用户数 */
 export async function recalculateGrowthLevels(): Promise<number> {
   const { data } = await http.post<ApiResponse<{ fixed: number }>>(
     '/admin/growth/levels/recalculate',

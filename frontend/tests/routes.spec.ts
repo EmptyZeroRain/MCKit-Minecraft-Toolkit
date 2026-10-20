@@ -183,3 +183,23 @@ describe('成长系统路由接线', () => {
     expect(router.currentRoute.value.name).toBe('admin-growth')
   })
 })
+
+// 普通用户受限页（工作台 / 设置 / 成长 / 礼物 / 投稿）：
+// 未登录直接访问时回首页，不把游客带到登录页。
+describe('普通用户受限页守卫', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.stubGlobal('scrollTo', vi.fn())
+    const userAuth = useUserAuthStore()
+    userAuth.initialized = true
+    userAuth.user = null
+  })
+
+  it.each(['/workspace', '/settings', '/growth', '/gifts', '/submit-resource'])(
+    '未登录访问 %s 重定向到首页',
+    async (path) => {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe('home')
+    },
+  )
+})

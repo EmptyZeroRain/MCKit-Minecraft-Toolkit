@@ -113,10 +113,7 @@ onMounted(async () => {
   <PageContainer maxWidth="max-w-4xl">
     <Breadcrumbs :items="[{ label: '成长中心' }]" />
     <div class="mb-6">
-      <h1 class="mb-1 text-2xl font-bold text-text-primary md:text-3xl">成长中心</h1>
-      <p class="text-sm text-text-secondary">
-        经验、等级、任务与成就均由服务端判定，此处仅作展示。
-      </p>
+      <h1 class="text-2xl font-bold text-text-primary md:text-3xl">成长中心</h1>
     </div>
 
     <p

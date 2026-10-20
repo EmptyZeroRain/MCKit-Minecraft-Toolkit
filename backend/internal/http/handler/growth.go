@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/response"
 	"mckit/backend/internal/service/growth"
 )
@@ -375,9 +374,33 @@ func (h *GrowthHandler) RulesDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---- 管理端：等级 ----
 
-// LevelsList POST /api/v1/admin/growth/levels/list
-func (h *GrowthHandler) LevelsList(w http.ResponseWriter, r *http.Request) {
-	items, err := h.svc.ListLevels(r.Context())
+// LevelsConfigGet POST /api/v1/admin/growth/levels/config
+func (h *GrowthHandler) LevelsConfigGet(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.svc.GetLevelConfig(r.Context())
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, cfg)
+}
+
+// LevelsConfigUpdate POST /api/v1/admin/growth/levels/config/update
+func (h *GrowthHandler) LevelsConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	var req growth.LevelConfigInput
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	fixed, err := h.svc.UpdateLevelConfig(r.Context(), req, actorID(r))
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, map[string]any{"fixed": fixed})
+}
+
+// LevelTitlesList POST /api/v1/admin/growth/level-titles/list
+func (h *GrowthHandler) LevelTitlesList(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.ListLevelTitles(r.Context())
 	if err != nil {
 		writeGrowthError(w, r, err)
 		return
@@ -385,13 +408,14 @@ func (h *GrowthHandler) LevelsList(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, map[string]any{"items": items, "total": len(items)})
 }
 
-// LevelsUpdate POST /api/v1/admin/growth/levels/update
-func (h *GrowthHandler) LevelsUpdate(w http.ResponseWriter, r *http.Request) {
+// LevelTitlesCreate POST /api/v1/admin/growth/level-titles/create
+// 参数：min_level、max_level、title、enabled。min=max 表示指定等级称号。
+func (h *GrowthHandler) LevelTitlesCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Level       int    `json:"level"`
-		ThresholdXP int64  `json:"threshold_xp"`
-		Title       string `json:"title"`
-		Enabled     *bool  `json:"enabled"`
+		MinLevel int    `json:"min_level"`
+		MaxLevel int    `json:"max_level"`
+		Title    string `json:"title"`
+		Enabled  *bool  `json:"enabled"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -400,35 +424,9 @@ func (h *GrowthHandler) LevelsUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	lvl := domain.GrowthLevel{Level: req.Level, ThresholdXP: req.ThresholdXP, Title: req.Title, Enabled: enabled}
-	if err := h.svc.UpdateLevel(r.Context(), lvl, actorID(r)); err != nil {
-		writeGrowthError(w, r, err)
-		return
-	}
-	response.NoContent(w)
-}
-
-// LevelsCreate POST /api/v1/admin/growth/levels/create
-// 参数：level（可选，省略时追加为最高级 +1）、threshold_xp、title、enabled。
-func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Level       int    `json:"level"`
-		ThresholdXP int64  `json:"threshold_xp"`
-		Title       string `json:"title"`
-		Enabled     *bool  `json:"enabled"`
-	}
-	if !decodeBody(w, r, &req) {
-		return
-	}
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	out, err := h.svc.CreateLevel(r.Context(), growth.CreateLevelInput{
-		Level:       req.Level,
-		ThresholdXP: req.ThresholdXP,
-		Title:       req.Title,
-		Enabled:     enabled,
+	out, err := h.svc.CreateLevelTitle(r.Context(), growth.LevelTitleInput{
+		MinLevel: req.MinLevel, MaxLevel: req.MaxLevel,
+		Title: req.Title, Enabled: enabled,
 	}, actorID(r))
 	if err != nil {
 		writeGrowthError(w, r, err)
@@ -437,16 +435,40 @@ func (h *GrowthHandler) LevelsCreate(w http.ResponseWriter, r *http.Request) {
 	response.Created(w, out)
 }
 
-// LevelsDelete POST /api/v1/admin/growth/levels/delete
-// 参数：level。可删除任意 Lv.2 及以上等级；Lv.0 / Lv.1 不可删除。
-func (h *GrowthHandler) LevelsDelete(w http.ResponseWriter, r *http.Request) {
+// LevelTitlesUpdate POST /api/v1/admin/growth/level-titles/update
+func (h *GrowthHandler) LevelTitlesUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Level int `json:"level"`
+		ID       string `json:"id"`
+		MinLevel int    `json:"min_level"`
+		MaxLevel int    `json:"max_level"`
+		Title    string `json:"title"`
+		Enabled  *bool  `json:"enabled"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if err := h.svc.DeleteLevel(r.Context(), req.Level, actorID(r)); err != nil {
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	out, err := h.svc.UpdateLevelTitle(r.Context(), strings.TrimSpace(req.ID), growth.LevelTitleInput{
+		MinLevel: req.MinLevel, MaxLevel: req.MaxLevel,
+		Title: req.Title, Enabled: enabled,
+	}, actorID(r))
+	if err != nil {
+		writeGrowthError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
+// LevelTitlesDelete POST /api/v1/admin/growth/level-titles/delete
+func (h *GrowthHandler) LevelTitlesDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := decodeID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteLevelTitle(r.Context(), id, actorID(r)); err != nil {
 		writeGrowthError(w, r, err)
 		return
 	}
@@ -743,8 +765,6 @@ func writeGrowthError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, growth.ErrBadInput),
 		errors.Is(err, growth.ErrReasonRequired),
 		errors.Is(err, growth.ErrLevelThreshold),
-		errors.Is(err, growth.ErrLevelOrder),
-		errors.Is(err, growth.ErrLevelDeleteLv1),
 		errors.Is(err, growth.ErrLevelRange),
 		errors.Is(err, growth.ErrBadCondition),
 		errors.Is(err, growth.ErrBadIconURL),

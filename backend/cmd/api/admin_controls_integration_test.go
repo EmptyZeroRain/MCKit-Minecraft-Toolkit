@@ -68,6 +68,14 @@ func TestGrowthAdminControlsAndGiftAPI(t *testing.T) {
 		t.Fatalf("内部 UUID 应返回 422，实际: %d %s", rec.Code, rec.Body.String())
 	}
 
+	// 缺少 target_level 必须报错，不能被缺省值当成 Lv.0 覆盖。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/adjust",
+		fmt.Sprintf(`{"target_user_id":%q,"reason":"缺失目标等级"}`, user.UserNo),
+		cookie, csrf)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺少 target_level 应返回 422，实际: %d %s", rec.Code, rec.Body.String())
+	}
+
 	// 2) 授予成就 -> 查询 -> 撤销。
 	grantBody := fmt.Sprintf(`{"target_user_id":%q,"achievement_id":%q,"reason":"接口授予"}`,
 		user.ID.String(), achievement.ID.String())

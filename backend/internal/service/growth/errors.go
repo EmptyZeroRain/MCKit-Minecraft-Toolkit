@@ -23,16 +23,14 @@ var (
 	ErrRuleCodeTaken = errors.New("规则编码已存在")
 	// ErrRuleInUse 规则已被经验流水引用，不能删除（只能停用）。
 	ErrRuleInUse = errors.New("该规则已产生经验流水，不能删除，请改为停用")
-	// ErrLevelNotFound 等级不存在。
-	ErrLevelNotFound = errors.New("等级不存在")
-	// ErrLevelThreshold 等级阈值不合法（非负、Lv.0 / Lv.1 固定 0、其余唯一且严格递增）。
-	ErrLevelThreshold = errors.New("等级阈值必须非负；Lv.0 / Lv.1 固定为 0 XP；其余等级阈值必须唯一且严格递增")
-	// ErrLevelExists 指定等级号已存在。
-	ErrLevelExists = errors.New("等级号已存在")
-	// ErrLevelOrder 新增 / 修改后的阈值未按等级号严格递增。
-	ErrLevelOrder = errors.New("新增等级的阈值必须为正，并按等级号严格递增")
-	// ErrLevelDeleteLv1 Lv.0 / Lv.1 是等级体系的基础，不允许删除。
-	ErrLevelDeleteLv1 = errors.New("Lv.0 / Lv.1 不能删除")
+	// ErrLevelNotFound 等级称号规则不存在。
+	ErrLevelNotFound = errors.New("等级称号规则不存在")
+	// ErrLevelThreshold 等级曲线或称号规则不合法。
+	ErrLevelThreshold = errors.New("等级曲线或称号规则不合法：等级上限 1-9999、每级递增值必须为正，称号不能为空")
+	// ErrLevelExists 称号规则冲突。
+	ErrLevelExists = errors.New("称号规则冲突：区间称号不能重叠，指定等级称号不能重复")
+	// ErrLevelRange 目标等级超出当前等级上限。
+	ErrLevelRange = errors.New("目标等级超出当前等级上限")
 	// ErrTaskNotFound 每日任务不存在。
 	ErrTaskNotFound = errors.New("每日任务不存在")
 	// ErrTaskCodeTaken 任务编码已存在。
@@ -61,8 +59,6 @@ var (
 	ErrLevelAdjustUserIDRequired = errors.New("目标用户 ID 只支持对外用户 ID（如 U7K3M2QX9F），不支持内部 UUID")
 	// ErrLevelAdjustUserNotFound 对外用户 ID 未匹配到任何账号（含管理员）。
 	ErrLevelAdjustUserNotFound = errors.New("未找到该对外用户 ID，请从用户列表重新复制")
-	// ErrLevelRange 目标等级不在当前启用等级中。
-	ErrLevelRange = errors.New("目标等级不在当前启用等级中")
 	// ErrAchievementAlreadyUnlocked 用户已持有该成就。
 	ErrAchievementAlreadyUnlocked = errors.New("用户已解锁该成就")
 	// ErrAchievementNotUnlocked 用户未持有该成就，无法撤销。

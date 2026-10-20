@@ -175,13 +175,13 @@ func (s *Service) ListAdminGrowthUsers(ctx context.Context, f AdminGrowthUserLis
 		Scan(&rows).Error; err != nil {
 		return nil, 0, err
 	}
-	levels, err := s.repo.ListLevels(ctx)
+	resolver, err := s.levelResolver(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 	out := make([]AdminGrowthUserSummary, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toAdminGrowthUserSummary(row, levels))
+		out = append(out, toAdminGrowthUserSummary(row, resolver))
 	}
 	return out, total, nil
 }
@@ -205,11 +205,11 @@ func (s *Service) GetAdminGrowthUserDetail(ctx context.Context, rawUserID string
 	if len(rows) == 0 {
 		return nil, ErrUnknownUser
 	}
-	levels, err := s.repo.ListLevels(ctx)
+	resolver, err := s.levelResolver(ctx)
 	if err != nil {
 		return nil, err
 	}
-	summary := toAdminGrowthUserSummary(rows[0], levels)
+	summary := toAdminGrowthUserSummary(rows[0], resolver)
 
 	var growth domain.UserGrowth
 	if err := s.db.WithContext(ctx).Where("user_id = ?", id).First(&growth).Error; err != nil {
@@ -218,8 +218,8 @@ func (s *Service) GetAdminGrowthUserDetail(ctx context.Context, rawUserID string
 		}
 		growth = domain.UserGrowth{UserID: id, Level: GuestLevel}
 	}
-	progress := computeLevelWithOverride(levels, growth.CurrentXP, growth.LevelOverride, growth.ActiveDays)
-	base := computeLevel(levels, growth.CurrentXP, growth.ActiveDays)
+	progress := resolver.View(growth.CurrentXP, growth.LevelOverride, growth.ActiveDays)
+	base := resolver.View(growth.CurrentXP, nil, growth.ActiveDays)
 
 	var achievementTotal int64
 	if err := s.db.WithContext(ctx).Model(&domain.AchievementDefinition{}).
@@ -345,7 +345,7 @@ func (s *Service) GetAdminGrowthUserDetail(ctx context.Context, rawUserID string
 	}, nil
 }
 
-func toAdminGrowthUserSummary(row adminGrowthUserRow, levels []domain.GrowthLevel) AdminGrowthUserSummary {
+func toAdminGrowthUserSummary(row adminGrowthUserRow, resolver LevelResolver) AdminGrowthUserSummary {
 	return AdminGrowthUserSummary{
 		UserID:             row.UserID.String(),
 		UserNo:             row.UserNo,
@@ -354,7 +354,7 @@ func toAdminGrowthUserSummary(row adminGrowthUserRow, levels []domain.GrowthLeve
 		Role:               row.Role,
 		IsActive:           row.IsActive,
 		Level:              row.Level,
-		LevelTitle:         levelTitle(levels, row.Level),
+		LevelTitle:         resolver.Title(row.Level),
 		IsOverridden:       row.LevelOverride != nil,
 		ActiveDays:         row.ActiveDays,
 		GuestActiveDays:    GuestActiveDaysRequired,

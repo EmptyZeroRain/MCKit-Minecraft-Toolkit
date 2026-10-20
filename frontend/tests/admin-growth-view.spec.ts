@@ -8,7 +8,12 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 vi.mock('@/api/growth', () => ({
   fetchAdminGrowthOverview: vi.fn(),
   fetchGrowthRules: vi.fn(),
-  fetchGrowthLevels: vi.fn(),
+  fetchGrowthLevelConfig: vi.fn(),
+  fetchGrowthLevelTitles: vi.fn(),
+  updateGrowthLevelConfig: vi.fn(),
+  createGrowthLevelTitle: vi.fn(),
+  updateGrowthLevelTitle: vi.fn(),
+  deleteGrowthLevelTitle: vi.fn(),
   fetchDailyTaskDefs: vi.fn(),
   fetchAchievementDefs: vi.fn(),
   fetchAdminGrowthLedger: vi.fn(),

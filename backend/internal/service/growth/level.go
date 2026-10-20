@@ -15,7 +15,51 @@ const (
 	GuestLevel              = 0
 	GuestActiveDaysRequired = 7
 	GuestLevelTitle         = "访客"
+
+	// DefaultMaxLevel 默认等级上限；等级按经验曲线自动生成，不再逐级建表。
+	DefaultMaxLevel = 9999
+	// DefaultLevelStepXP 默认每级递增值：Lv.N 门槛 = step * N * (N-1) / 2。
+	DefaultLevelStepXP int64 = 100
+	// MaxLevelStepXP 防止配置过大导致阈值溢出 int64。
+	MaxLevelStepXP int64 = 1_000_000_000
 )
+
+// LevelCurve 等级曲线参数。
+type LevelCurve struct {
+	MaxLevel int
+	StepXP   int64
+}
+
+// DefaultLevelCurve 返回默认等级曲线。
+func DefaultLevelCurve() LevelCurve {
+	return LevelCurve{MaxLevel: DefaultMaxLevel, StepXP: DefaultLevelStepXP}
+}
+
+// NormalizeLevelCurve 把数据库配置收敛到合法范围。
+func NormalizeLevelCurve(cfg *domain.GrowthLevelConfig) LevelCurve {
+	out := DefaultLevelCurve()
+	if cfg == nil {
+		return out
+	}
+	if cfg.MaxLevel > 0 && cfg.MaxLevel <= DefaultMaxLevel {
+		out.MaxLevel = cfg.MaxLevel
+	}
+	if cfg.StepXP > 0 && cfg.StepXP <= MaxLevelStepXP {
+		out.StepXP = cfg.StepXP
+	}
+	return out
+}
+
+// ValidateLevelCurve 校验后台提交的等级曲线。
+func ValidateLevelCurve(maxLevel int, stepXP int64) error {
+	if maxLevel < 1 || maxLevel > DefaultMaxLevel {
+		return ErrLevelThreshold
+	}
+	if stepXP <= 0 || stepXP > MaxLevelStepXP {
+		return ErrLevelThreshold
+	}
+	return nil
+}
 
 // LevelView 等级展示视图。
 type LevelView struct {
@@ -33,102 +77,151 @@ type LevelView struct {
 	GuestActiveDays int `json:"guest_active_days"`
 }
 
-// enabledLevels 过滤并返回启用的等级（阈值升序、同阈值按等级号升序）。
-//
-// Lv.0 与 Lv.1 都是 0 XP：同阈值时等级号更大的 Lv.1 排在后面，
-// 保证满 7 个活跃日后选择 Lv.1 而不是停留 Lv.0。
-func enabledLevels(levels []domain.GrowthLevel) []domain.GrowthLevel {
-	out := make([]domain.GrowthLevel, 0, len(levels))
-	for _, l := range levels {
-		if l.Enabled {
-			out = append(out, l)
+// LevelResolver 依据等级曲线与称号规则计算展示等级。
+type LevelResolver struct {
+	Curve  LevelCurve
+	Titles []domain.GrowthLevelTitle
+}
+
+// NewLevelResolver 创建等级解析器；titles 只保留启用规则。
+func NewLevelResolver(cfg *domain.GrowthLevelConfig, titles []domain.GrowthLevelTitle) LevelResolver {
+	out := LevelResolver{Curve: NormalizeLevelCurve(cfg)}
+	for _, t := range titles {
+		if !t.Enabled {
+			continue
 		}
+		if t.MinLevel < 0 || t.MaxLevel < t.MinLevel || t.MaxLevel > out.Curve.MaxLevel {
+			continue
+		}
+		out.Titles = append(out.Titles, t)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].ThresholdXP != out[j].ThresholdXP {
-			return out[i].ThresholdXP < out[j].ThresholdXP
+	sort.SliceStable(out.Titles, func(i, j int) bool {
+		if out.Titles[i].MinLevel != out.Titles[j].MinLevel {
+			return out.Titles[i].MinLevel < out.Titles[j].MinLevel
 		}
-		return out[i].Level < out[j].Level
+		return out.Titles[i].MaxLevel < out.Titles[j].MaxLevel
 	})
 	return out
 }
 
-// computeLevel 依据当前有效经验、活跃天数与等级阈值自动计算等级（jingyan.md §5）。
+// LevelThreshold 返回达到指定等级所需的累计经验。
+func LevelThreshold(level int, curve LevelCurve) int64 {
+	if level <= 1 {
+		return 0
+	}
+	if level > curve.MaxLevel {
+		level = curve.MaxLevel
+	}
+	return curve.StepXP * int64(level) * int64(level-1) / 2
+}
+
+// levelForXP 返回当前经验对应的最高等级（1..MaxLevel）。
+func levelForXP(xp int64, curve LevelCurve) int {
+	if xp <= 0 {
+		return 1
+	}
+	if LevelThreshold(curve.MaxLevel, curve) <= xp {
+		return curve.MaxLevel
+	}
+	lo, hi := 1, curve.MaxLevel
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if LevelThreshold(mid, curve) <= xp {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo
+}
+
+// Title 返回指定等级的称号。
 //
-// 规则：
-//   - 活跃天数不足 7 天时固定为 Lv.0「访客」，经验继续累积但不展示更高等级；
-//   - 满 7 个活跃日后，取所有 threshold_xp <= xp 的最高等级；
-//   - 达到最高等级后进度显示为满级；
-//   - 冲正导致经验下降时由同一函数重新计算（是否降级不由前端决定）。
-func computeLevel(levels []domain.GrowthLevel, xp int64, activeDays int) LevelView {
-	enabled := enabledLevels(levels)
-	if len(enabled) == 0 {
-		// 阈值表缺失时的兜底：保持访客状态，避免把新用户误判为高等级。
-		return LevelView{
-			Level: GuestLevel, Title: GuestLevelTitle, IsMax: true,
+// 优先级：指定等级称号（min=max）> 包含该等级的区间称号 > 兜底 Lv.N。
+// 区间在数据库与服务层均要求不重叠；这里仍按“区间更窄优先”稳定选择，
+// 避免历史脏数据造成随机结果。
+func (r LevelResolver) Title(level int) string {
+	var exact *domain.GrowthLevelTitle
+	var rangeTitle *domain.GrowthLevelTitle
+	for i := range r.Titles {
+		t := &r.Titles[i]
+		if t.MinLevel == level && t.MaxLevel == level {
+			exact = t
+			break
+		}
+		if t.MinLevel < t.MaxLevel && t.MinLevel <= level && t.MaxLevel >= level {
+			if rangeTitle == nil {
+				rangeTitle = t
+				continue
+			}
+			curWidth := rangeTitle.MaxLevel - rangeTitle.MinLevel
+			newWidth := t.MaxLevel - t.MinLevel
+			if newWidth < curWidth ||
+				(newWidth == curWidth && t.UpdatedAt.After(rangeTitle.UpdatedAt)) {
+				rangeTitle = t
+			}
+		}
+	}
+	if exact != nil {
+		return exact.Title
+	}
+	if rangeTitle != nil {
+		return rangeTitle.Title
+	}
+	if level == GuestLevel {
+		return GuestLevelTitle
+	}
+	return "Lv." + itoa(level)
+}
+
+// View 计算最终展示等级：人工覆盖优先于经验 / 活跃天数。
+func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
+	if override != nil {
+		level := clampLevel(*override, r.Curve.MaxLevel)
+		view := LevelView{
+			Level: level, Title: r.Title(level), Overridden: true,
 			ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
 		}
+		if level == GuestLevel {
+			view.ProgressPercent = guestActiveProgress(activeDays)
+		} else {
+			// 覆盖等级不参与经验自动升级，进度条固定显示满格。
+			view.ProgressPercent = 100
+		}
+		view.IsMax = level >= r.Curve.MaxLevel
+		return view
 	}
 
 	if activeDays < GuestActiveDaysRequired {
-		for _, l := range enabled {
-			if l.Level == GuestLevel {
-				return LevelView{
-					Level:           l.Level,
-					Title:           l.Title,
-					ProgressPercent: guestActiveProgress(activeDays),
-					ActiveDays:      activeDays,
-					GuestActiveDays: GuestActiveDaysRequired,
-				}
-			}
-		}
-		// 等级表缺少 Lv.0 时的兜底：仍按访客阶段展示最低等级与活跃日进度，
-		// 避免活跃天数门槛被意外绕过。
-		lowest := enabled[0]
 		return LevelView{
-			Level:           lowest.Level,
-			Title:           lowest.Title,
+			Level: GuestLevel, Title: r.Title(GuestLevel),
 			ProgressPercent: guestActiveProgress(activeDays),
 			ActiveDays:      activeDays,
 			GuestActiveDays: GuestActiveDaysRequired,
 		}
 	}
 
-	cur := enabled[0]
-	idx := 0
-	for i, l := range enabled {
-		if l.ThresholdXP <= xp {
-			cur = l
-			idx = i
-		}
-	}
+	level := levelForXP(xp, r.Curve)
 	view := LevelView{
-		Level: cur.Level, Title: cur.Title,
+		Level: level, Title: r.Title(level),
 		ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
 	}
-	if cur.Level == GuestLevel {
-		view.ProgressPercent = guestActiveProgress(activeDays)
-	}
-	if idx >= len(enabled)-1 {
+	if level >= r.Curve.MaxLevel {
 		view.IsMax = true
-		if cur.Level != GuestLevel {
-			view.ProgressPercent = 100
-		}
+		view.ProgressPercent = 100
 		return view
 	}
-	next := enabled[idx+1]
-	span := next.ThresholdXP - cur.ThresholdXP
-	view.NextThreshold = &next.ThresholdXP
-	view.XPToNext = next.ThresholdXP - xp
+
+	curThreshold := LevelThreshold(level, r.Curve)
+	nextThreshold := LevelThreshold(level+1, r.Curve)
+	view.NextThreshold = &nextThreshold
+	view.XPToNext = nextThreshold - xp
 	if view.XPToNext < 0 {
 		view.XPToNext = 0
 	}
-	if cur.Level == GuestLevel {
-		// Lv.0 的进度由活跃天数决定，而不是经验阈值。
-		view.XPToNext = 0
-		view.ProgressPercent = guestActiveProgress(activeDays)
-	} else if span > 0 {
-		view.ProgressPercent = int((xp - cur.ThresholdXP) * 100 / span)
+	span := nextThreshold - curThreshold
+	if span > 0 {
+		view.ProgressPercent = int((xp - curThreshold) * 100 / span)
 		if view.ProgressPercent < 0 {
 			view.ProgressPercent = 0
 		}
@@ -139,59 +232,20 @@ func computeLevel(levels []domain.GrowthLevel, xp int64, activeDays int) LevelVi
 	return view
 }
 
-// computeLevelWithOverride 计算最终展示等级：人工覆盖优先于经验 / 活跃天数。
-//
-// 覆盖是固定值：一旦设置，后续经验变化不会改变展示等级，直到下一次人工调整。
-// 覆盖值仍会被限制在当前启用等级范围内；等级定义删除 / 停用后取不超过覆盖值的
-// 最高启用等级。覆盖期间不展示“距下一级”的经验进度。
-func computeLevelWithOverride(levels []domain.GrowthLevel, xp int64, override *int, activeDays int) LevelView {
-	if override == nil {
-		return computeLevel(levels, xp, activeDays)
-	}
-	enabled := enabledLevels(levels)
-	if len(enabled) == 0 {
-		return LevelView{
-			Level: GuestLevel, Title: GuestLevelTitle, IsMax: true, Overridden: true,
-			ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
-		}
-	}
-
-	target := *override
-	if target < enabled[0].Level {
-		target = enabled[0].Level
-	}
-	if target > enabled[len(enabled)-1].Level {
-		target = enabled[len(enabled)-1].Level
-	}
-
-	cur := enabled[0]
-	idx := 0
-	for i, l := range enabled {
-		if l.Level <= target {
-			cur = l
-			idx = i
-		}
-	}
-	view := LevelView{
-		Level: cur.Level, Title: cur.Title, Overridden: true,
-		ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
-	}
-	if cur.Level == GuestLevel {
-		view.ProgressPercent = guestActiveProgress(activeDays)
-	} else {
-		// 覆盖等级不参与经验自动升级，进度条固定显示满格，
-		// 具体“人工覆盖”状态由 Overridden 字段告知前端。
-		view.ProgressPercent = 100
-	}
-	if idx >= len(enabled)-1 {
-		view.IsMax = true
-	}
-	return view
+// Level 返回最终展示等级（用于回写 user_growth.level）。
+func (r LevelResolver) Level(xp int64, override *int, activeDays int) int {
+	return r.View(xp, override, activeDays).Level
 }
 
-// effectiveLevel 返回最终展示等级（用于回写 user_growth.level）。
-func effectiveLevel(levels []domain.GrowthLevel, xp int64, override *int, activeDays int) int {
-	return computeLevelWithOverride(levels, xp, override, activeDays).Level
+// clampLevel 把等级限制在 0..maxLevel。
+func clampLevel(level, maxLevel int) int {
+	if level < GuestLevel {
+		return GuestLevel
+	}
+	if level > maxLevel {
+		return maxLevel
+	}
+	return level
 }
 
 // guestActiveProgress 把活跃天数换算成 0-100 的访客阶段进度。
@@ -203,14 +257,4 @@ func guestActiveProgress(activeDays int) int {
 		return 100
 	}
 	return activeDays * 100 / GuestActiveDaysRequired
-}
-
-// levelTitle 返回指定等级对应的称号；找不到时回退为 Lv.N。
-func levelTitle(levels []domain.GrowthLevel, level int) string {
-	for _, l := range levels {
-		if l.Level == level && l.Enabled {
-			return l.Title
-		}
-	}
-	return "Lv." + itoa(level)
 }

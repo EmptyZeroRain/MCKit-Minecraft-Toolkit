@@ -222,18 +222,36 @@ type GrowthRule struct {
 // TableName 指定表名。
 func (GrowthRule) TableName() string { return "growth_rules" }
 
-// GrowthLevel 等级阈值。
-type GrowthLevel struct {
-	Level       int       `gorm:"primaryKey" json:"level"`
-	ThresholdXP int64     `gorm:"column:threshold_xp;not null" json:"threshold_xp"`
-	Title       string    `gorm:"size:100;not null" json:"title"`
-	Enabled     bool      `gorm:"not null;default:true" json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+// GrowthLevelConfig 等级曲线配置（单行，id 固定为 1）。
+//
+// 等级不再逐条存储，而是按 max_level / step_xp 自动计算：
+// 达到 Lv.N 所需经验 = step_xp * N * (N-1) / 2。
+type GrowthLevelConfig struct {
+	ID        int       `gorm:"primaryKey" json:"-"`
+	MaxLevel  int       `gorm:"column:max_level;not null" json:"max_level"`
+	StepXP    int64     `gorm:"column:step_xp;not null" json:"step_xp"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。
-func (GrowthLevel) TableName() string { return "growth_levels" }
+func (GrowthLevelConfig) TableName() string { return "growth_level_config" }
+
+// GrowthLevelTitle 等级称号规则。
+//
+// min_level = max_level 表示“指定等级称号”，优先级高于区间称号；
+// 其余情况表示 [min_level, max_level] 区间称号，启用区间之间不允许重叠。
+type GrowthLevelTitle struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	MinLevel  int       `gorm:"column:min_level;not null" json:"min_level"`
+	MaxLevel  int       `gorm:"column:max_level;not null" json:"max_level"`
+	Title     string    `gorm:"size:100;not null" json:"title"`
+	Enabled   bool      `gorm:"not null;default:true" json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (GrowthLevelTitle) TableName() string { return "growth_level_titles" }
 
 // DailyTaskDefinition 每日任务定义（后台可配置，版本化）。
 type DailyTaskDefinition struct {

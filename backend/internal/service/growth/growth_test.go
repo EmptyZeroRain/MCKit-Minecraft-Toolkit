@@ -1,20 +1,57 @@
 package growth
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"mckit/backend/internal/domain"
 )
 
-// TestComputeLevel 覆盖等级计算的关键边界（jingyan.md §5）。
-func TestComputeLevel(t *testing.T) {
-	levels := []domain.GrowthLevel{
-		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
-		{Level: 1, ThresholdXP: 0, Title: "初来乍到", Enabled: true},
-		{Level: 2, ThresholdXP: 100, Title: "方块学徒", Enabled: true},
-		{Level: 3, ThresholdXP: 300, Title: "探索者", Enabled: true},
+func testLevelResolver(maxLevel int) LevelResolver {
+	return NewLevelResolver(
+		&domain.GrowthLevelConfig{ID: 1, MaxLevel: maxLevel, StepXP: DefaultLevelStepXP},
+		[]domain.GrowthLevelTitle{
+			{MinLevel: 0, MaxLevel: 0, Title: "访客", Enabled: true},
+			{MinLevel: 1, MaxLevel: 10, Title: "初来乍到", Enabled: true},
+			{MinLevel: 5, MaxLevel: 5, Title: "五级称号", Enabled: true},
+			{MinLevel: 100, MaxLevel: 100, Title: "百级传奇", Enabled: true},
+		},
+	)
+}
+
+// TestLevelThreshold 等级曲线：Lv.N 门槛 = step * N * (N-1) / 2。
+func TestLevelThreshold(t *testing.T) {
+	curve := LevelCurve{MaxLevel: 100, StepXP: 100}
+	cases := map[int]int64{0: 0, 1: 0, 2: 100, 3: 300, 4: 600, 5: 1000, 10: 4500, 100: 495000}
+	for level, want := range cases {
+		if got := LevelThreshold(level, curve); got != want {
+			t.Fatalf("Lv.%d 门槛 = %d，期望 %d", level, got, want)
+		}
 	}
+}
+
+// TestLevelForXP 经验反查等级边界。
+func TestLevelForXP(t *testing.T) {
+	curve := LevelCurve{MaxLevel: 100, StepXP: 100}
+	cases := []struct {
+		xp    int64
+		level int
+	}{
+		{0, 1}, {99, 1}, {100, 2}, {299, 2}, {300, 3},
+		{4499, 9}, {4500, 10}, {494999, 99}, {495000, 100}, {9999999, 100},
+	}
+	for _, tc := range cases {
+		if got := levelForXP(tc.xp, curve); got != tc.level {
+			t.Fatalf("%d XP 应为 Lv.%d，实际 Lv.%d", tc.xp, tc.level, got)
+		}
+	}
+}
+
+// TestLevelView 覆盖等级计算的关键边界。
+func TestLevelView(t *testing.T) {
+	resolver := testLevelResolver(100)
 	cases := []struct {
 		name        string
 		xp          int64
@@ -26,12 +63,12 @@ func TestComputeLevel(t *testing.T) {
 		{"零经验为 Lv.1", 0, 1, 100, false, 0},
 		{"刚好达标升级", 100, 2, 200, false, 0},
 		{"区间中间进度", 200, 2, 100, false, 50},
-		{"达到最高等级", 300, 3, 0, true, 100},
-		{"超过最高等级仍为满级", 9999, 3, 0, true, 100},
+		{"达到最高等级", 495000, 100, 0, true, 100},
+		{"超过最高等级仍为满级", 9999999, 100, 0, true, 100},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			view := computeLevel(levels, tc.xp, GuestActiveDaysRequired)
+			view := resolver.View(tc.xp, nil, GuestActiveDaysRequired)
 			if view.Level != tc.wantLevel {
 				t.Fatalf("等级 = %d，期望 %d", view.Level, tc.wantLevel)
 			}
@@ -48,14 +85,10 @@ func TestComputeLevel(t *testing.T) {
 	}
 }
 
-// TestComputeLevelGuestGate 未满 7 个活跃日固定为 Lv.0，进度按活跃天数计算。
-func TestComputeLevelGuestGate(t *testing.T) {
-	levels := []domain.GrowthLevel{
-		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
-		{Level: 1, ThresholdXP: 0, Title: "初来乍到", Enabled: true},
-		{Level: 2, ThresholdXP: 100, Title: "方块学徒", Enabled: true},
-	}
-	view := computeLevel(levels, 5000, 3)
+// TestLevelGuestGate 未满 7 个活跃日固定为 Lv.0，进度按活跃天数计算。
+func TestLevelGuestGate(t *testing.T) {
+	resolver := testLevelResolver(100)
+	view := resolver.View(5000, nil, 3)
 	if view.Level != 0 || view.Title != "访客" {
 		t.Fatalf("3 个活跃日应停留 Lv.0，实际 %+v", view)
 	}
@@ -69,43 +102,58 @@ func TestComputeLevelGuestGate(t *testing.T) {
 	if view.ProgressPercent != wantPercent {
 		t.Fatalf("访客进度 = %d，期望 %d", view.ProgressPercent, wantPercent)
 	}
-	if got := computeLevel(levels, 5000, GuestActiveDaysRequired).Level; got != 2 {
-		t.Fatalf("满 7 个活跃日后应按经验进入 Lv.2，实际 Lv.%d", got)
+	if got := resolver.View(5000, nil, GuestActiveDaysRequired).Level; got != 10 {
+		t.Fatalf("满 7 个活跃日后 5000 XP 应为 Lv.10，实际 Lv.%d", got)
 	}
 }
 
-// TestComputeLevelIgnoresDisabled 停用等级不参与计算。
-func TestComputeLevelIgnoresDisabled(t *testing.T) {
-	levels := []domain.GrowthLevel{
-		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
-		{Level: 1, ThresholdXP: 0, Title: "Lv.1", Enabled: true},
-		{Level: 2, ThresholdXP: 100, Title: "Lv.2", Enabled: false},
-		{Level: 3, ThresholdXP: 300, Title: "Lv.3", Enabled: true},
+// TestLevelTitles 指定等级称号优先于区间称号，无规则时回退 Lv.N。
+func TestLevelTitles(t *testing.T) {
+	resolver := testLevelResolver(100)
+	cases := map[int]string{
+		0: "访客", 1: "初来乍到", 5: "五级称号", 10: "初来乍到",
+		11: "Lv.11", 99: "Lv.99", 100: "百级传奇",
 	}
-	if got := computeLevel(levels, 150, GuestActiveDaysRequired).Level; got != 1 {
-		t.Fatalf("停用 Lv.2 后 150 XP 应为 Lv.1，实际 Lv.%d", got)
-	}
-	if got := computeLevel(levels, 300, GuestActiveDaysRequired).Level; got != 3 {
-		t.Fatalf("300 XP 应为 Lv.3，实际 Lv.%d", got)
+	for level, want := range cases {
+		if got := resolver.Title(level); got != want {
+			t.Fatalf("Lv.%d 称号 = %q，期望 %q", level, got, want)
+		}
 	}
 }
 
-// TestComputeLevelEmptyThresholds 阈值表缺失时兜底 Lv.0。
-func TestComputeLevelEmptyThresholds(t *testing.T) {
-	view := computeLevel(nil, 12345, GuestActiveDaysRequired)
-	if view.Level != 0 || view.Title != "访客" || !view.IsMax {
-		t.Fatalf("空阈值表应兜底 Lv.0 访客满级，实际 %+v", view)
+// TestBuildLevelTitle 称号规则校验：中文按字符计数，范围不能越界。
+func TestBuildLevelTitle(t *testing.T) {
+	ok, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 1, MaxLevel: 10, Title: strings.Repeat("好", 100), Enabled: true,
+	}, 9999)
+	if err != nil || ok.Title == "" {
+		t.Fatalf("100 个中文字符应合法: %+v err=%v", ok, err)
+	}
+	if _, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 1, MaxLevel: 10, Title: strings.Repeat("好", 101), Enabled: true,
+	}, 9999); !errors.Is(err, ErrLevelThreshold) {
+		t.Fatalf("101 个中文字符应拒绝，实际 %v", err)
+	}
+	if _, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 10, MaxLevel: 1, Title: "倒序", Enabled: true,
+	}, 9999); !errors.Is(err, ErrLevelThreshold) {
+		t.Fatalf("倒序区间应拒绝，实际 %v", err)
+	}
+	if _, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 1, MaxLevel: 10000, Title: "越界", Enabled: true,
+	}, 9999); !errors.Is(err, ErrLevelThreshold) {
+		t.Fatalf("超过等级上限应拒绝，实际 %v", err)
+	}
+	if _, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 100, MaxLevel: 100, Title: "超出当前上限但停用", Enabled: false,
+	}, 50); err != nil {
+		t.Fatalf("停用规则允许暂存于当前上限之外: %v", err)
 	}
 }
 
-// TestComputeLevelWithOverride 人工等级覆盖：覆盖值优先，经验变化不影响展示等级。
-func TestComputeLevelWithOverride(t *testing.T) {
-	levels := []domain.GrowthLevel{
-		{Level: 0, ThresholdXP: 0, Title: "访客", Enabled: true},
-		{Level: 1, ThresholdXP: 0, Title: "Lv.1", Enabled: true},
-		{Level: 2, ThresholdXP: 100, Title: "Lv.2", Enabled: true},
-		{Level: 3, ThresholdXP: 300, Title: "Lv.3", Enabled: true},
-	}
+// TestLevelOverride 人工等级覆盖：覆盖值优先，经验变化不影响展示等级。
+func TestLevelOverride(t *testing.T) {
+	resolver := testLevelResolver(100)
 	cases := []struct {
 		name      string
 		xp        int64
@@ -116,12 +164,12 @@ func TestComputeLevelWithOverride(t *testing.T) {
 		{"无覆盖按经验计算", 150, nil, 7, 2},
 		{"覆盖值优先于经验", 150, intPtr(3), 7, 3},
 		{"访客也可被人工覆盖", 0, intPtr(2), 1, 2},
-		{"覆盖值不超过最高等级", 300, intPtr(99), 7, 3},
+		{"覆盖值不超过最高等级", 300, intPtr(999), 7, 100},
 		{"覆盖值不低于最低等级", 0, intPtr(-1), 7, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			view := computeLevelWithOverride(levels, tc.xp, tc.override, tc.active)
+			view := resolver.View(tc.xp, tc.override, tc.active)
 			if view.Level != tc.wantLevel {
 				t.Fatalf("等级 = %d，期望 %d", view.Level, tc.wantLevel)
 			}
@@ -133,7 +181,7 @@ func TestComputeLevelWithOverride(t *testing.T) {
 			}
 		})
 	}
-	if got := effectiveLevel(levels, 0, intPtr(2), 7); got != 2 {
+	if got := resolver.Level(0, intPtr(2), 7); got != 2 {
 		t.Fatalf("0 XP + 覆盖 Lv.2 应为 Lv.2，实际 Lv.%d", got)
 	}
 }

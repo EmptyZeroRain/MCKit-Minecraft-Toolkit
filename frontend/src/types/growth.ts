@@ -191,20 +191,28 @@ export interface GrowthRuleInput {
   effective_until?: string | null
 }
 
-/** 等级阈值 */
-export interface GrowthLevel {
-  level: number
-  threshold_xp: number
+/** 等级曲线配置：Lv.N 门槛 = step_xp * N * (N-1) / 2 */
+export interface GrowthLevelConfig {
+  max_level: number
+  step_xp: number
+  updated_at?: string
+}
+
+/** 等级称号规则；min_level === max_level 表示指定等级称号 */
+export interface GrowthLevelTitle {
+  id: string
+  min_level: number
+  max_level: number
   title: string
   enabled: boolean
   created_at?: string
   updated_at?: string
 }
 
-/** 新增等级入参（可指定等级号并跳号；省略 level 时由服务端追加到最高级之后） */
-export interface GrowthLevelCreateInput {
-  level?: number
-  threshold_xp: number
+/** 新增 / 更新称号规则入参 */
+export interface GrowthLevelTitleInput {
+  min_level: number
+  max_level: number
   title: string
   enabled: boolean
 }

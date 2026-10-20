@@ -278,23 +278,16 @@ func (s *Service) recalcLevel(tx *gorm.DB, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	levels, err := loadLevels(tx)
+	curve, err := loadLevelCurveTx(tx)
 	if err != nil {
 		return err
 	}
-	level := effectiveLevel(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
+	level := LevelResolver{Curve: curve}.Level(g.CurrentXP, g.LevelOverride, g.ActiveDays)
 	if level == g.Level {
 		return nil
 	}
 	return tx.Model(&domain.UserGrowth{}).Where("user_id = ?", userID).
 		Update("level", level).Error
-}
-
-// loadLevels 读取全部等级（按阈值升序、同阈值按等级号升序）。
-func loadLevels(tx *gorm.DB) ([]domain.GrowthLevel, error) {
-	var out []domain.GrowthLevel
-	err := tx.Order("threshold_xp ASC, level ASC").Find(&out).Error
-	return out, err
 }
 
 // loadActiveRules 加载某事件类型在指定时间生效的规则：每个编码取最高版本。

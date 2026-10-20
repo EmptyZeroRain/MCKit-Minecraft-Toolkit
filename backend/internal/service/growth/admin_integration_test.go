@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"mckit/backend/internal/accountid"
@@ -137,7 +139,7 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	// 超出等级范围应拒绝，且不写入。
 	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
 		TargetUserID: user.UserNo,
-		TargetLevel:  99,
+		TargetLevel:  DefaultMaxLevel + 1,
 		Reason:       "越界测试",
 		OperatorID:   operator.ID.String(),
 	}); !errors.Is(err, ErrLevelRange) {
@@ -277,7 +279,63 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	}
 }
 
-// TestGrowthLevelManagementIntegration 覆盖指定等级号新增、跳号、删除中间等级重排与用户 / 成就同步。
+// TestGrowthLevelManagementIntegration 覆盖等级曲线、称号规则、用户等级重算与人工覆盖。
+// TestRefreshActiveDaysIntegration 验证活跃日按业务时区去重、满 7 天后封顶。
+func TestRefreshActiveDaysIntegration(t *testing.T) {
+	gdb := setupGrowthAdminDB(t)
+	ctx := context.Background()
+	svc := NewService(gdb, "Asia/Shanghai")
+	user := createGrowthUser(t, gdb, "it-active-days", domain.RoleUser)
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("加载业务时区失败: %v", err)
+	}
+	// 每天 23:30（业务时区）产生一个登录事件，连续 7 个自然日。
+	start := time.Date(2026, 10, 1, 23, 30, 0, 0, loc)
+	for i := 0; i < GuestActiveDaysRequired; i++ {
+		err := svc.HandleEvent(ctx, domain.GrowthEvent{
+			EventID:      uuid.New(),
+			EventType:    domain.EventUserLoginSucceeded,
+			ActorUserID:  user.ID,
+			SourceModule: "it",
+			OccurredAt:   start.AddDate(0, 0, i),
+		})
+		if err != nil {
+			t.Fatalf("处理第 %d 个活跃日事件失败: %v", i+1, err)
+		}
+	}
+
+	var g domain.UserGrowth
+	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.ActiveDays != GuestActiveDaysRequired {
+		t.Fatalf("7 个不同自然日后活跃天数应为 %d，实际 %d", GuestActiveDaysRequired, g.ActiveDays)
+	}
+	if g.Level < 1 {
+		t.Fatalf("满 7 个活跃日后应进入经验等级体系，实际 Lv.%d", g.Level)
+	}
+
+	// 第 8 个活跃日不再增长，缓存封顶为 7。
+	if err := svc.HandleEvent(ctx, domain.GrowthEvent{
+		EventID:      uuid.New(),
+		EventType:    domain.EventUserLoginSucceeded,
+		ActorUserID:  user.ID,
+		SourceModule: "it",
+		OccurredAt:   start.AddDate(0, 0, GuestActiveDaysRequired),
+	}); err != nil {
+		t.Fatalf("处理第 8 个活跃日事件失败: %v", err)
+	}
+	g = domain.UserGrowth{}
+	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.ActiveDays != GuestActiveDaysRequired {
+		t.Fatalf("活跃天数应封顶为 %d，实际 %d", GuestActiveDaysRequired, g.ActiveDays)
+	}
+}
+
 func TestGrowthLevelManagementIntegration(t *testing.T) {
 	gdb := setupGrowthAdminDB(t)
 	ctx := context.Background()
@@ -286,130 +344,147 @@ func TestGrowthLevelManagementIntegration(t *testing.T) {
 	user := createGrowthUser(t, gdb, "it-level-manage-user", domain.RoleUser)
 	operator := createGrowthUser(t, gdb, "it-level-manage-admin", domain.RoleAdmin)
 
-	levels, err := svc.ListLevels(ctx)
-	if err != nil || len(levels) != 11 {
-		t.Fatalf("初始等级应为 11 个（Lv.0-10）: len=%d err=%v", len(levels), err)
+	cfg, err := svc.GetLevelConfig(ctx)
+	if err != nil {
+		t.Fatalf("读取等级曲线失败: %v", err)
 	}
+	if cfg.MaxLevel != DefaultMaxLevel || cfg.StepXP != DefaultLevelStepXP {
+		t.Fatalf("默认等级曲线异常: %+v", cfg)
+	}
+	titles, err := svc.ListLevelTitles(ctx)
+	if err != nil {
+		t.Fatalf("读取称号规则失败: %v", err)
+	}
+	if len(titles) != 3 {
+		t.Fatalf("默认称号规则应为 3 条（Lv.0 / Lv.1-10 / Lv.100），实际 %d: %+v", len(titles), titles)
+	}
+
 	if err := gdb.Create(&domain.UserGrowth{
-		UserID: user.ID, CurrentXP: 7000, Level: 10, ActiveDays: GuestActiveDaysRequired,
+		UserID: user.ID, CurrentXP: 7000, Level: 12, ActiveDays: GuestActiveDaysRequired,
 	}).Error; err != nil {
 		t.Fatalf("创建成长投影失败: %v", err)
 	}
 
-	// 可指定等级号并跳号：直接创建 Lv.99 / Lv.999。
-	created, err := svc.CreateLevel(ctx, CreateLevelInput{
-		Level:       99,
-		ThresholdXP: 8000,
-		Title:       "测试 Lv.99",
-		Enabled:     true,
-	}, operator.ID.String())
+	// Lv.1-10 为区间「初来乍到」，Lv.100 为指定称号。
+	resolver, err := svc.levelResolver(ctx)
 	if err != nil {
-		t.Fatalf("新增 Lv.99 失败: %v", err)
+		t.Fatalf("读取等级解析器失败: %v", err)
 	}
-	if created.Level != 99 || created.ThresholdXP != 8000 {
-		t.Fatalf("新增 Lv.99 结果异常: %+v", created)
+	if got := resolver.Title(1); got != "初来乍到" {
+		t.Fatalf("Lv.1 称号 = %q", got)
 	}
-	created, err = svc.CreateLevel(ctx, CreateLevelInput{
-		Level:       999,
-		ThresholdXP: 9000,
-		Title:       "测试 Lv.999",
-		Enabled:     true,
-	}, operator.ID.String())
-	if err != nil {
-		t.Fatalf("新增 Lv.999 失败: %v", err)
+	if got := resolver.Title(10); got != "初来乍到" {
+		t.Fatalf("Lv.10 称号 = %q", got)
 	}
-	if created.Level != 999 {
-		t.Fatalf("新增 Lv.999 结果异常: %+v", created)
+	if got := resolver.Title(100); got != "MCkit 传奇" {
+		t.Fatalf("Lv.100 称号 = %q", got)
+	}
+	if got := resolver.Title(11); got != "Lv.11" {
+		t.Fatalf("无规则等级应回退 Lv.N，实际 %q", got)
 	}
 
-	// 等级号重复应冲突；阈值顺序非法应拒绝。
-	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
-		Level: 99, ThresholdXP: 8500, Title: "重复等级号", Enabled: true,
+	// 区间称号：20-30 可创建，重叠区间拒绝；指定等级 20 覆盖区间。
+	if _, err := svc.CreateLevelTitle(ctx, LevelTitleInput{
+		MinLevel: 20, MaxLevel: 30, Title: "探索者", Enabled: true,
+	}, operator.ID.String()); err != nil {
+		t.Fatalf("新增区间称号失败: %v", err)
+	}
+	if _, err := svc.CreateLevelTitle(ctx, LevelTitleInput{
+		MinLevel: 25, MaxLevel: 35, Title: "重叠区间", Enabled: true,
 	}, operator.ID.String()); !errors.Is(err, ErrLevelExists) {
-		t.Fatalf("重复等级号应返回 ErrLevelExists，实际 %v", err)
+		t.Fatalf("重叠区间应返回 ErrLevelExists，实际 %v", err)
 	}
-	if _, err := svc.CreateLevel(ctx, CreateLevelInput{
-		Level: 50, ThresholdXP: 8500, Title: "阈值顺序错误", Enabled: true,
-	}, operator.ID.String()); !errors.Is(err, ErrLevelOrder) {
-		t.Fatalf("阈值顺序错误应返回 ErrLevelOrder，实际 %v", err)
-	}
-
-	// Lv.0 / Lv.1 永远保留。
-	if err := svc.DeleteLevel(ctx, 0, operator.ID.String()); !errors.Is(err, ErrLevelDeleteLv1) {
-		t.Fatalf("删除 Lv.0 应返回 ErrLevelDeleteLv1，实际 %v", err)
-	}
-	if err := svc.DeleteLevel(ctx, 1, operator.ID.String()); !errors.Is(err, ErrLevelDeleteLv1) {
-		t.Fatalf("删除 Lv.1 应返回 ErrLevelDeleteLv1，实际 %v", err)
-	}
-
-	// 删除中间等级 Lv.5：更高等级整体减 1，跳号间隔保留。
-	if err := svc.DeleteLevel(ctx, 5, operator.ID.String()); err != nil {
-		t.Fatalf("删除中间等级 Lv.5 失败: %v", err)
-	}
-	levels, err = svc.ListLevels(ctx)
+	exact, err := svc.CreateLevelTitle(ctx, LevelTitleInput{
+		MinLevel: 20, MaxLevel: 20, Title: "二十级", Enabled: true,
+	}, operator.ID.String())
 	if err != nil {
-		t.Fatalf("读取等级失败: %v", err)
+		t.Fatalf("新增指定等级称号失败: %v", err)
 	}
-	byLevel := make(map[int]domain.GrowthLevel, len(levels))
-	for _, l := range levels {
-		byLevel[l.Level] = l
+	if _, err := svc.CreateLevelTitle(ctx, LevelTitleInput{
+		MinLevel: 20, MaxLevel: 20, Title: "重复指定等级", Enabled: true,
+	}, operator.ID.String()); !errors.Is(err, ErrLevelExists) {
+		t.Fatalf("重复指定等级称号应返回 ErrLevelExists，实际 %v", err)
 	}
-	if len(levels) != 12 {
-		t.Fatalf("删除后应剩 12 个等级，实际 %d", len(levels))
+	resolver, err = svc.levelResolver(ctx)
+	if err != nil {
+		t.Fatalf("读取等级解析器失败: %v", err)
 	}
-	if byLevel[5].Title != "资源猎人" {
-		t.Fatalf("原 Lv.6 应重排为 Lv.5，实际 %+v", byLevel[5])
+	if got := resolver.Title(20); got != "二十级" {
+		t.Fatalf("指定等级称号应覆盖区间，实际 %q", got)
 	}
-	if byLevel[9].Title != "MCkit 传奇" {
-		t.Fatalf("原 Lv.10 应重排为 Lv.9，实际 %+v", byLevel[9])
+	if got := resolver.Title(21); got != "探索者" {
+		t.Fatalf("区间内其他等级称号 = %q", got)
 	}
-	if byLevel[98].Title != "测试 Lv.99" || byLevel[998].Title != "测试 Lv.999" {
-		t.Fatalf("跳号等级应同步前移为 98 / 998，实际 %+v / %+v", byLevel[98], byLevel[998])
+	if _, err := svc.UpdateLevelTitle(ctx, exact.ID.String(), LevelTitleInput{
+		MinLevel: 20, MaxLevel: 20, Title: "二十级·改", Enabled: true,
+	}, operator.ID.String()); err != nil {
+		t.Fatalf("更新指定等级称号失败: %v", err)
 	}
 
-	// 用户经验 7000 从原 Lv.10 重算为新 Lv.9。
+	// 调整曲线后自动重算：step 200 下 7000 XP 为 Lv.8。
+	fixed, err := svc.UpdateLevelConfig(ctx, LevelConfigInput{MaxLevel: 5000, StepXP: 200}, operator.ID.String())
+	if err != nil {
+		t.Fatalf("更新等级曲线失败: %v", err)
+	}
+	if fixed != 1 {
+		t.Fatalf("应重算 1 个用户，实际 %d", fixed)
+	}
 	var g domain.UserGrowth
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.Level != 9 || g.LevelOverride != nil {
-		t.Fatalf("删除 Lv.5 后用户应重算为 Lv.9，实际 level=%d override=%v", g.Level, g.LevelOverride)
+	if g.Level != 8 {
+		t.Fatalf("step=200 时 7000 XP 应为 Lv.8，实际 Lv.%d", g.Level)
 	}
 
-	// level_reached 成就目标 > 被删等级时同步减 1，等于 / 小于时保持不变。
-	var ach10, ach5, ach3 domain.AchievementDefinition
-	if err := gdb.Where("code = ?", "level_10").First(&ach10).Error; err != nil {
-		t.Fatalf("读取 level_10 成就失败: %v", err)
-	}
-	if err := gdb.Where("code = ?", "level_5").First(&ach5).Error; err != nil {
-		t.Fatalf("读取 level_5 成就失败: %v", err)
-	}
-	if err := gdb.Where("code = ?", "level_3").First(&ach3).Error; err != nil {
-		t.Fatalf("读取 level_3 成就失败: %v", err)
-	}
-	if ach10.TargetValue != 9 || ach5.TargetValue != 5 || ach3.TargetValue != 3 {
-		t.Fatalf("成就目标重排异常: level_10=%d level_5=%d level_3=%d",
-			ach10.TargetValue, ach5.TargetValue, ach3.TargetValue)
-	}
-
-	// 可插入被删除的等级号：Lv.10 阈值 6500 位于 Lv.9(6000) 与 Lv.98(8000) 之间。
-	created, err = svc.CreateLevel(ctx, CreateLevelInput{
-		Level:       10,
-		ThresholdXP: 6500,
-		Title:       "MCkit 传奇（补回）",
-		Enabled:     true,
-	}, operator.ID.String())
+	// 单用户覆盖：Lv.500 显示指定称号，经验不变；超出上限拒绝。
+	adjust, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: user.UserNo, TargetLevel: 500, Reason: "集成测试覆盖",
+		OperatorID: operator.ID.String(),
+	})
 	if err != nil {
-		t.Fatalf("插入 Lv.10 失败: %v", err)
+		t.Fatalf("调整等级失败: %v", err)
 	}
-	if created.Level != 10 {
-		t.Fatalf("插入等级号异常: %+v", created)
+	if adjust.Level != 500 || adjust.BaseLevel != 8 || !adjust.Overridden {
+		t.Fatalf("等级覆盖结果异常: %+v", adjust)
+	}
+	if adjust.LevelTitle != "Lv.500" {
+		t.Fatalf("未配置称号时应回退 Lv.500，实际 %q", adjust.LevelTitle)
+	}
+	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: user.UserNo, TargetLevel: 5001, Reason: "超限",
+		OperatorID: operator.ID.String(),
+	}); !errors.Is(err, ErrLevelRange) {
+		t.Fatalf("超出等级上限应返回 ErrLevelRange，实际 %v", err)
 	}
 	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.Level != 10 {
-		t.Fatalf("插入 Lv.10 后用户应自动重算为 Lv.10，实际 %d", g.Level)
+	if g.Level != 500 || g.LevelOverride == nil || *g.LevelOverride != 500 {
+		t.Fatalf("人工覆盖未落库: level=%d override=%v", g.Level, g.LevelOverride)
+	}
+
+	// 降低上限后覆盖值同步收敛到新上限。
+	if _, err := svc.UpdateLevelConfig(ctx, LevelConfigInput{MaxLevel: 400, StepXP: 200}, operator.ID.String()); err != nil {
+		t.Fatalf("降低等级上限失败: %v", err)
+	}
+	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
+		t.Fatalf("读取成长投影失败: %v", err)
+	}
+	if g.Level != 400 || g.LevelOverride == nil || *g.LevelOverride != 400 {
+		t.Fatalf("降低上限后覆盖值应收敛到 400: level=%d override=%v", g.Level, g.LevelOverride)
+	}
+
+	// 删除称号规则后对应等级回退 Lv.N。
+	if err := svc.DeleteLevelTitle(ctx, exact.ID.String(), operator.ID.String()); err != nil {
+		t.Fatalf("删除指定等级称号失败: %v", err)
+	}
+	resolver, err = svc.levelResolver(ctx)
+	if err != nil {
+		t.Fatalf("读取等级解析器失败: %v", err)
+	}
+	if got := resolver.Title(20); got != "探索者" {
+		t.Fatalf("删除指定等级称号后应回退区间称号，实际 %q", got)
 	}
 }
 
@@ -485,6 +560,10 @@ func TestAdminGrowthUserDetailIntegration(t *testing.T) {
 	}
 	if detail.User.UserID != user.ID.String() {
 		t.Fatalf("详情用户 ID 不符: %+v", detail.User)
+	}
+	// 只有经验、没有活跃事件的用户仍停留 Lv.0，且不是人工覆盖。
+	if detail.User.Level != GuestLevel || detail.User.IsOverridden || detail.User.ActiveDays != 0 {
+		t.Fatalf("访客详情等级状态不符: %+v", detail.User)
 	}
 	if len(detail.Experience) != 2 {
 		t.Fatalf("经验流水应有 2 条（人工调整 + 成就奖励），实际 %d", len(detail.Experience))

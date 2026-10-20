@@ -59,7 +59,7 @@ type Overview struct {
 
 // GetOverview 汇总当前用户的成长概览。
 func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, error) {
-	levels, err := s.repo.ListLevels(ctx)
+	resolver, err := s.levelResolver(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, er
 	if g == nil {
 		g = &domain.UserGrowth{Level: GuestLevel}
 	}
-	view := computeLevelWithOverride(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
+	view := resolver.View(g.CurrentXP, g.LevelOverride, g.ActiveDays)
 
 	date := businessDate(s.now(), s.loc)
 	defs, err := s.repo.ListTaskDefs(ctx, true)
@@ -302,7 +302,7 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 	if acc.Username == "" {
 		return nil, ErrUnknownUser
 	}
-	levels, err := s.repo.ListLevels(ctx)
+	resolver, err := s.levelResolver(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +313,7 @@ func (s *Service) GetPublicProfile(ctx context.Context, userID string) (*PublicP
 	if g == nil {
 		g = &domain.UserGrowth{Level: GuestLevel}
 	}
-	view := computeLevelWithOverride(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
+	view := resolver.View(g.CurrentXP, g.LevelOverride, g.ActiveDays)
 	unlocked, err := s.repo.ListUserAchievements(ctx, userID)
 	if err != nil {
 		return nil, err

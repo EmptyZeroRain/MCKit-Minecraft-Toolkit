@@ -18,11 +18,13 @@ vi.mock('@/api/gift', () => ({
 }))
 
 vi.mock('@/api/growth', () => ({
-  fetchGrowthLevels: vi.fn(),
-  createGrowthLevel: vi.fn(),
-  deleteGrowthLevel: vi.fn(),
+  fetchGrowthLevelConfig: vi.fn(),
+  updateGrowthLevelConfig: vi.fn(),
+  fetchGrowthLevelTitles: vi.fn(),
+  createGrowthLevelTitle: vi.fn(),
+  updateGrowthLevelTitle: vi.fn(),
+  deleteGrowthLevelTitle: vi.fn(),
   recalculateGrowthLevels: vi.fn(),
-  updateGrowthLevel: vi.fn(),
   adjustUserLevel: vi.fn(),
   fetchAchievementDefs: vi.fn(),
   fetchAdminUserAchievements: vi.fn(),
@@ -41,11 +43,14 @@ import {
 } from '@/api/gift'
 import {
   adjustUserLevel,
-  createGrowthLevel,
-  deleteGrowthLevel,
+  createGrowthLevelTitle,
+  deleteGrowthLevelTitle,
   fetchAchievementDefs,
   fetchAdminUserAchievements,
-  fetchGrowthLevels,
+  fetchGrowthLevelConfig,
+  fetchGrowthLevelTitles,
+  updateGrowthLevelConfig,
+  updateGrowthLevelTitle,
   grantUserAchievement,
   revokeUserAchievement,
 } from '@/api/growth'
@@ -53,7 +58,11 @@ import AdminGiftsView from '@/views/admin/AdminGiftsView.vue'
 import AdminGrowthAchievementsPanel from '@/views/admin/AdminGrowthAchievementsPanel.vue'
 import AdminGrowthLevelsPanel from '@/views/admin/AdminGrowthLevelsPanel.vue'
 import type { GiftLedgerItem, GiftWallet } from '@/types/gift'
-import type { AdminUserAchievement, GrowthLevel } from '@/types/growth'
+import type {
+  AdminUserAchievement,
+  GrowthLevelConfig,
+  GrowthLevelTitle,
+} from '@/types/growth'
 
 const wallet: GiftWallet = {
   user_id: '00000000-0000-0000-0000-000000000001',
@@ -81,10 +90,11 @@ const entry: GiftLedgerItem = {
   created_at: '2026-10-20T00:00:00Z',
 }
 
-const levels: GrowthLevel[] = [
-  { level: 1, threshold_xp: 0, title: '初来乍到', enabled: true },
-  { level: 2, threshold_xp: 100, title: '方块学徒', enabled: true },
-  { level: 3, threshold_xp: 300, title: '探索者', enabled: true },
+const levelConfig: GrowthLevelConfig = { max_level: 9999, step_xp: 100 }
+const levelTitles: GrowthLevelTitle[] = [
+  { id: 'title-0', min_level: 0, max_level: 0, title: '访客', enabled: true },
+  { id: 'title-1', min_level: 1, max_level: 10, title: '初来乍到', enabled: true },
+  { id: 'title-100', min_level: 100, max_level: 100, title: 'MCkit 传奇', enabled: true },
 ]
 
 describe('后台礼物钱包', () => {
@@ -160,7 +170,8 @@ describe('后台礼物钱包', () => {
 describe('后台单用户等级调整', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    ;(fetchGrowthLevels as ReturnType<typeof vi.fn>).mockResolvedValue(levels)
+    ;(fetchGrowthLevelConfig as ReturnType<typeof vi.fn>).mockResolvedValue(levelConfig)
+    ;(fetchGrowthLevelTitles as ReturnType<typeof vi.fn>).mockResolvedValue(levelTitles)
   })
 
   afterEach(() => {
@@ -178,12 +189,12 @@ describe('后台单用户等级调整', () => {
 
     const wrapper = mount(AdminGrowthLevelsPanel)
     await flushPromises()
-    expect(wrapper.text()).toContain('新增可指定等级号并允许跳号')
+    expect(wrapper.text()).toContain('Lv.0 为访客')
 
     await wrapper.find('input[placeholder="U7K3M2QX9F"]').setValue('u7k3m2qx9f')
-    await wrapper.find('input[type="number"]').setValue('2')
+    await wrapper.find('input[placeholder="如 3"]').setValue('2')
     await wrapper.find('input[placeholder="如 活动补偿"]').setValue('测试升级')
-    await wrapper.find('form').trigger('submit')
+    await wrapper.find('form[data-test="level-adjust-form"]').trigger('submit')
     await flushPromises()
 
     expect(adjustUserLevel).toHaveBeenCalledWith({
@@ -202,60 +213,97 @@ describe('后台单用户等级调整', () => {
     await wrapper
       .find('input[placeholder="U7K3M2QX9F"]')
       .setValue('00000000-0000-0000-0000-000000000001')
-    await wrapper.find('input[type="number"]').setValue('1')
+    await wrapper.find('input[placeholder="如 3"]').setValue('1')
     await wrapper.find('input[placeholder="如 活动补偿"]').setValue('测试升级')
-    await wrapper.find('form').trigger('submit')
+    await wrapper.find('form[data-test="level-adjust-form"]').trigger('submit')
     await flushPromises()
 
     expect(adjustUserLevel).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('不支持内部 UUID')
   })
 
-  it('可指定等级号跳号新增，并可删除中间等级重排后续等级', async () => {
-    ;(createGrowthLevel as ReturnType<typeof vi.fn>).mockResolvedValue({
-      level: 99,
-      threshold_xp: 8000,
+  it('保存等级曲线并重算用户等级', async () => {
+    ;(updateGrowthLevelConfig as ReturnType<typeof vi.fn>).mockResolvedValue(4)
+
+    const wrapper = mount(AdminGrowthLevelsPanel)
+    await flushPromises()
+
+    const form = wrapper.find('form[data-test="level-config-form"]')
+    const numbers = form.findAll('input[type="number"]')
+    await numbers[0].setValue('5000')
+    await numbers[1].setValue('200')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(updateGrowthLevelConfig).toHaveBeenCalledWith({ max_level: 5000, step_xp: 200 })
+    expect(wrapper.text()).toContain('重算修正 4 个用户等级')
+  })
+
+  it('新增区间称号、指定等级称号并保存 / 删除规则', async () => {
+    ;(createGrowthLevelTitle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'title-20',
+      min_level: 20,
+      max_level: 30,
       title: '探索者',
       enabled: true,
     })
-    ;(deleteGrowthLevel as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    ;(updateGrowthLevelTitle as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'title-1',
+      min_level: 1,
+      max_level: 10,
+      title: '初来乍到·改',
+      enabled: true,
+    })
+    ;(deleteGrowthLevelTitle as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
     vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     const wrapper = mount(AdminGrowthLevelsPanel)
     await flushPromises()
 
-    const deleteButtons = wrapper.findAll('button').filter((b) => b.text() === '删除')
-    expect(deleteButtons).toHaveLength(3)
-    expect(deleteButtons[0].attributes('disabled')).toBeDefined()
-    expect(deleteButtons[1].attributes('disabled')).toBeUndefined()
-    expect(deleteButtons[2].attributes('disabled')).toBeUndefined()
-
-    await wrapper.findAll('button').find((b) => b.text() === '新增等级')!.trigger('click')
-    expect(wrapper.text()).toContain('新增等级（默认 Lv.4）')
-    await wrapper.find('input[placeholder="如 99"]').setValue('99')
-    await wrapper.find('input[placeholder="如 8000"]').setValue('8000')
-    await wrapper.find('input[placeholder="如 红石大师"]').setValue('探索者')
-    await wrapper.findAll('form')[1].trigger('submit')
+    const rangeForm = wrapper.find('form[data-test="range-title-form"]')
+    const rangeNumbers = rangeForm.findAll('input[type="number"]')
+    await rangeNumbers[0].setValue('20')
+    await rangeNumbers[1].setValue('30')
+    await rangeForm.find('input[type="text"]').setValue('探索者')
+    await rangeForm.trigger('submit')
     await flushPromises()
 
-    expect(createGrowthLevel).toHaveBeenCalledWith({
-      level: 99,
-      threshold_xp: 8000,
+    expect(createGrowthLevelTitle).toHaveBeenCalledWith({
+      min_level: 20,
+      max_level: 30,
       title: '探索者',
       enabled: true,
     })
-    expect(wrapper.text()).toContain('已新增 Lv.99')
 
-    // 删除中间等级 Lv.2（首个可删除行），后端会重排后续等级。
-    await wrapper
-      .findAll('button')
-      .find((b) => b.text() === '删除' && b.attributes('disabled') === undefined)!
-      .trigger('click')
+    const exactForm = wrapper.find('form[data-test="exact-title-form"]')
+    await exactForm.find('input[type="number"]').setValue('100')
+    await exactForm.find('input[type="text"]').setValue('百级传奇')
+    await exactForm.trigger('submit')
     await flushPromises()
 
+    expect(createGrowthLevelTitle).toHaveBeenCalledWith({
+      min_level: 100,
+      max_level: 100,
+      title: '百级传奇',
+      enabled: true,
+    })
+
+    // 第二行是 Lv.1-10 区间规则，修改称号后保存。
+    const rows = wrapper.findAll('tbody tr')
+    await rows[1].find('input[type="text"]').setValue('初来乍到·改')
+    await rows[1].findAll('button').find((b) => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(updateGrowthLevelTitle).toHaveBeenCalledWith('title-1', {
+      min_level: 1,
+      max_level: 10,
+      title: '初来乍到·改',
+      enabled: true,
+    })
+
+    await rows[1].findAll('button').find((b) => b.text() === '删除')!.trigger('click')
+    await flushPromises()
     expect(window.confirm).toHaveBeenCalled()
-    expect(deleteGrowthLevel).toHaveBeenCalledWith(2)
-    expect(wrapper.text()).toContain('已删除 Lv.2，后续等级已重排')
+    expect(deleteGrowthLevelTitle).toHaveBeenCalledWith('title-1')
   })
 })
 

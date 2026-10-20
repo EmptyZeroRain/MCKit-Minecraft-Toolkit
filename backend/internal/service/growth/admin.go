@@ -3,11 +3,12 @@ package growth
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -17,7 +18,7 @@ import (
 // 本文件实现成长系统的后台管理能力（jingyan.md §10 / §11）：
 //   - 概览统计；
 //   - 经验规则版本化维护；
-//   - 等级阈值维护与历史重算；
+//   - 等级曲线 / 称号规则维护与历史重算；
 //   - 全局经验流水查询、人工调整与冲正；
 //   - 每日任务 / 成就定义维护与历史补算；
 //   - 成长审计查询。
@@ -240,170 +241,98 @@ func (s *Service) DeleteRule(ctx context.Context, id string, operatorID string) 
 	})
 }
 
-// ---- 等级 ----
+// ---- 等级曲线与称号规则 ----
 
-// ListLevels 返回全部等级阈值。
-func (s *Service) ListLevels(ctx context.Context) ([]domain.GrowthLevel, error) {
-	return s.repo.ListLevels(ctx)
+// LevelConfigInput 等级曲线入参。
+type LevelConfigInput struct {
+	MaxLevel int   `json:"max_level"`
+	StepXP   int64 `json:"step_xp"`
 }
 
-// UpdateLevel 更新单个等级阈值 / 标题 / 启用状态。
-// 校验：等级号非负；Lv.0 / Lv.1 阈值固定为 0；其余等级阈值必须唯一且按等级严格递增。
-func (s *Service) UpdateLevel(ctx context.Context, in domain.GrowthLevel, operatorID string) error {
-	if in.Level < GuestLevel || in.ThresholdXP < 0 || strings.TrimSpace(in.Title) == "" || len(in.Title) > 100 {
-		return ErrLevelThreshold
-	}
-	levels, err := s.repo.ListLevels(ctx)
-	if err != nil {
-		return err
-	}
-	var target *domain.GrowthLevel
-	for i := range levels {
-		if levels[i].Level == in.Level {
-			target = &levels[i]
-		}
-	}
-	if target == nil {
-		return ErrLevelNotFound
-	}
-	if (in.Level == GuestLevel || in.Level == 1) && in.ThresholdXP != 0 {
-		return ErrLevelThreshold
-	}
-	if err := validateLevelOrder(levels, in.Level, in.ThresholdXP); err != nil {
-		return err
-	}
-	before := levelSnapshot(target)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&domain.GrowthLevel{}).Where("level = ?", in.Level).
-			Updates(map[string]any{
-				"threshold_xp": in.ThresholdXP,
-				"title":        strings.TrimSpace(in.Title),
-				"enabled":      in.Enabled,
-				"updated_at":   s.now(),
-			}).Error; err != nil {
-			return err
-		}
-		return writeAudit(tx, auditEntry{
-			OperatorID: operatorID, Action: "level.update", EntityType: "growth_level", EntityID: itoa(in.Level),
-			Reason: "更新等级 Lv." + itoa(in.Level) + " 阈值", Before: before,
-			After: map[string]any{"level": in.Level, "threshold_xp": in.ThresholdXP, "title": in.Title, "enabled": in.Enabled},
-		})
-	})
+// LevelTitleInput 称号规则入参；min_level == max_level 表示指定等级称号。
+type LevelTitleInput struct {
+	MinLevel int    `json:"min_level"`
+	MaxLevel int    `json:"max_level"`
+	Title    string `json:"title"`
+	Enabled  bool   `json:"enabled"`
 }
 
-// validateLevelOrder 校验等级阈值的唯一性与顺序。
-//
-// Lv.0 与 Lv.1 都固定为 0 XP，是唯一允许的重复阈值；其余正阈值必须全局唯一，
-// 且阈值随等级号严格递增。
-func validateLevelOrder(levels []domain.GrowthLevel, level int, threshold int64) error {
-	for _, l := range levels {
-		if l.Level == level {
-			continue
-		}
-		if l.ThresholdXP == threshold {
-			zeroPair := threshold == 0 &&
-				((level == GuestLevel && l.Level == 1) || (level == 1 && l.Level == GuestLevel))
-			if !zeroPair {
-				return ErrLevelThreshold
-			}
-		}
-		if l.Level < level && l.ThresholdXP > threshold {
-			return ErrLevelThreshold
-		}
-		if l.Level > level && l.ThresholdXP < threshold {
-			return ErrLevelThreshold
-		}
-	}
-	return nil
+// GetLevelConfig 返回等级曲线配置。
+func (s *Service) GetLevelConfig(ctx context.Context) (*domain.GrowthLevelConfig, error) {
+	return s.repo.GetLevelConfig(ctx)
 }
 
-// CreateLevelInput 新增等级入参。
-//
-// Level 为 0 时沿用「追加到当前最高级 +1」的兼容行为；
-// 显式指定时允许跳号（如 99、999），但阈值必须按等级号严格递增。
-type CreateLevelInput struct {
-	Level       int    `json:"level"`
-	ThresholdXP int64  `json:"threshold_xp"`
-	Title       string `json:"title"`
-	Enabled     bool   `json:"enabled"`
-}
-
-// CreateLevel 新增一个等级，可指定等级号并跳号。
-//
-// Lv.0「访客」与 Lv.1 是内置基础等级，不允许重复创建；新增等级号必须 >= 2，
-// 阈值必须为正且按等级号严格递增。新增等级可能插入现有序列中间，因此创建后
-// 立即重算用户展示等级。
-func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operatorID string) (*domain.GrowthLevel, error) {
-	title := strings.TrimSpace(in.Title)
-	if in.Level < 0 || in.ThresholdXP < 0 || title == "" || len(title) > 100 {
-		return nil, ErrLevelThreshold
+// UpdateLevelConfig 更新等级曲线并重算全部用户等级。
+func (s *Service) UpdateLevelConfig(ctx context.Context, in LevelConfigInput, operatorID string) (int, error) {
+	if err := ValidateLevelCurve(in.MaxLevel, in.StepXP); err != nil {
+		return 0, err
 	}
-	var created *domain.GrowthLevel
+	fixed := 0
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var levels []domain.GrowthLevel
-		if err := tx.Order("level ASC").Find(&levels).Error; err != nil {
+		before, err := loadLevelConfigTx(tx)
+		if err != nil {
 			return err
 		}
-		hasGuest, hasOne := false, false
-		for _, l := range levels {
-			if l.Level == GuestLevel {
-				hasGuest = true
-			}
-			if l.Level == 1 {
-				hasOne = true
-			}
+		cfg := &domain.GrowthLevelConfig{
+			ID: 1, MaxLevel: in.MaxLevel, StepXP: in.StepXP, UpdatedAt: s.now(),
 		}
-		if !hasGuest || !hasOne {
-			return ErrLevelOrder
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"max_level", "step_xp", "updated_at"}),
+		}).Create(cfg).Error; err != nil {
+			return err
 		}
-		level := in.Level
-		if level == 0 {
-			level = levels[len(levels)-1].Level + 1
-		}
-		if level < 2 {
-			// 显式 Lv.0 已被自动追加语义占用；Lv.1 已存在。
-			return ErrLevelExists
-		}
-		if in.ThresholdXP <= 0 {
-			// 0 XP 只属于 Lv.0 / Lv.1；新增等级必须使用正阈值。
-			return ErrLevelOrder
-		}
-		for _, l := range levels {
-			if l.Level == level {
-				return ErrLevelExists
-			}
-			if l.ThresholdXP == in.ThresholdXP ||
-				(l.Level < level && l.ThresholdXP >= in.ThresholdXP) ||
-				(l.Level > level && l.ThresholdXP <= in.ThresholdXP) {
-				return ErrLevelOrder
-			}
-		}
-		lvl := &domain.GrowthLevel{
-			Level: level, ThresholdXP: in.ThresholdXP, Title: title, Enabled: in.Enabled,
-		}
-		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(lvl)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			// 唯一约束冲突：并发创建了相同等级号或相同阈值。
-			return ErrLevelExists
-		}
-		levels = append(levels, *lvl)
-		sort.Slice(levels, func(i, j int) bool { return levels[i].Level < levels[j].Level })
-		if _, err := recalculateUserLevels(tx, levels); err != nil {
+		fixed, err = recalculateUserLevels(tx, NewLevelResolver(cfg, nil))
+		if err != nil {
 			return err
 		}
 		if err := syncLevelAchievementProgress(tx, s.now()); err != nil {
 			return err
 		}
+		return writeAudit(tx, auditEntry{
+			OperatorID: operatorID, Action: "level.config.update",
+			EntityType: "growth_level_config", EntityID: "1",
+			Reason: "更新等级曲线", Before: levelConfigSnapshot(before),
+			After: levelConfigSnapshot(cfg),
+		})
+	})
+	return fixed, err
+}
+
+// ListLevelTitles 返回全部称号规则（含停用项）。
+func (s *Service) ListLevelTitles(ctx context.Context) ([]domain.GrowthLevelTitle, error) {
+	return s.repo.ListLevelTitles(ctx, false)
+}
+
+// CreateLevelTitle 新增称号规则。
+func (s *Service) CreateLevelTitle(ctx context.Context, in LevelTitleInput, operatorID string) (*domain.GrowthLevelTitle, error) {
+	var created *domain.GrowthLevelTitle
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		cfg, err := loadLevelConfigTx(tx)
+		if err != nil {
+			return err
+		}
+		rule, err := buildLevelTitle(in, cfg.MaxLevel)
+		if err != nil {
+			return err
+		}
+		if err := ensureTitleNoConflict(tx, "", rule); err != nil {
+			return err
+		}
+		if err := tx.Create(&rule).Error; err != nil {
+			if isUniqueViolation(err) {
+				return ErrLevelExists
+			}
+			return err
+		}
 		if err := writeAudit(tx, auditEntry{
-			OperatorID: operatorID, Action: "level.create", EntityType: "growth_level", EntityID: itoa(level),
-			Reason: "新增等级 Lv." + itoa(level), After: levelSnapshot(lvl),
+			OperatorID: operatorID, Action: "level_title.create",
+			EntityType: "growth_level_title", EntityID: rule.ID.String(),
+			Reason: "新增等级称号规则", After: levelTitleSnapshot(&rule),
 		}); err != nil {
 			return err
 		}
-		created = lvl
+		created = &rule
 		return nil
 	})
 	if err != nil {
@@ -412,89 +341,141 @@ func (s *Service) CreateLevel(ctx context.Context, in CreateLevelInput, operator
 	return created, nil
 }
 
-// DeleteLevel 删除指定等级，并把所有更高等级号减 1。
-//
-// 允许删除中间等级：删除后更高等级整体前移一位，保留既有跳号间隔；
-// level_reached 成就的目标等级大于被删等级时同步减 1，避免成就阈值错位。
-// Lv.0 / Lv.1 永远保留；删除后按新阈值重算用户展示等级，人工覆盖等级同步收敛。
-func (s *Service) DeleteLevel(ctx context.Context, level int, operatorID string) error {
-	if level <= 1 {
-		return ErrLevelDeleteLv1
+// UpdateLevelTitle 更新称号规则。
+func (s *Service) UpdateLevelTitle(ctx context.Context, id string, in LevelTitleInput, operatorID string) (*domain.GrowthLevelTitle, error) {
+	ruleID, err := uuid.Parse(strings.TrimSpace(id))
+	if err != nil {
+		return nil, ErrLevelNotFound
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var levels []domain.GrowthLevel
-		if err := tx.Order("level ASC").Find(&levels).Error; err != nil {
+	var updated *domain.GrowthLevelTitle
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var before domain.GrowthLevelTitle
+		if err := tx.Where("id = ?", ruleID).First(&before).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrLevelNotFound
+			}
 			return err
 		}
-		targetIdx := -1
-		for i := range levels {
-			if levels[i].Level == level {
-				targetIdx = i
-				break
-			}
-		}
-		if targetIdx < 0 {
-			return ErrLevelNotFound
-		}
-		target := &levels[targetIdx]
-		res := tx.Where("level = ?", level).Delete(&domain.GrowthLevel{})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return ErrLevelNotFound
-		}
-
-		// 按等级号升序逐个前移，避免主键更新时与尚未移动的等级发生冲突。
-		remaining := make([]domain.GrowthLevel, 0, len(levels)-1)
-		remaining = append(remaining, levels[:targetIdx]...)
-		renumbered := make(map[string]int, len(levels)-targetIdx-1)
-		for _, l := range levels[targetIdx+1:] {
-			newLevel := l.Level - 1
-			if err := tx.Exec("UPDATE growth_levels SET level = ?, updated_at = ? WHERE level = ?",
-				newLevel, s.now(), l.Level).Error; err != nil {
-				return err
-			}
-			renumbered[itoa(l.Level)] = newLevel
-			l.Level = newLevel
-			remaining = append(remaining, l)
-		}
-
-		// 等级号前移后，原有「达到 Lv.N」成就应继续对应同一经验里程碑。
-		achRes := tx.Model(&domain.AchievementDefinition{}).
-			Where("condition_type = ? AND target_value > ?", domain.AchievementCondLevelReached, level).
-			Updates(map[string]any{
-				"target_value": gorm.Expr("target_value - 1"),
-				"version":      gorm.Expr("version + 1"),
-				"updated_at":   s.now(),
-			})
-		if achRes.Error != nil {
-			return achRes.Error
-		}
-
-		fixed, err := recalculateUserLevels(tx, remaining)
+		cfg, err := loadLevelConfigTx(tx)
 		if err != nil {
 			return err
 		}
-		if err := syncLevelAchievementProgress(tx, s.now()); err != nil {
+		rule, err := buildLevelTitle(in, cfg.MaxLevel)
+		if err != nil {
+			return err
+		}
+		rule.ID = ruleID
+		if err := ensureTitleNoConflict(tx, ruleID.String(), rule); err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.GrowthLevelTitle{}).Where("id = ?", ruleID).
+			Updates(map[string]any{
+				"min_level": rule.MinLevel, "max_level": rule.MaxLevel,
+				"title": rule.Title, "enabled": rule.Enabled, "updated_at": s.now(),
+			}).Error; err != nil {
+			if isUniqueViolation(err) {
+				return ErrLevelExists
+			}
+			return err
+		}
+		rule.UpdatedAt = s.now()
+		rule.CreatedAt = before.CreatedAt
+		if err := writeAudit(tx, auditEntry{
+			OperatorID: operatorID, Action: "level_title.update",
+			EntityType: "growth_level_title", EntityID: ruleID.String(),
+			Reason: "更新等级称号规则", Before: levelTitleSnapshot(&before),
+			After: levelTitleSnapshot(&rule),
+		}); err != nil {
+			return err
+		}
+		updated = &rule
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// DeleteLevelTitle 删除称号规则。
+func (s *Service) DeleteLevelTitle(ctx context.Context, id, operatorID string) error {
+	ruleID, err := uuid.Parse(strings.TrimSpace(id))
+	if err != nil {
+		return ErrLevelNotFound
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rule domain.GrowthLevelTitle
+		if err := tx.Where("id = ?", ruleID).First(&rule).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrLevelNotFound
+			}
+			return err
+		}
+		if err := tx.Delete(&domain.GrowthLevelTitle{}, ruleID).Error; err != nil {
 			return err
 		}
 		return writeAudit(tx, auditEntry{
-			OperatorID: operatorID, Action: "level.delete", EntityType: "growth_level", EntityID: itoa(level),
-			Reason: "删除等级 Lv." + itoa(level) + " 并重排后续等级", Before: levelSnapshot(target),
-			After: map[string]any{
-				"deleted_level":        level,
-				"renumbered":           renumbered,
-				"users_recalculated":   fixed,
-				"achievements_shifted": achRes.RowsAffected,
-			},
+			OperatorID: operatorID, Action: "level_title.delete",
+			EntityType: "growth_level_title", EntityID: ruleID.String(),
+			Reason: "删除等级称号规则", Before: levelTitleSnapshot(&rule),
 		})
 	})
 }
 
-// syncLevelAchievementProgress 在等级定义变化后同步 level_reached 成就进度缓存。
+// isUniqueViolation 判断数据库唯一约束 / 称号冲突触发器错误。
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// buildLevelTitle 校验称号规则并生成领域对象。
+func buildLevelTitle(in LevelTitleInput, maxLevel int) (domain.GrowthLevelTitle, error) {
+	title := strings.TrimSpace(in.Title)
+	if in.MinLevel < GuestLevel || in.MaxLevel < in.MinLevel ||
+		in.MaxLevel > DefaultMaxLevel ||
+		(in.Enabled && in.MaxLevel > maxLevel) ||
+		title == "" || utf8.RuneCountInString(title) > 100 {
+		return domain.GrowthLevelTitle{}, ErrLevelThreshold
+	}
+	return domain.GrowthLevelTitle{
+		MinLevel: in.MinLevel, MaxLevel: in.MaxLevel,
+		Title: title, Enabled: in.Enabled,
+	}, nil
+}
+
+// ensureTitleNoConflict 校验称号规则冲突。
 //
-// 只更新缓存，不主动解锁 / 发奖，避免后台调整等级定义时产生隐式奖励。
+// 指定等级称号（min=max）优先于区间；区间之间不允许重叠，指定等级之间不允许重复。
+func ensureTitleNoConflict(tx *gorm.DB, excludeID string, rule domain.GrowthLevelTitle) error {
+	if !rule.Enabled {
+		return nil
+	}
+	q := tx.Model(&domain.GrowthLevelTitle{}).Where("enabled = true")
+	if excludeID != "" {
+		q = q.Where("id <> ?", excludeID)
+	}
+	var count int64
+	var err error
+	if rule.MinLevel == rule.MaxLevel {
+		err = q.Where("min_level = ? AND max_level = ?", rule.MinLevel, rule.MaxLevel).
+			Count(&count).Error
+	} else {
+		err = q.Where("min_level <> max_level").
+			Where("NOT (max_level < ? OR min_level > ?)", rule.MinLevel, rule.MaxLevel).
+			Count(&count).Error
+	}
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrLevelExists
+	}
+	return nil
+}
+
+// syncLevelAchievementProgress 在等级曲线变化后同步 level_reached 成就进度缓存。
+//
+// 只更新缓存，不主动解锁 / 发奖，避免后台调整等级曲线时产生隐式奖励。
 func syncLevelAchievementProgress(tx *gorm.DB, now time.Time) error {
 	return tx.Exec(`UPDATE achievement_progress ap
 		SET progress_count = ug.level, target_count = ad.target_value, updated_at = ?
@@ -509,7 +490,7 @@ func syncLevelAchievementProgress(tx *gorm.DB, now time.Time) error {
 type AdjustLevelInput struct {
 	// TargetUserID 对外用户 ID（accounts.user_no），不接受内部 UUID 或用户名。
 	TargetUserID string `json:"target_user_id"`
-	// TargetLevel 直接覆盖的目标等级（绝对值），必须是当前启用的等级。
+	// TargetLevel 直接覆盖的目标等级（绝对值），必须在 0..max_level 之间。
 	TargetLevel int    `json:"target_level"`
 	Reason      string `json:"reason"`
 	RequestKey  string `json:"request_key"`
@@ -533,44 +514,31 @@ type LevelAdjustResult struct {
 // ID；内部 UUID 与用户名不作为该表单的输入口径。普通用户与后台账号均可调整
 // （统一账号都可能拥有成长投影）。
 //
-// 与旧的“经验等级 + 偏移”不同，这里写入 user_growth.level_override：
-// 覆盖期间展示等级固定为目标值，后续经验变化不会自动改级；经验仍正常累积，
-// 直到下一次人工调整覆盖。等级定义本身由 CreateLevel / DeleteLevel 管理。
+// 这里写入 user_growth.level_override：覆盖期间展示等级固定为目标值，
+// 后续经验变化不会自动改级；经验仍正常累积，直到下一次人工调整覆盖。
 func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelAdjustResult, error) {
 	targetID, err := s.resolveLevelAdjustUserID(ctx, in.TargetUserID)
 	if err != nil {
 		return nil, err
 	}
-	if in.TargetLevel < GuestLevel || in.TargetLevel > 100000 {
-		return nil, ErrBadInput
-	}
 	reason := strings.TrimSpace(in.Reason)
 	if reason == "" {
 		return nil, ErrReasonRequired
 	}
-	levels, err := s.repo.ListLevels(ctx)
-	if err != nil {
-		return nil, err
-	}
-	enabled := enabledLevels(levels)
-	if len(enabled) == 0 {
-		return nil, ErrLevelNotFound
-	}
-	enabledSet := make(map[int]bool, len(enabled))
-	for _, l := range enabled {
-		enabledSet[l.Level] = true
-	}
-	if !enabledSet[in.TargetLevel] {
-		return nil, ErrLevelRange
-	}
-
 	var result *LevelAdjustResult
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		resolver, err := loadLevelResolverTx(tx)
+		if err != nil {
+			return err
+		}
+		if in.TargetLevel < GuestLevel || in.TargetLevel > resolver.Curve.MaxLevel {
+			return ErrLevelRange
+		}
 		g, err := lockGrowth(tx, targetID)
 		if err != nil {
 			return err
 		}
-		baseLevel := computeLevel(levels, g.CurrentXP, g.ActiveDays).Level
+		baseLevel := resolver.Level(g.CurrentXP, nil, g.ActiveDays)
 		targetLevel := in.TargetLevel
 		override := targetLevel
 		if err := tx.Model(&domain.UserGrowth{}).Where("user_id = ?", targetID).
@@ -605,7 +573,7 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 			UserID:     targetID.String(),
 			BaseLevel:  baseLevel,
 			Level:      targetLevel,
-			LevelTitle: levelTitle(levels, targetLevel),
+			LevelTitle: resolver.Title(targetLevel),
 			Overridden: true,
 		}
 		return nil
@@ -616,34 +584,45 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 	return result, nil
 }
 
-// RecalculateLevels 依据当前阈值表重算所有用户等级（等级仅展示用，不影响权限）。
+// RecalculateLevels 依据当前等级曲线重算所有用户等级（等级仅展示用，不影响权限）。
 // 返回被修正的用户数。
 func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
-	levels, err := s.repo.ListLevels(ctx)
+	resolver, err := s.levelResolver(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return recalculateUserLevels(s.db.WithContext(ctx), levels)
+	var fixed int
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		fixed, err = recalculateUserLevels(tx, resolver)
+		if err != nil {
+			return err
+		}
+		return syncLevelAchievementProgress(tx, s.now())
+	})
+	return fixed, err
 }
 
-// recalculateUserLevels 按给定等级表重算用户展示等级。
+// recalculateUserLevels 按给定等级曲线重算用户展示等级。
 //
-// 人工覆盖等级也会被收敛到当前启用等级范围：若覆盖值对应的等级被删除 / 停用，
-// 则取不超过该值的最高启用等级并回写 level_override，避免长期保留无效值。
-func recalculateUserLevels(db *gorm.DB, levels []domain.GrowthLevel) (int, error) {
+// 人工覆盖等级也会被收敛到 0..MaxLevel；若当前上限降低，覆盖值同步收敛，
+// 避免长期保留无效值。
+func recalculateUserLevels(db *gorm.DB, resolver LevelResolver) (int, error) {
 	var rows []domain.UserGrowth
 	if err := db.Select("user_id, current_xp, level, level_override, active_days").Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	fixed := 0
 	for _, g := range rows {
-		want := effectiveLevel(levels, g.CurrentXP, g.LevelOverride, g.ActiveDays)
+		want := resolver.Level(g.CurrentXP, g.LevelOverride, g.ActiveDays)
 		updates := map[string]any{}
 		if want != g.Level {
 			updates["level"] = want
 		}
-		if g.LevelOverride != nil && *g.LevelOverride != want {
-			updates["level_override"] = want
+		if g.LevelOverride != nil {
+			clamped := clampLevel(*g.LevelOverride, resolver.Curve.MaxLevel)
+			if clamped != *g.LevelOverride {
+				updates["level_override"] = clamped
+			}
 		}
 		if len(updates) == 0 {
 			continue
@@ -1658,12 +1637,23 @@ func achievementSnapshot(d *domain.AchievementDefinition) map[string]any {
 	}
 }
 
-// levelSnapshot 等级审计快照。
-func levelSnapshot(l *domain.GrowthLevel) map[string]any {
-	if l == nil {
+// levelConfigSnapshot 等级曲线审计快照。
+func levelConfigSnapshot(c *domain.GrowthLevelConfig) map[string]any {
+	if c == nil {
 		return nil
 	}
-	return map[string]any{"level": l.Level, "threshold_xp": l.ThresholdXP, "title": l.Title, "enabled": l.Enabled}
+	return map[string]any{"max_level": c.MaxLevel, "step_xp": c.StepXP}
+}
+
+// levelTitleSnapshot 等级称号规则审计快照。
+func levelTitleSnapshot(t *domain.GrowthLevelTitle) map[string]any {
+	if t == nil {
+		return nil
+	}
+	return map[string]any{
+		"min_level": t.MinLevel, "max_level": t.MaxLevel,
+		"title": t.Title, "enabled": t.Enabled,
+	}
 }
 
 // itoa 整数转字符串（审计文本用，避免引入 strconv 到多处）。

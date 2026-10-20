@@ -695,12 +695,14 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		ar.Post("/rules/update", growthHandler.RulesUpdate)
 		ar.Post("/rules/toggle", growthHandler.RulesToggle)
 		ar.Post("/rules/delete", growthHandler.RulesDelete)
-		ar.Post("/levels/list", growthHandler.LevelsList)
-		ar.Post("/levels/create", growthHandler.LevelsCreate)
-		ar.Post("/levels/update", growthHandler.LevelsUpdate)
-		ar.Post("/levels/delete", growthHandler.LevelsDelete)
+		ar.Post("/levels/config", growthHandler.LevelsConfigGet)
+		ar.Post("/levels/config/update", growthHandler.LevelsConfigUpdate)
+		ar.Post("/level-titles/list", growthHandler.LevelTitlesList)
+		ar.Post("/level-titles/create", growthHandler.LevelTitlesCreate)
+		ar.Post("/level-titles/update", growthHandler.LevelTitlesUpdate)
+		ar.Post("/level-titles/delete", growthHandler.LevelTitlesDelete)
 		ar.Post("/levels/recalculate", growthHandler.LevelsRecalculate)
-		// 单用户等级调整：只改等级偏移，不修改等级定义。
+		// 单用户等级调整：直接覆盖展示等级，不修改等级曲线与称号规则。
 		ar.Post("/levels/adjust", growthHandler.LevelsAdjust)
 	})
 

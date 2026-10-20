@@ -599,13 +599,14 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // 普通用户受限页（工作台）：同样是前端体验优化，后端仍按会话鉴权。
+  // 普通用户受限页（工作台等）：未登录直接回首页，避免把游客带到登录页打断浏览。
+  // 这里仍是前端体验优化，后端接口会按会话独立鉴权。
   const requiresUser = to.matched.some((r) => r.meta.requiresUser)
   if (requiresUser && !userAuth.initialized) {
     await userAuth.restoreSession()
   }
   if (requiresUser && !userAuth.isLoggedIn) {
-    return { path: '/login', query: { redirect: to.fullPath } }
+    return { name: 'home' }
   }
 
   return true

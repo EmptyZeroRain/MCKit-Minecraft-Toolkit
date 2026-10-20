@@ -24,15 +24,6 @@ func NewRepo(db *gorm.DB, loc *time.Location) *Repo {
 	return &Repo{db: db, timezone: loc}
 }
 
-// ---- 等级 ----
-
-// ListLevels 返回全部等级（按等级升序）。
-func (r *Repo) ListLevels(ctx context.Context) ([]domain.GrowthLevel, error) {
-	var out []domain.GrowthLevel
-	err := r.db.WithContext(ctx).Order("level ASC").Find(&out).Error
-	return out, err
-}
-
 // ---- 规则 ----
 
 // ListRules 返回全部经验规则（版本降序，编码升序）。
