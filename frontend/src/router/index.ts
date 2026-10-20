@@ -302,6 +302,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '我的工作台', requiresUser: true, noindex: true },
       },
       {
+        // 账户设置：工作台中的资料 / 密码 / 删除账号操作迁移至此。
+        path: 'settings',
+        name: 'account-settings',
+        component: () => import('@/views/AccountSettingsView.vue'),
+        meta: { title: '账户设置', requiresUser: true, noindex: true },
+      },
+      {
         // 成长中心（jingyan.md §11.1）：经验 / 等级 / 每日任务 / 成就展示。
         path: 'growth',
         name: 'growth',

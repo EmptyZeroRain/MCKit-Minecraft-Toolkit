@@ -462,7 +462,7 @@ onMounted(() => {
       <p class="mt-4 text-xs text-text-muted">
         我们仅保存用户名、昵称、邮箱与密码哈希，以及你主动创建的收藏 / 最近使用 / 常用种子。
         邮箱仅用于登录与账号找回，不会公开展示。
-        可在工作台随时清理或删除账号（删除后个人数据一并清除）。
+        可在账户设置中随时清理或删除账号（删除后个人数据一并清除）。
         详见
         <RouterLink to="/privacy" class="text-grass-400 hover:underline">隐私政策</RouterLink>。
       </p>
