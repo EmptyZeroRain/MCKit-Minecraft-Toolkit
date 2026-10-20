@@ -121,7 +121,6 @@ RequestID → Recover → AccessLog → Metrics → SecurityHeaders → CORS →
 └── README.md
 ```
 
-> `mcsrc-main/` 是上游 [mcsrc.dev](https://mcsrc.dev/) 的参考副本，仅用于架构与算法借鉴，**未纳入版本控制、不参与本站构建**。本站源码浏览能力由 `frontend/src/mcsrc/` + `backend/internal/mcsrc/` 自研实现。
 
 ## 快速开始（开发环境）
 
