@@ -6650,6 +6650,18 @@ components:
         related_content_type: { type: string, enum: ["", resource, tool, wiki] }
         related_content_id: { type: string, description: 内容 ID；空串表示清空 }
         note: { type: string }
+    ContentKeyword:
+      type: object
+      description: 内容屏蔽关键字（发帖 / 评论命中启用规则时由服务端拒绝）
+      required: [id, keyword, enabled, note, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        keyword: { type: string, maxLength: 100 }
+        enabled: { type: boolean }
+        note: { type: string, maxLength: 255 }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     PlatformUserDetail:
       type: object
       description: 普通用户详情（管理端）
@@ -8305,6 +8317,135 @@ components:
         total_rules: { type: integer }
         total_tasks: { type: integer }
 
+    AdminGrowthUserSummary:
+      type: object
+      required:
+        - user_id
+        - user_no
+        - username
+        - nickname
+        - role
+        - is_active
+        - level
+        - level_title
+        - is_overridden
+        - active_days
+        - guest_active_days
+        - current_xp
+        - lifetime_earned_xp
+        - lifetime_reversed_xp
+        - achievement_count
+        - gift_balance
+        - gift_general_balance
+        - gift_checkin_balance
+        - created_at
+      properties:
+        user_id: { type: string, format: uuid }
+        user_no: { type: string, example: U7K3M2QX9F, description: 对外随机用户 ID }
+        username: { type: string }
+        nickname: { type: string }
+        role: { type: string, enum: [user, editor, admin] }
+        is_active: { type: boolean }
+        level: { type: integer, minimum: 0, description: 当前展示等级（可能来自人工覆盖） }
+        level_title: { type: string }
+        is_overridden: { type: boolean, description: 当前等级是否由后台人工直接覆盖 }
+        active_days: { type: integer, description: 累计活跃天数（封顶 guest_active_days） }
+        guest_active_days: { type: integer, description: 脱离访客阶段所需活跃天数 }
+        current_xp: { type: integer, format: int64 }
+        lifetime_earned_xp: { type: integer, format: int64 }
+        lifetime_reversed_xp: { type: integer, format: int64 }
+        achievement_count: { type: integer, format: int64 }
+        gift_balance: { type: integer, format: int64 }
+        gift_general_balance: { type: integer, format: int64 }
+        gift_checkin_balance: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time, nullable: true }
+
+    AdminGrowthAchievementItem:
+      type: object
+      required: [id, code, name, description, category, rarity, reward_xp, unlocked_at, grant_source, is_public, definition_id]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        category: { type: string }
+        rarity: { type: string }
+        reward_xp: { type: integer }
+        unlocked_at: { type: string, format: date-time }
+        grant_source: { type: string }
+        is_public: { type: boolean }
+        definition_id: { type: string, format: uuid }
+
+    AdminGiftLedgerItem:
+      type: object
+      required: [id, amount, coin_type, balance_after, event_type, source_type, source_id, reason, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        amount: { type: integer, format: int64, description: 正数增加，负数扣减 }
+        coin_type: { type: string, enum: [general, checkin] }
+        balance_after: { type: integer, format: int64, description: 对应币种变动后的余额 }
+        event_type: { type: string }
+        source_type: { type: string }
+        source_id: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AdminGrowthAuditItem:
+      type: object
+      required: [id, action, entity_type, entity_id, reason, operator_user_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        action: { type: string }
+        entity_type: { type: string }
+        entity_id: { type: string }
+        reason: { type: string }
+        operator_user_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AdminGrowthUserDetail:
+      type: object
+      required:
+        - user
+        - base_level
+        - level_override
+        - next_level_xp
+        - xp_to_next_level
+        - level_progress_percent
+        - is_max_level
+        - achievement_total
+        - experience_total
+        - gift_total
+        - audit_total
+        - experience
+        - achievements
+        - gifts
+        - audits
+      properties:
+        user: { $ref: "#/components/schemas/AdminGrowthUserSummary" }
+        base_level: { type: integer, minimum: 0, description: 未应用人工覆盖时的自动等级 }
+        level_override: { type: integer, minimum: 0, nullable: true, description: 人工覆盖等级；null 表示自动计算 }
+        next_level_xp: { type: integer, format: int64, nullable: true, description: 下一级所需经验；满级为 null }
+        xp_to_next_level: { type: integer, format: int64 }
+        level_progress_percent: { type: integer, minimum: 0, maximum: 100 }
+        is_max_level: { type: boolean }
+        achievement_total: { type: integer, format: int64 }
+        experience_total: { type: integer, format: int64 }
+        gift_total: { type: integer, format: int64 }
+        audit_total: { type: integer, format: int64 }
+        experience:
+          type: array
+          items: { $ref: "#/components/schemas/GrowthLedgerItem" }
+        achievements:
+          type: array
+          items: { $ref: "#/components/schemas/AdminGrowthAchievementItem" }
+        gifts:
+          type: array
+          items: { $ref: "#/components/schemas/AdminGiftLedgerItem" }
+        audits:
+          type: array
+          items: { $ref: "#/components/schemas/AdminGrowthAuditItem" }
+
     GrowthRuleInput:
       type: object
       required: [name, event_type, xp_amount, enabled]
@@ -8494,6 +8635,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         post_id: { type: string, format: uuid }
+        post_title: { type: string, description: 所属帖子标题（后台跨帖列表返回） }
         body: { type: string }
         status: { type: string, enum: [published, hidden] }
         author: { $ref: "#/components/schemas/CommunityAuthor" }
