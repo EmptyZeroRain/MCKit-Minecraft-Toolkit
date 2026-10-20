@@ -109,19 +109,28 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	}
 
 	// 覆盖期间经验继续累积，但展示等级不会被自动重算改回。
+	xpUser := createGrowthUser(t, gdb, "it-growth-xp-override", domain.RoleUser)
+	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
+		TargetUserID: xpUser.UserNo,
+		TargetLevel:  5,
+		Reason:       "覆盖稳定性测试",
+		OperatorID:   operator.ID.String(),
+	}); err != nil {
+		t.Fatalf("覆盖稳定性测试等级调整失败: %v", err)
+	}
 	if _, err := svc.Adjust(ctx, AdjustInput{
-		TargetUserID: user.UserNo,
+		TargetUserID: xpUser.UserNo,
 		DeltaXP:      5000,
 		Reason:       "覆盖期间经验累积",
 		OperatorID:   operator.ID.String(),
 	}); err != nil {
 		t.Fatalf("覆盖期间调整经验失败: %v", err)
 	}
-	if err := gdb.Where("user_id = ?", user.ID).First(&g).Error; err != nil {
+	if err := gdb.Where("user_id = ?", xpUser.ID).First(&g).Error; err != nil {
 		t.Fatalf("读取成长投影失败: %v", err)
 	}
-	if g.CurrentXP != 5000 || g.Level != 2 {
-		t.Fatalf("覆盖期间经验应累积且等级保持 Lv.2，实际 xp=%d level=%d", g.CurrentXP, g.Level)
+	if g.CurrentXP != 5000 || g.Level != 5 {
+		t.Fatalf("覆盖期间经验应累积且等级保持 Lv.5，实际 xp=%d level=%d", g.CurrentXP, g.Level)
 	}
 
 	// 超出等级范围应拒绝，且不写入。
