@@ -14,7 +14,7 @@ interface Section {
 const sections: Section[] = [
   {
     title: '权限与账号',
-    intro: '后台按权限点展示入口，前端隐藏只是减少误操作，后端每个接口都会再校验一次。',
+    intro: '这里汇总后台常见操作与对应页面入口。',
     items: [
       {
         q: '为什么我看不到某个菜单？',

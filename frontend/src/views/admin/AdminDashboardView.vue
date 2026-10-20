@@ -55,7 +55,6 @@ const cards = [
   <div>
     <div class="mb-6 rounded-card border border-grass-500/30 bg-grass-500/10 p-4 text-sm text-grass-300">
       欢迎回来，{{ auth.displayName }}。当前权限：{{ auth.user?.role === 'admin' ? '管理员' : '编辑' }}
-      （最终权限校验由服务端执行）
     </div>
 
     <div v-if="loading" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
