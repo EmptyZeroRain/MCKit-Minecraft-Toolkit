@@ -347,6 +347,7 @@ npm run build        # 类型检查 + 生产构建
 - 例外：`robots.txt` / `sitemap.xml` 保持 `GET`（搜索引擎协议要求）；`.mca` / `level.dat` 上传使用 `multipart/form-data`；`/mcsrc/jar` 为 POST 但返回二进制。
 - 统一响应：成功 `{"data": ..., "meta": ...}`，错误 `{"error": {...}, "request_id": ...}`。
 - 分页：`page` 从 1 开始，`page_size` 默认 20、最大 50。
+- 旧 REST 风格别名（如 `/admin/resources/{id}`、`/admin/tools/{id}`）保留兼容，已在 OpenAPI 标记 `deprecated`；新调用请使用动作子路径（`/admin/resources/detail` 等）。
 - 写操作需 CSRF 双重提交（管理员与用户各自独立 token）；登录接口按 `(用户名, IP)` 限流。
 
 ### 公开内容

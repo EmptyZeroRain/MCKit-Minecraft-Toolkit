@@ -6471,6 +6471,533 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ---- 旧 REST 兼容别名（保留兼容，已弃用）----
+  # 与动作子路径接口等价；新客户端请使用 /admin/resources/list、/admin/resources/create 等。
+  /admin/resources:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 资源列表'
+      description: 等价于 `/admin/resources/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                type: { type: string }
+                status: { type: string, enum: [draft, published, hidden, removed] }
+                game_version: { type: string }
+                loader: { type: string }
+                source_platform: { type: string }
+                tag: { type: string }
+                sort: { type: string, enum: [updated_desc, name_asc] }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/resources/new:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 创建资源'
+      description: 等价于 `/admin/resources/create`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/resources/{id}:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 资源详情'
+      description: 等价于 `/admin/resources/detail`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 更新资源'
+      description: 等价于 `/admin/resources/update`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 删除资源（已发布需先下架）'
+      description: 等价于 `/admin/resources/delete`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /admin/resources/{id}/unpublish:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 下架资源'
+      description: 等价于 `/admin/resources/unpublish`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: 已下架 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /admin/resources/{id}/check-link:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 检查资源来源链接'
+      description: 等价于 `/admin/resources/check-link`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/tools:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 工具列表'
+      description: 等价于 `/admin/tools/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category: { type: string }
+                q: { type: string }
+                tag: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/tools/new:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 创建工具'
+      description: 等价于 `/admin/tools/create`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/tools/{id}:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 工具详情'
+      description: 等价于 `/admin/tools/detail`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 更新工具'
+      description: 等价于 `/admin/tools/update`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 下架工具'
+      description: 等价于 `/admin/tools/delete`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: 已下架 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/wiki:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 百科列表'
+      description: 等价于 `/admin/wiki/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string }
+                tag: { type: string }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/wiki/new:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 创建百科'
+      description: 等价于 `/admin/wiki/create`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WikiInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/wiki/{id}:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 百科详情'
+      description: 等价于 `/admin/wiki/detail`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 更新百科'
+      description: 等价于 `/admin/wiki/update`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WikiInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 软删除百科'
+      description: 等价于 `/admin/wiki/delete`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/categories:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 分类列表'
+      description: 等价于 `/admin/categories/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/categories/new:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 创建分类'
+      description: 等价于 `/admin/categories/create`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/tags:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 标签列表'
+      description: 等价于 `/admin/tags/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/tags/new:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 创建标签'
+      description: 等价于 `/admin/tags/create`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagInput" }
+      responses:
+        "201": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/feedback:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 反馈列表'
+      description: 等价于 `/admin/feedback/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/feedback/{id}:
+    patch:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 审核反馈'
+      description: 等价于 `/admin/feedback/update`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [new, processing, resolved, ignored] }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/feedback/{id}/reviews:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 反馈审核历史'
+      description: 等价于 `/admin/feedback/reviews`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CsrfToken" }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/audit-logs:
+    post:
+      tags: [admin]
+      deprecated: true
+      summary: '[兼容] 审计日志分页查询'
+      description: 等价于 `/admin/audit-logs/list`，旧 REST 风格入口。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actor_id: { type: string, format: uuid }
+                action: { type: string }
+                object_type: { type: string }
+                result: { type: string, enum: [success, failure] }
+                source_ip: { type: string }
+                security: { type: boolean }
+                page: { type: integer, minimum: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200": { $ref: "#/components/responses/PagedEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
 components:
   securitySchemes:
     cookieAuth:
