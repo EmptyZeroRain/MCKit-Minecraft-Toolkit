@@ -110,8 +110,8 @@ RequestID → Recover → AccessLog → Metrics → SecurityHeaders → CORS →
 │   │   ├── api/              # 40 个文件：接口模块 + 三套 HTTP 实例
 │   │   ├── mcsrc/            # 浏览器端源码浏览引擎（Worker / 反编译 / 跳转 / 备注）
 │   │   ├── router/ stores/ composables/ layouts/ components/ types/ utils/
-│   │   └── views/            # 46 个前台页面 + admin/ 56 个后台页面
-│   ├── tests/                # 88 个 Vitest spec
+│   │   └── views/            # 47 个前台页面 + admin/ 49 个后台页面
+│   ├── tests/                # 91 个 Vitest spec
 │   ├── nginx.conf
 │   └── Dockerfile
 ├── deploy/                   # compose.yaml（PG + API + FE + Caddy） + Caddyfile
@@ -323,13 +323,13 @@ go run ./cmd/import-mappings \
 ## 运行测试
 
 ```bash
-# 后端（100 个 _test.go，含集成测试）
+# 后端（102 个 _test.go，含集成测试）
 cd backend
 go test ./...        # 单元 + 集成测试（集成测试需 TEST_DATABASE_URL）
 go vet ./...         # 静态检查
 go run ./cmd/api     # 本地运行
 
-# 前端（88 个 spec，约 671 个用例，jsdom，无覆盖率阈值）
+# 前端（91 个 spec，752 个用例，jsdom，无覆盖率阈值）
 cd frontend
 npm run typecheck    # vue-tsc 类型检查
 npm run test         # Vitest 单次运行
