@@ -35,12 +35,11 @@ func TestCheckinXPAndMakeupCardsIntegration(t *testing.T) {
 	cap := int64(100)
 	milestoneCap := int64(500)
 	penalty := int64(5)
-	price := int64(10)
 	milestones := []MilestoneInput{{StreakDays: 3, BonusXP: 10, Enabled: true}}
 	settings, err := svc.UpdateCheckinSettings(ctx, CheckinSettingsInput{
 		CheckinReward: &reward, BaseXP: &base, StreakStepXP: &step,
 		StreakBonusCap: &cap, MilestoneBonusCap: &milestoneCap,
-		BreakPenaltyXP: &penalty, MakeupCardPrice: &price, Milestones: &milestones,
+		BreakPenaltyXP: &penalty, Milestones: &milestones,
 	})
 	if err != nil {
 		t.Fatalf("更新签到配置失败: %v", err)
@@ -113,7 +112,7 @@ func TestCheckinXPAndMakeupCardsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("购买补签卡失败: %v", err)
 	}
-	if buy.Cards != 1 || buy.Price != price || buy.Wallet.CheckinBalance != 390 {
+	if buy.Cards != 1 || buy.Price != 10 || buy.Wallet.CheckinBalance != 390 {
 		t.Fatalf("购买补签卡结果异常: %+v", buy)
 	}
 	replayBuy, err := svc.PurchaseMakeupCard(ctx, user.ID.String(), "buy-1")

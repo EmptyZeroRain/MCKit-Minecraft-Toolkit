@@ -5977,7 +5977,7 @@ paths:
               type: object
               properties:
                 coin_type: { type: string, enum: [general, checkin] }
-                event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem] }
+                event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem, makeup_card_purchase] }
                 page: { type: integer, minimum: 1 }
                 page_size: { type: integer, minimum: 1, maximum: 100 }
       responses:
@@ -6036,7 +6036,7 @@ paths:
               properties:
                 user_id: { type: string, description: 内部 UUID 或对外用户 ID，可留空 }
                 coin_type: { type: string, enum: [general, checkin] }
-                event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem] }
+                event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem, makeup_card_purchase] }
                 page: { type: integer, minimum: 1 }
                 page_size: { type: integer, minimum: 1, maximum: 100 }
       responses:
@@ -6137,7 +6137,7 @@ paths:
       summary: 更新签到奖励、签到经验算法与里程碑（需 ops.gifts）
       description: >-
         字段均可选，只更新提交的字段；milestones 传入时整表替换，空数组表示清空。
-        补签卡价格单位为签到礼物币，最少 1。
+        补签卡价格已迁移到礼品目录的补签卡（kind = makeup_card），不再由签到设置维护。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -6153,7 +6153,6 @@ paths:
                 streak_bonus_cap: { type: integer, minimum: 0, maximum: 1000000 }
                 milestone_bonus_cap: { type: integer, minimum: 0, maximum: 1000000 }
                 break_penalty_xp: { type: integer, minimum: 0, maximum: 1000000 }
-                makeup_card_price: { type: integer, minimum: 1, maximum: 1000000 }
                 milestones:
                   type: array
                   items: { $ref: "#/components/schemas/GiftCheckinMilestoneInput" }
@@ -7358,6 +7357,7 @@ components:
         favorite_count: { type: integer }
         recent_count: { type: integer }
         seed_count: { type: integer }
+        makeup_cards: { type: integer, description: 持有的补签卡数量 }
         favorites:
           type: array
           items:
@@ -8787,7 +8787,7 @@ components:
         amount: { type: integer }
         coin_type: { type: string, enum: [general, checkin] }
         balance_after: { type: integer, description: 变动后该币种余额 }
-        event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem] }
+        event_type: { type: string, enum: [admin_adjustment, daily_checkin, gift_redeem, makeup_card_purchase] }
         source_type: { type: string }
         source_id: { type: string }
         idempotency_key: { type: string }
@@ -8819,12 +8819,16 @@ components:
       properties:
         id: { type: string, format: uuid }
         code: { type: string }
+        kind:
+          type: string
+          enum: [gift, makeup_card]
+          description: 目录项类型；makeup_card 为补签卡等签到道具
         name: { type: string }
         description: { type: string }
         icon: { type: string }
         price: { type: integer }
-        stock: { type: integer, description: 总库存；0 表示不限库存 }
-        allow_checkin: { type: boolean }
+        stock: { type: integer, description: 总库存；0 表示不限库存（签到道具固定为 0） }
+        allow_checkin: { type: boolean, description: 签到道具固定为 true，且只能用签到币购买 }
         sort_order: { type: integer }
         enabled: { type: boolean }
         redeemed_count: { type: integer, description: 累计兑换次数 }
@@ -8919,7 +8923,6 @@ components:
         streak_bonus_cap: { type: integer, description: 单次签到连续奖励上限 }
         milestone_bonus_cap: { type: integer, description: 单次签到里程碑奖励合计上限 }
         break_penalty_xp: { type: integer, description: 断签后首次真实签到扣除的经验 }
-        makeup_card_price: { type: integer, description: 补签卡价格（签到礼物币） }
         milestones:
           type: array
           items: { $ref: "#/components/schemas/GiftCheckinMilestone" }

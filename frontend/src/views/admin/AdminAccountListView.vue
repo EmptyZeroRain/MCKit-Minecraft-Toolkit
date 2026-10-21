@@ -792,6 +792,15 @@ onMounted(async () => {
             <p v-if="detailLoading" class="text-sm text-text-muted" role="status" aria-live="polite">加载中…</p>
             <p v-else-if="detailError" class="text-sm text-danger-mc" role="alert">{{ detailError }}</p>
             <template v-else-if="detail">
+              <!-- 礼物与签到 -->
+              <section>
+                <h3 class="mb-2 text-sm font-semibold text-text-primary">礼物与签到</h3>
+                <div class="flex items-center justify-between rounded-md border border-border-dark bg-ink-900/50 px-3 py-2 text-sm">
+                  <span class="text-text-secondary">补签卡</span>
+                  <span class="font-medium text-text-primary">{{ detail.makeup_cards }} 张</span>
+                </div>
+              </section>
+
               <!-- 收藏 -->
               <section>
                 <h3 class="mb-2 text-sm font-semibold text-text-primary">

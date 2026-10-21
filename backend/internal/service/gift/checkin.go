@@ -97,6 +97,14 @@ func (s *Service) checkinStatus(ctx context.Context, userID uuid.UUID) (*Checkin
 		if err != nil {
 			return err
 		}
+		cardDef, err := s.makeupCardDefinitionTx(tx)
+		if err != nil {
+			return err
+		}
+		var cardPrice int64
+		if cardDef != nil {
+			cardPrice = cardDef.Price
+		}
 		missed, hasMissed, err := s.latestMissedDateTx(tx, userID)
 		if err != nil {
 			return err
@@ -107,7 +115,7 @@ func (s *Service) checkinStatus(ctx context.Context, userID uuid.UUID) (*Checkin
 			Streak:          streak.CurrentStreak,
 			LongestStreak:   streak.LongestStreak,
 			MakeupCards:     cards,
-			MakeupCardPrice: settings.MakeupCardPrice,
+			MakeupCardPrice: cardPrice,
 		}
 		if hasMissed {
 			out.LatestMissedDate = missed.Format("2006-01-02")
@@ -278,7 +286,9 @@ func (s *Service) Checkin(ctx context.Context, userID string) (*CheckinResult, e
 
 // PurchaseMakeupCard 使用签到礼物币购买一张补签卡。
 //
-// 只能扣签到币，购买数量不设上限；同一 request_key 重复提交只扣一次。
+// 价格与上下架状态来自礼品目录中的补签卡（kind = makeup_card）；
+// 购买复用礼物兑换事务：只扣签到币、写兑换记录与流水、补签卡进入个人库存。
+// 同一 request_key 重复提交只扣一次。
 func (s *Service) PurchaseMakeupCard(ctx context.Context, userID, requestKey string) (*MakeupCardPurchaseResult, error) {
 	id, err := uuid.Parse(strings.TrimSpace(userID))
 	if err != nil {
@@ -287,66 +297,17 @@ func (s *Service) PurchaseMakeupCard(ctx context.Context, userID, requestKey str
 	if err := s.ensureUser(ctx, id); err != nil {
 		return nil, err
 	}
-	requestKey = strings.TrimSpace(requestKey)
-	if requestKey == "" {
-		requestKey = uuid.NewString()
+	def, err := s.makeupCardDefinition(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if len(requestKey) > 100 {
-		return nil, ErrBadInput
+	if def == nil {
+		return nil, ErrGiftNotFound
 	}
-	ledgerKey := "makeup_card:purchase:" + requestKey
-	var price int64
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		settings, err := s.loadSettingsTx(tx)
-		if err != nil {
-			return err
-		}
-		price = settings.MakeupCardPrice
-		existing, err := findLedgerByKey(tx, id, ledgerKey)
-		if err != nil {
-			return err
-		}
-		if existing != nil {
-			price = -existing.Amount
-			return nil
-		}
-		w, err := lockWallet(tx, id)
-		if err != nil {
-			return err
-		}
-		// 并发同 request_key：等锁后重新检查，已扣款则按幂等成功返回。
-		if existing, err := findLedgerByKey(tx, id, ledgerKey); err != nil {
-			return err
-		} else if existing != nil {
-			price = -existing.Amount
-			return nil
-		}
-		if w.CheckinBalance < price {
-			return ErrInsufficientBalance
-		}
-		newBalance := w.CheckinBalance - price
-		if err := updateCoinBalance(tx, id, domain.GiftCoinCheckin, newBalance, s.now()); err != nil {
-			return err
-		}
-		row := domain.GiftLedger{
-			UserID:           id,
-			Amount:           -price,
-			CoinType:         domain.GiftCoinCheckin,
-			CoinBalanceAfter: newBalance,
-			EventType:        domain.GiftEventMakeupCardPurchase,
-			SourceType:       "makeup_card",
-			SourceID:         requestKey,
-			IdempotencyKey:   ledgerKey,
-			Reason:           "购买补签卡",
-		}
-		if err := tx.Create(&row).Error; err != nil {
-			return err
-		}
-		return tx.Exec(`INSERT INTO gift_makeup_cards (user_id, quantity, updated_at)
-			VALUES (?, 1, ?)
-			ON CONFLICT (user_id) DO UPDATE
-			SET quantity = gift_makeup_cards.quantity + 1,
-			    updated_at = EXCLUDED.updated_at`, id, s.now()).Error
+	res, err := s.Redeem(ctx, RedeemInput{
+		UserID:     id.String(),
+		GiftID:     def.ID.String(),
+		RequestKey: requestKey,
 	})
 	if err != nil {
 		return nil, err
@@ -355,11 +316,11 @@ func (s *Service) PurchaseMakeupCard(ctx context.Context, userID, requestKey str
 	if err != nil {
 		return nil, err
 	}
-	wallet, err := s.GetWallet(ctx, id.String())
-	if err != nil {
-		return nil, err
-	}
-	return &MakeupCardPurchaseResult{Price: price, Cards: cards, Wallet: wallet}, nil
+	return &MakeupCardPurchaseResult{
+		Price:  res.Redemption.Price,
+		Cards:  cards,
+		Wallet: res.Wallet,
+	}, nil
 }
 
 // UseMakeupCard 使用一张补签卡补最近一个漏签日的经验。

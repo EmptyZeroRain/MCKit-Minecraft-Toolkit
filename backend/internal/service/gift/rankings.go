@@ -175,7 +175,7 @@ func (s *Service) GiftRanking(ctx context.Context, f RankingFilter) ([]GiftRanki
 	}
 	var total int64
 	if err := s.db.WithContext(ctx).Table("(?) AS t", countBase).
-		Joins("JOIN gift_definitions g ON g.id = t.gift_id").
+		Joins("JOIN gift_definitions g ON g.id = t.gift_id AND g.kind = ?", domain.GiftKindGift).
 		Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -183,7 +183,7 @@ func (s *Service) GiftRanking(ctx context.Context, f RankingFilter) ([]GiftRanki
 	var rows []giftRankingRow
 	if err := s.db.WithContext(ctx).Table("(?) AS t", base).
 		Select("g.id AS gift_id, g.code, g.name, g.icon, g.enabled, t.redemption_count, t.total_coins, t.checkin_coins, t.general_coins").
-		Joins("JOIN gift_definitions g ON g.id = t.gift_id").
+		Joins("JOIN gift_definitions g ON g.id = t.gift_id AND g.kind = ?", domain.GiftKindGift).
 		Order("t.redemption_count DESC, t.total_coins DESC, g.sort_order ASC, g.created_at ASC").
 		Offset(offset).Limit(pageSize).
 		Scan(&rows).Error; err != nil {

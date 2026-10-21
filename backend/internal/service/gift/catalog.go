@@ -39,8 +39,10 @@ var (
 
 // DefinitionView 礼物目录视图。
 type DefinitionView struct {
-	ID          string `json:"id"`
-	Code        string `json:"code"`
+	ID   string `json:"id"`
+	Code string `json:"code"`
+	// Kind 目录项类型：gift / makeup_card。
+	Kind        string `json:"kind"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Icon        string `json:"icon"`
@@ -86,7 +88,6 @@ type SettingsView struct {
 	StreakBonusCap    int64           `json:"streak_bonus_cap"`
 	MilestoneBonusCap int64           `json:"milestone_bonus_cap"`
 	BreakPenaltyXP    int64           `json:"break_penalty_xp"`
-	MakeupCardPrice   int64           `json:"makeup_card_price"`
 	Milestones        []MilestoneView `json:"milestones"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
@@ -116,7 +117,6 @@ type CheckinSettingsInput struct {
 	StreakBonusCap    *int64
 	MilestoneBonusCap *int64
 	BreakPenaltyXP    *int64
-	MakeupCardPrice   *int64
 	Milestones        *[]MilestoneInput
 }
 
@@ -164,7 +164,10 @@ func (s *Service) Catalog(ctx context.Context, userID string) ([]CatalogItem, er
 			continue
 		}
 		available := wallet.GeneralBalance
-		if d.AllowCheckin {
+		if d.Kind == domain.GiftKindMakeupCard {
+			// 签到道具只能用签到礼物币购买，通用币不参与。
+			available = wallet.CheckinBalance
+		} else if d.AllowCheckin {
 			available += wallet.CheckinBalance
 		}
 		out = append(out, CatalogItem{
@@ -203,6 +206,7 @@ func (s *Service) CreateDefinition(ctx context.Context, in DefinitionInput) (*De
 	}
 	d := &domain.GiftDefinition{
 		Code:         code,
+		Kind:         domain.GiftKindGift,
 		Name:         name,
 		Description:  desc,
 		Icon:         icon,
@@ -229,9 +233,6 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 	if err != nil {
 		return nil, err
 	}
-	if err := validateStock(in.Stock); err != nil {
-		return nil, err
-	}
 	var d domain.GiftDefinition
 	if err := s.db.WithContext(ctx).Where("id = ?", parsed).First(&d).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -239,13 +240,22 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 		}
 		return nil, err
 	}
+	stock := in.Stock
+	allowCheckin := in.AllowCheckin
+	if d.Kind == domain.GiftKindMakeupCard {
+		// 签到道具固定不限库存、只允许签到币，避免被后台误配。
+		stock = 0
+		allowCheckin = true
+	} else if err := validateStock(stock); err != nil {
+		return nil, err
+	}
 	updates := map[string]any{
 		"name":          name,
 		"description":   desc,
 		"icon":          icon,
 		"price":         in.Price,
-		"stock":         in.Stock,
-		"allow_checkin": in.AllowCheckin,
+		"stock":         stock,
+		"allow_checkin": allowCheckin,
 		"sort_order":    in.SortOrder,
 		"enabled":       in.Enabled,
 		"updated_at":    s.now(),
@@ -266,11 +276,21 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 	return &v, nil
 }
 
-// DeleteDefinition 删除礼物；已有兑换记录时只允许停用。
+// DeleteDefinition 删除礼物；签到道具与已有兑换记录的礼物只允许停用。
 func (s *Service) DeleteDefinition(ctx context.Context, id string) error {
 	parsed, err := uuid.Parse(strings.TrimSpace(id))
 	if err != nil {
 		return ErrGiftNotFound
+	}
+	var d domain.GiftDefinition
+	if err := s.db.WithContext(ctx).Where("id = ?", parsed).First(&d).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrGiftNotFound
+		}
+		return err
+	}
+	if d.Kind == domain.GiftKindMakeupCard {
+		return ErrGiftSystemItem
 	}
 	var cnt int64
 	if err := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).
@@ -290,6 +310,24 @@ func (s *Service) DeleteDefinition(ctx context.Context, id string) error {
 	return nil
 }
 
+// makeupCardDefinitionTx 读取唯一的补签卡目录项；尚未初始化时返回 nil。
+func (s *Service) makeupCardDefinitionTx(tx *gorm.DB) (*domain.GiftDefinition, error) {
+	var d domain.GiftDefinition
+	err := tx.Where("kind = ?", domain.GiftKindMakeupCard).First(&d).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// makeupCardDefinition 读取补签卡目录项。
+func (s *Service) makeupCardDefinition(ctx context.Context) (*domain.GiftDefinition, error) {
+	return s.makeupCardDefinitionTx(s.db.WithContext(ctx))
+}
+
 // defaultGiftSettings 返回与 0048 迁移一致的默认签到配置。
 func defaultGiftSettings() domain.GiftSettings {
 	return domain.GiftSettings{
@@ -300,7 +338,6 @@ func defaultGiftSettings() domain.GiftSettings {
 		StreakBonusCap:    100,
 		MilestoneBonusCap: 500,
 		BreakPenaltyXP:    5,
-		MakeupCardPrice:   10,
 	}
 }
 
@@ -335,7 +372,7 @@ func (s *Service) UpdateSettings(ctx context.Context, checkinReward int64) (*Set
 func (s *Service) UpdateCheckinSettings(ctx context.Context, in CheckinSettingsInput) (*SettingsView, error) {
 	if in.CheckinReward == nil && in.BaseXP == nil && in.StreakStepXP == nil &&
 		in.StreakBonusCap == nil && in.MilestoneBonusCap == nil &&
-		in.BreakPenaltyXP == nil && in.MakeupCardPrice == nil && in.Milestones == nil {
+		in.BreakPenaltyXP == nil && in.Milestones == nil {
 		return nil, ErrBadInput
 	}
 	if err := validateCheckinSettings(in); err != nil {
@@ -369,9 +406,6 @@ func (s *Service) updateCheckinSettings(ctx context.Context, in CheckinSettingsI
 		}
 		if in.BreakPenaltyXP != nil {
 			updates["break_penalty_xp"] = *in.BreakPenaltyXP
-		}
-		if in.MakeupCardPrice != nil {
-			updates["makeup_card_price"] = *in.MakeupCardPrice
 		}
 		if err := tx.Model(&domain.GiftSettings{}).Where("id = true").Updates(updates).Error; err != nil {
 			return err
@@ -411,8 +445,7 @@ func validateCheckinSettings(in CheckinSettingsInput) error {
 		!check(in.StreakStepXP, 0, maxCheckinXP) ||
 		!check(in.StreakBonusCap, 0, maxCheckinXP) ||
 		!check(in.MilestoneBonusCap, 0, maxCheckinXP) ||
-		!check(in.BreakPenaltyXP, 0, maxCheckinXP) ||
-		!check(in.MakeupCardPrice, 1, maxCheckinXP) {
+		!check(in.BreakPenaltyXP, 0, maxCheckinXP) {
 		return ErrCheckinConfig
 	}
 	if in.Milestones == nil {
@@ -436,7 +469,6 @@ func settingsView(row domain.GiftSettings, milestones []domain.GiftCheckinMilest
 		StreakBonusCap:    row.StreakBonusCap,
 		MilestoneBonusCap: row.MilestoneBonusCap,
 		BreakPenaltyXP:    row.BreakPenaltyXP,
-		MakeupCardPrice:   row.MakeupCardPrice,
 		Milestones:        make([]MilestoneView, 0, len(milestones)),
 		UpdatedAt:         row.UpdatedAt,
 	}
@@ -544,6 +576,7 @@ func definitionView(d domain.GiftDefinition, redeemed int64) DefinitionView {
 	return DefinitionView{
 		ID:            d.ID.String(),
 		Code:          d.Code,
+		Kind:          d.Kind,
 		Name:          d.Name,
 		Description:   d.Description,
 		Icon:          d.Icon,

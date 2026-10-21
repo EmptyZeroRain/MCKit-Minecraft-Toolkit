@@ -93,7 +93,8 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 		if !gift.Enabled {
 			return ErrGiftDisabled
 		}
-		if gift.Stock > 0 {
+		isMakeupCard := gift.Kind == domain.GiftKindMakeupCard
+		if !isMakeupCard && gift.Stock > 0 {
 			var redeemed int64
 			if err := tx.Model(&domain.GiftRedemption{}).
 				Where("gift_id = ?", gift.ID).Count(&redeemed).Error; err != nil {
@@ -104,8 +105,14 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 			}
 		}
 
-		checkinSpent, generalSpent := splitPayment(&gift, w)
-		if w.GeneralBalance < generalSpent {
+		var checkinSpent, generalSpent int64
+		if isMakeupCard {
+			// 签到道具只能用签到礼物币，通用币余额不参与。
+			checkinSpent = gift.Price
+		} else {
+			checkinSpent, generalSpent = splitPayment(&gift, w)
+		}
+		if w.GeneralBalance < generalSpent || w.CheckinBalance < checkinSpent {
 			return ErrInsufficientBalance
 		}
 		newCheckin := w.CheckinBalance - checkinSpent
@@ -137,17 +144,27 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 		}
 		redemption = &row
 
+		eventType := domain.GiftEventGiftRedeem
+		sourceType := "gift_redemption"
+		keyPrefix := "redeem:" + requestKey
 		reason := "兑换礼物：" + gift.Name
+		if isMakeupCard {
+			// 保持旧购买流水的统计口径与幂等键前缀，方便历史对账。
+			eventType = domain.GiftEventMakeupCardPurchase
+			sourceType = "makeup_card"
+			keyPrefix = "makeup_card:purchase:" + requestKey
+			reason = "购买补签卡"
+		}
 		if checkinSpent > 0 {
 			if err := tx.Create(&domain.GiftLedger{
 				UserID:           userID,
 				Amount:           -checkinSpent,
 				CoinType:         domain.GiftCoinCheckin,
 				CoinBalanceAfter: newCheckin,
-				EventType:        domain.GiftEventGiftRedeem,
-				SourceType:       "gift_redemption",
+				EventType:        eventType,
+				SourceType:       sourceType,
 				SourceID:         row.ID.String(),
-				IdempotencyKey:   "redeem:" + requestKey + ":checkin",
+				IdempotencyKey:   keyPrefix + ":checkin",
 				Reason:           reason,
 			}).Error; err != nil {
 				return err
@@ -159,12 +176,21 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 				Amount:           -generalSpent,
 				CoinType:         domain.GiftCoinGeneral,
 				CoinBalanceAfter: newGeneral,
-				EventType:        domain.GiftEventGiftRedeem,
-				SourceType:       "gift_redemption",
+				EventType:        eventType,
+				SourceType:       sourceType,
 				SourceID:         row.ID.String(),
-				IdempotencyKey:   "redeem:" + requestKey + ":general",
+				IdempotencyKey:   keyPrefix + ":general",
 				Reason:           reason,
 			}).Error; err != nil {
+				return err
+			}
+		}
+		if isMakeupCard {
+			if err := tx.Exec(`INSERT INTO gift_makeup_cards (user_id, quantity, updated_at)
+				VALUES (?, 1, ?)
+				ON CONFLICT (user_id) DO UPDATE
+				SET quantity = gift_makeup_cards.quantity + 1,
+				    updated_at = EXCLUDED.updated_at`, userID, s.now()).Error; err != nil {
 				return err
 			}
 		}
@@ -187,13 +213,16 @@ func (s *Service) ListSelfRedemptions(ctx context.Context, userID string, page, 
 		return nil, 0, ErrBadInput
 	}
 	page, pageSize = normalizePage(page, pageSize)
-	q := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).Where("user_id = ?", id)
+	// 「我的礼物」只展示普通礼物；补签卡购买记录在流水与个人库存中体现。
+	q := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).
+		Joins("JOIN gift_definitions g ON g.id = gift_redemptions.gift_id AND g.kind = ?", domain.GiftKindGift).
+		Where("gift_redemptions.user_id = ?", id)
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	var rows []domain.GiftRedemption
-	if err := q.Order("created_at DESC").
+	if err := q.Select("gift_redemptions.*").Order("gift_redemptions.created_at DESC").
 		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}

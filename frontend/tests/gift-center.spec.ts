@@ -64,6 +64,7 @@ const overview: GiftOverview = {
 const dirt: GiftCatalogItem = {
   id: '00000000-0000-0000-0000-000000000010',
   code: 'dirt_block',
+  kind: 'gift',
   name: '泥土块',
   description: '最基础的礼物',
   icon: '🟫',
@@ -87,6 +88,21 @@ const diamond: GiftCatalogItem = {
   icon: '💎',
   price: 50,
   allow_checkin: false,
+  can_afford: false,
+}
+
+const makeupCard: GiftCatalogItem = {
+  ...dirt,
+  id: '00000000-0000-0000-0000-000000000012',
+  code: 'makeup_card',
+  kind: 'makeup_card',
+  name: '补签卡',
+  icon: '🩹',
+  price: 25,
+  stock: 0,
+  allow_checkin: true,
+  redeemed_count: 0,
+  remaining: null,
   can_afford: false,
 }
 
@@ -170,6 +186,17 @@ describe('礼物中心', () => {
     expect(wrapper.findAll('button:disabled').some((b) => b.text() === '余额不足')).toBe(true)
     expect(wrapper.text()).toContain('补签卡')
     expect(wrapper.text()).toContain('最近漏签日：2026-10-19')
+  })
+
+  it('补签卡只在专用区块展示，价格取礼品目录', async () => {
+    ;(fetchGiftCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([dirt, makeupCard])
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('单价 25 签到币')
+    // 礼物网格不重复渲染补签卡，只有普通礼物一个卡片。
+    expect(wrapper.findAll('article')).toHaveLength(1)
   })
 
   it('签到成功后更新签到币余额并刷新目录', async () => {

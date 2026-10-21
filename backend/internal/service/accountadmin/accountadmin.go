@@ -183,23 +183,25 @@ type SeedItem struct {
 
 // Detail 账号详情：基础信息 + 个人数据明细。
 type Detail struct {
-	ID            string         `json:"id"`
-	UserNo        string         `json:"user_no"`
-	Username      string         `json:"username"`
-	Nickname      string         `json:"nickname"`
-	Email         string         `json:"email"`
-	AvatarURL     string         `json:"avatar_url"`
-	Role          string         `json:"role"`
-	IsActive      bool           `json:"is_active"`
-	LastLoginAt   *time.Time     `json:"last_login_at"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	FavoriteCount int64          `json:"favorite_count"`
-	RecentCount   int64          `json:"recent_count"`
-	SeedCount     int64          `json:"seed_count"`
-	Favorites     []FavoriteItem `json:"favorites"`
-	Recents       []RecentItem   `json:"recents"`
-	Seeds         []SeedItem     `json:"seeds"`
+	ID            string     `json:"id"`
+	UserNo        string     `json:"user_no"`
+	Username      string     `json:"username"`
+	Nickname      string     `json:"nickname"`
+	Email         string     `json:"email"`
+	AvatarURL     string     `json:"avatar_url"`
+	Role          string     `json:"role"`
+	IsActive      bool       `json:"is_active"`
+	LastLoginAt   *time.Time `json:"last_login_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	FavoriteCount int64      `json:"favorite_count"`
+	RecentCount   int64      `json:"recent_count"`
+	SeedCount     int64      `json:"seed_count"`
+	// MakeupCards 持有的补签卡数量；无记录为 0。
+	MakeupCards int64          `json:"makeup_cards"`
+	Favorites   []FavoriteItem `json:"favorites"`
+	Recents     []RecentItem   `json:"recents"`
+	Seeds       []SeedItem     `json:"seeds"`
 }
 
 // CreateInput 创建账号入参；Role 为空时按普通用户创建。
@@ -344,6 +346,14 @@ func (s *Service) Detail(ctx context.Context, id string) (*Detail, error) {
 			CreatedAt: sd.CreatedAt, UpdatedAt: sd.UpdatedAt,
 		})
 	}
+
+	var cards domain.GiftMakeupCard
+	if err := s.db.WithContext(ctx).Where("user_id = ?", acc.ID).First(&cards).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	out.MakeupCards = cards.Quantity
 	return out, nil
 }
 

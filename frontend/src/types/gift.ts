@@ -92,10 +92,15 @@ export interface GiftLedgerFilter {
   page_size?: number
 }
 
+/** 目录项类型：普通礼物 / 补签卡等签到道具 */
+export type GiftKind = 'gift' | 'makeup_card'
+
 /** 礼物目录条目 */
 export interface GiftDefinition {
   id: string
   code: string
+  /** 目录项类型；makeup_card 为补签卡等签到道具 */
+  kind: GiftKind
   name: string
   description: string
   icon: string
@@ -194,7 +199,6 @@ export interface GiftSettings {
   streak_bonus_cap: number
   milestone_bonus_cap: number
   break_penalty_xp: number
-  makeup_card_price: number
   milestones: GiftCheckinMilestone[]
   updated_at: string
 }
@@ -207,7 +211,6 @@ export interface GiftSettingsInput {
   streak_bonus_cap?: number
   milestone_bonus_cap?: number
   break_penalty_xp?: number
-  makeup_card_price?: number
   milestones?: GiftCheckinMilestoneInput[]
 }
 

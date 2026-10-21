@@ -2,7 +2,9 @@
 // 礼品目录面板：新建 / 编辑 / 启停 / 排序 / 删除礼物。
 //
 // 已有兑换记录的礼物只能停用，不能删除，避免改写历史快照。
-import { onMounted, reactive, ref } from 'vue'
+// 补签卡（kind = makeup_card）是签到道具：价格即签到币单价，固定不限库存、
+// 只能签到币购买、不可删除，只允许编辑名称 / 描述 / 图标 / 价格 / 排序 / 启停。
+import { computed, onMounted, reactive, ref } from 'vue'
 import AdminTable from '@/components/admin/AdminTable.vue'
 import { ApiError } from '@/types/api'
 import type { AdminTableColumn } from '@/types/admin'
@@ -12,7 +14,7 @@ import {
   fetchGiftDefinitions,
   updateGiftDefinition,
 } from '@/api/gift'
-import type { GiftDefinition, GiftDefinitionInput } from '@/types/gift'
+import type { GiftDefinition, GiftDefinitionInput, GiftKind } from '@/types/gift'
 
 const inputClass =
   'w-full rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
@@ -27,6 +29,8 @@ const showForm = ref(false)
 const saving = ref(false)
 const formError = ref('')
 const editingId = ref('')
+const editingKind = ref<GiftKind>('gift')
+const editingMakeupCard = computed(() => editingKind.value === 'makeup_card')
 
 const form = reactive<{
   name: string
@@ -74,6 +78,7 @@ async function loadDefs() {
 
 function openCreate() {
   editingId.value = ''
+  editingKind.value = 'gift'
   formError.value = ''
   Object.assign(form, {
     name: '',
@@ -90,6 +95,7 @@ function openCreate() {
 
 function openEdit(def: GiftDefinition) {
   editingId.value = def.id
+  editingKind.value = def.kind
   formError.value = ''
   Object.assign(form, {
     name: def.name,
@@ -104,6 +110,10 @@ function openEdit(def: GiftDefinition) {
   showForm.value = true
 }
 
+function isMakeupCard(def: GiftDefinition): boolean {
+  return def.kind === 'makeup_card'
+}
+
 function statusText(def: GiftDefinition): string {
   if (!def.enabled) return '停用'
   if (def.remaining !== null && def.remaining <= 0) return '已兑完'
@@ -116,8 +126,9 @@ function buildInput(): GiftDefinitionInput {
     description: form.description.trim(),
     icon: form.icon.trim() || '🎁',
     price: Number(form.price),
-    stock: Number(form.stock),
-    allow_checkin: form.allow_checkin,
+    // 签到道具由后端固定为不限库存、只允许签到币，这里同步提交规范值。
+    stock: editingMakeupCard.value ? 0 : Number(form.stock),
+    allow_checkin: editingMakeupCard.value ? true : form.allow_checkin,
     sort_order: Number(form.sort_order),
     enabled: form.enabled,
   }
@@ -134,7 +145,7 @@ async function save() {
     formError.value = '礼物价格必须是大于 0 的整数'
     return
   }
-  if (!Number.isInteger(Number(form.stock)) || Number(form.stock) < 0) {
+  if (!editingMakeupCard.value && (!Number.isInteger(Number(form.stock)) || Number(form.stock) < 0)) {
     formError.value = '库存必须是大于等于 0 的整数（0 表示不限）'
     return
   }
@@ -206,6 +217,7 @@ onMounted(loadDefs)
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <p class="text-xs text-text-muted">
         配置礼物价格、库存与「是否允许签到礼物币兑换」；库存填 0 表示不限。已有兑换记录的礼物只能停用，不能删除。
+        补签卡属于签到道具（kind = makeup_card），固定不限库存、只能签到币购买，不可删除。
       </p>
       <button
         type="button"
@@ -221,7 +233,7 @@ onMounted(loadDefs)
 
     <form v-if="showForm" class="card mb-5 grid gap-3 p-4 sm:grid-cols-2" @submit.prevent="save">
       <h2 class="text-sm font-medium text-text-secondary sm:col-span-2">
-        {{ editingId ? '编辑礼物' : '新建礼物' }}
+        {{ editingId ? (editingMakeupCard ? '编辑签到道具' : '编辑礼物') : '新建礼物' }}
       </h2>
       <label class="text-xs text-text-muted">
         名称
@@ -236,10 +248,10 @@ onMounted(loadDefs)
         <input v-model="form.icon" :class="inputClass" type="text" maxlength="16" placeholder="🎁" />
       </label>
       <label class="text-xs text-text-muted">
-        价格（礼物币 / 个）
+        价格（{{ editingMakeupCard ? '签到币' : '礼物币' }} / 个）
         <input v-model.number="form.price" :class="inputClass" type="number" min="1" step="1" />
       </label>
-      <label class="text-xs text-text-muted">
+      <label v-if="!editingMakeupCard" class="text-xs text-text-muted">
         库存（0 = 不限）
         <input v-model.number="form.stock" :class="inputClass" type="number" min="0" step="1" />
       </label>
@@ -248,10 +260,13 @@ onMounted(loadDefs)
         <input v-model.number="form.sort_order" :class="inputClass" type="number" step="1" />
       </label>
       <div class="grid gap-2 text-xs text-text-secondary">
-        <label class="flex items-center gap-2">
+        <label v-if="!editingMakeupCard" class="flex items-center gap-2">
           <input v-model="form.allow_checkin" type="checkbox" />
           允许签到礼物币兑换
         </label>
+        <p v-else class="rounded-md border border-border-dark bg-ink-900/50 p-2 text-[11px] text-text-muted">
+          签到道具：固定不限库存、只能使用签到礼物币购买，购买后进入用户个人库存，不发放兑换码。
+        </p>
         <label class="flex items-center gap-2">
           <input v-model="form.enabled" type="checkbox" />
           启用（下架后用户不可见、不可兑换）
@@ -273,27 +288,35 @@ onMounted(loadDefs)
         <span class="text-lg">{{ row.icon }}</span>
       </template>
       <template #cell-name="{ row }">
-        <div class="font-medium text-text-primary">{{ row.name }}</div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-medium text-text-primary">{{ row.name }}</span>
+          <span
+            v-if="isMakeupCard(row)"
+            class="rounded-full border border-grass-500/40 bg-grass-500/10 px-2 py-0.5 text-[11px] text-grass-300"
+          >
+            签到道具
+          </span>
+        </div>
         <div class="text-[11px] text-text-muted">{{ row.description || '—' }}</div>
       </template>
       <template #cell-price="{ row }">
         <span class="font-medium text-grass-300">{{ row.price }}</span>
-        <span class="text-[11px] text-text-muted"> 币</span>
+        <span class="text-[11px] text-text-muted"> {{ isMakeupCard(row) ? '签到币' : '币' }}</span>
       </template>
       <template #cell-allow_checkin="{ row }">
         <span :class="row.allow_checkin ? 'text-grass-300' : 'text-text-muted'">
-          {{ row.allow_checkin ? '可兑换' : '仅通用币' }}
+          {{ isMakeupCard(row) ? '仅签到币' : row.allow_checkin ? '可兑换' : '仅通用币' }}
         </span>
       </template>
       <template #cell-stock="{ row }">
-        <span class="text-text-secondary">{{ row.stock > 0 ? row.stock : '不限' }}</span>
+        <span class="text-text-secondary">{{ isMakeupCard(row) ? '个人库存' : row.stock > 0 ? row.stock : '不限' }}</span>
       </template>
       <template #cell-redeemed_count="{ row }">
         <span class="text-text-secondary">{{ row.redeemed_count }}</span>
       </template>
       <template #cell-remaining="{ row }">
         <span :class="row.remaining === 0 ? 'text-danger-mc' : 'text-text-secondary'">
-          {{ row.remaining === null ? '不限' : row.remaining }}
+          {{ isMakeupCard(row) || row.remaining === null ? '不限' : row.remaining }}
         </span>
       </template>
       <template #cell-status="{ row }">
@@ -313,6 +336,7 @@ onMounted(loadDefs)
             {{ row.enabled ? '停用' : '启用' }}
           </button>
           <button
+            v-if="!isMakeupCard(row)"
             type="button"
             class="text-xs text-danger-mc hover:underline disabled:opacity-50"
             :disabled="busyId === row.id"

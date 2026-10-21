@@ -116,6 +116,60 @@ func TestGiftCenterAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("后台礼物目录期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
+	var adminDefs struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Code  string `json:"code"`
+			Kind  string `json:"kind"`
+			Price int64  `json:"price"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &adminDefs); err != nil {
+		t.Fatalf("解析后台礼物目录失败: %v", err)
+	}
+	var makeupID string
+	for _, item := range adminDefs.Data {
+		if item.Kind == "makeup_card" {
+			makeupID = item.ID
+			if item.Price != 10 {
+				t.Fatalf("补签卡目录默认价格期望 10，实际 %d", item.Price)
+			}
+		}
+	}
+	if makeupID == "" {
+		t.Fatal("后台礼物目录缺少补签卡目录项")
+	}
+
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/update",
+		fmt.Sprintf(`{"id":%q,"name":"补签卡","description":"补签漏签日经验","icon":"🩹","price":15,"stock":5,"allow_checkin":false,"sort_order":0,"enabled":true}`, makeupID),
+		adminCookie, adminCSRF)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("编辑补签卡期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	makeup := decodeData(t, rec)
+	if got := makeup["price"].(float64); got != 15 {
+		t.Fatalf("补签卡价格期望 15，实际 %v", got)
+	}
+	if got := makeup["stock"].(float64); got != 0 {
+		t.Fatalf("补签卡库存应固定为 0，实际 %v", got)
+	}
+	if got, _ := makeup["allow_checkin"].(bool); !got {
+		t.Fatalf("补签卡必须允许签到币，实际 %v", makeup["allow_checkin"])
+	}
+
+	rec = do(t, router, http.MethodPost, "/api/v1/gifts/overview", `{}`, userCookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("钱包概览期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	if got := decodeData(t, rec)["makeup_card_price"].(float64); got != 15 {
+		t.Fatalf("概览中的补签卡价格期望 15，实际 %v", got)
+	}
+
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/delete",
+		fmt.Sprintf(`{"id":%q}`, makeupID), adminCookie, adminCSRF)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("删除补签卡期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
 
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/create",
 		`{"name":"接口测试礼物","description":"test","icon":"🧪","price":2,"stock":10,"allow_checkin":true,"sort_order":99,"enabled":true}`,
@@ -165,6 +219,9 @@ func TestGiftCenterAPI(t *testing.T) {
 	}
 	if got := decodeData(t, rec)["checkin_reward"].(float64); got != 3 {
 		t.Fatalf("签到奖励期望 3，实际 %v", got)
+	}
+	if _, ok := decodeData(t, rec)["makeup_card_price"]; ok {
+		t.Fatal("签到设置不应再返回 makeup_card_price，补签卡价格应取自礼品目录")
 	}
 
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/wallet/adjust",

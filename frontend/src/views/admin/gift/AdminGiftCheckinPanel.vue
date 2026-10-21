@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// 签到设置面板：签到礼物币、签到经验算法、断签惩罚、补签卡与连续签到里程碑。
+// 签到设置面板：签到礼物币、签到经验算法、断签惩罚与连续签到里程碑。
+// 补签卡的价格与上下架在「礼品目录」中维护（kind = makeup_card）。
 import { onMounted, ref } from 'vue'
 import { ApiError } from '@/types/api'
 import { fetchGiftSettings, updateGiftSettings } from '@/api/gift'
@@ -19,7 +20,6 @@ const streakStepXP = ref(2)
 const streakBonusCap = ref(100)
 const milestoneBonusCap = ref(500)
 const breakPenaltyXP = ref(5)
-const makeupCardPrice = ref(10)
 const milestones = ref<GiftCheckinMilestoneInput[]>([])
 
 function applySettings(settings: Awaited<ReturnType<typeof fetchGiftSettings>>) {
@@ -29,7 +29,6 @@ function applySettings(settings: Awaited<ReturnType<typeof fetchGiftSettings>>) 
   streakBonusCap.value = Number(settings.streak_bonus_cap ?? 0)
   milestoneBonusCap.value = Number(settings.milestone_bonus_cap ?? 0)
   breakPenaltyXP.value = Number(settings.break_penalty_xp ?? 0)
-  makeupCardPrice.value = Number(settings.makeup_card_price ?? 1)
   milestones.value = (settings.milestones ?? []).map((m) => ({
     streak_days: m.streak_days,
     bonus_xp: m.bonus_xp,
@@ -61,7 +60,6 @@ function validate(): string {
     ['连续奖励上限', streakBonusCap.value, 0],
     ['里程碑奖励上限', milestoneBonusCap.value, 0],
     ['断签惩罚经验', breakPenaltyXP.value, 0],
-    ['补签卡价格', makeupCardPrice.value, 1],
   ]
   for (const [label, value, min] of values) {
     if (!isNonNegativeInt(value) || Number(value) < min) {
@@ -102,7 +100,6 @@ async function saveSettings() {
       streak_bonus_cap: Number(streakBonusCap.value),
       milestone_bonus_cap: Number(milestoneBonusCap.value),
       break_penalty_xp: Number(breakPenaltyXP.value),
-      makeup_card_price: Number(makeupCardPrice.value),
       milestones: milestones.value.map((m) => ({
         streak_days: Number(m.streak_days),
         bonus_xp: Number(m.bonus_xp),
@@ -176,11 +173,13 @@ onMounted(loadSettings)
           <input v-model.number="milestoneBonusCap" :class="inputClass" type="number" min="0" step="1" />
           <span class="mt-1 block text-[11px]">单次签到所有里程碑奖励合计上限</span>
         </label>
-        <label class="text-xs text-text-muted sm:col-span-2">
-          补签卡价格（签到礼物币）
-          <input v-model.number="makeupCardPrice" :class="inputClass" type="number" min="1" step="1" />
-          <span class="mt-1 block text-[11px]">只能使用签到礼物币购买；购买数量不设上限</span>
-        </label>
+        <div class="rounded-md border border-border-dark bg-ink-900/50 p-3 text-xs text-text-muted sm:col-span-2">
+          <p class="font-medium text-text-secondary">补签卡价格</p>
+          <p class="mt-1 text-[11px]">
+            补签卡已纳入「礼品目录」中的签到道具，请在目录里修改价格、描述与上下架；
+            补签卡只能使用签到礼物币购买，购买数量不设上限。
+          </p>
+        </div>
       </section>
 
       <section class="card p-4">

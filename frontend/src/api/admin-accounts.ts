@@ -71,6 +71,8 @@ export interface AccountDetail {
   favorite_count: number
   recent_count: number
   seed_count: number
+  /** 持有的补签卡数量 */
+  makeup_cards: number
   favorites: AccountFavorite[]
   recents: AccountRecent[]
   seeds: AccountSeed[]

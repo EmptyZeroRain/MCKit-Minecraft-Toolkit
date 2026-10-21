@@ -36,6 +36,14 @@ const (
 	GiftCoinCheckin = "checkin"
 )
 
+// 礼物目录项类型。
+const (
+	// GiftKindGift 普通礼物：可配置库存与签到币兑换，兑换后生成兑换记录。
+	GiftKindGift = "gift"
+	// GiftKindMakeupCard 补签卡等签到道具：只能签到币购买，购买后进入个人库存。
+	GiftKindMakeupCard = "makeup_card"
+)
+
 // GiftWallet 用户礼物币余额投影。
 //
 // 余额只能通过账本流水变更；禁止业务代码直接 UPDATE 余额而不写 gift_ledger。
@@ -75,12 +83,14 @@ func (GiftLedger) TableName() string { return "gift_ledger" }
 
 // GiftDefinition 礼物目录（后台可维护）。
 type GiftDefinition struct {
-	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Code        string    `gorm:"size:64;not null;uniqueIndex" json:"code"`
-	Name        string    `gorm:"size:80;not null" json:"name"`
-	Description string    `gorm:"size:500;not null;default:''" json:"description"`
-	Icon        string    `gorm:"size:32;not null;default:'🎁'" json:"icon"`
-	Price       int64     `gorm:"not null" json:"price"`
+	ID   uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Code string    `gorm:"size:64;not null;uniqueIndex" json:"code"`
+	// Kind 目录项类型：gift（普通礼物）/ makeup_card（补签卡等签到道具）。
+	Kind        string `gorm:"size:16;not null;default:gift" json:"kind"`
+	Name        string `gorm:"size:80;not null" json:"name"`
+	Description string `gorm:"size:500;not null;default:''" json:"description"`
+	Icon        string `gorm:"size:32;not null;default:'🎁'" json:"icon"`
+	Price       int64  `gorm:"not null" json:"price"`
 	// Stock 总库存；0 表示不限库存，兑换时按已兑换记录数校验剩余库存。
 	Stock        int64     `gorm:"not null;default:0" json:"stock"`
 	AllowCheckin bool      `gorm:"column:allow_checkin;not null;default:false" json:"allow_checkin"`
@@ -135,10 +145,8 @@ type GiftSettings struct {
 	// MilestoneBonusCap 单次签到里程碑奖励合计上限。
 	MilestoneBonusCap int64 `gorm:"column:milestone_bonus_cap;not null;default:500" json:"milestone_bonus_cap"`
 	// BreakPenaltyXP 断签后首次真实签到扣除的经验。
-	BreakPenaltyXP int64 `gorm:"column:break_penalty_xp;not null;default:5" json:"break_penalty_xp"`
-	// MakeupCardPrice 单张补签卡价格（只能使用签到礼物币购买）。
-	MakeupCardPrice int64     `gorm:"column:makeup_card_price;not null;default:10" json:"makeup_card_price"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	BreakPenaltyXP int64     `gorm:"column:break_penalty_xp;not null;default:5" json:"break_penalty_xp"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。

@@ -15,6 +15,7 @@ import {
   createGiftDefinition,
   fetchGiftDefinitions,
   fetchGiftSettings,
+  updateGiftDefinition,
   updateGiftSettings,
 } from '@/api/gift'
 import AdminGiftCatalogPanel from '@/views/admin/gift/AdminGiftCatalogPanel.vue'
@@ -24,6 +25,7 @@ import type { GiftDefinition } from '@/types/gift'
 const dirt: GiftDefinition = {
   id: '00000000-0000-0000-0000-000000000010',
   code: 'dirt_block',
+  kind: 'gift',
   name: '泥土块',
   description: '最基础的礼物',
   icon: '🟫',
@@ -36,6 +38,21 @@ const dirt: GiftDefinition = {
   remaining: 7,
   created_at: '2026-10-20T00:00:00Z',
   updated_at: '2026-10-20T00:00:00Z',
+}
+
+const makeupCard: GiftDefinition = {
+  ...dirt,
+  id: '00000000-0000-0000-0000-000000000012',
+  code: 'makeup_card',
+  kind: 'makeup_card',
+  name: '补签卡',
+  description: '补签漏签日的经验',
+  icon: '🩹',
+  price: 10,
+  stock: 0,
+  allow_checkin: true,
+  redeemed_count: 0,
+  remaining: null,
 }
 
 describe('后台礼品目录', () => {
@@ -88,6 +105,44 @@ describe('后台礼品目录', () => {
     expect(payload.allow_checkin).toBe(false)
     expect(wrapper.text()).toContain('礼物已创建')
   })
+
+  it('补签卡作为签到道具展示且不可删除', async () => {
+    ;(fetchGiftDefinitions as ReturnType<typeof vi.fn>).mockResolvedValue([dirt, makeupCard])
+
+    const wrapper = mount(AdminGiftCatalogPanel)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('签到道具')
+    expect(wrapper.text()).toContain('仅签到币')
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[1].text()).toContain('补签卡')
+    expect(rows[1].findAll('button').some((b) => b.text() === '删除')).toBe(false)
+  })
+
+  it('编辑补签卡时隐藏库存与签到币开关，并提交规范值', async () => {
+    ;(fetchGiftDefinitions as ReturnType<typeof vi.fn>).mockResolvedValue([makeupCard])
+    ;(updateGiftDefinition as ReturnType<typeof vi.fn>).mockResolvedValue(makeupCard)
+
+    const wrapper = mount(AdminGiftCatalogPanel)
+    await flushPromises()
+
+    const row = wrapper.findAll('tbody tr')[0]
+    await row.findAll('button').find((b) => b.text() === '编辑')!.trigger('click')
+    const form = wrapper.find('form')
+    expect(form.text()).not.toContain('库存（0 = 不限）')
+    expect(form.text()).toContain('签到道具')
+
+    await form.find('input[type="number"]').setValue('30')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(updateGiftDefinition).toHaveBeenCalledWith(makeupCard.id, expect.objectContaining({
+      price: 30,
+      stock: 0,
+      allow_checkin: true,
+    }))
+  })
 })
 
 describe('后台签到设置', () => {
@@ -100,7 +155,6 @@ describe('后台签到设置', () => {
       streak_bonus_cap: 100,
       milestone_bonus_cap: 500,
       break_penalty_xp: 5,
-      makeup_card_price: 10,
       milestones: [{ streak_days: 3, bonus_xp: 10, enabled: true }],
       updated_at: '2026-10-20T00:00:00Z',
     })
@@ -114,7 +168,6 @@ describe('后台签到设置', () => {
       streak_bonus_cap: 100,
       milestone_bonus_cap: 500,
       break_penalty_xp: 5,
-      makeup_card_price: 10,
       milestones: [{ streak_days: 3, bonus_xp: 10, enabled: true }],
       updated_at: '2026-10-20T00:00:00Z',
     })
@@ -134,7 +187,6 @@ describe('后台签到设置', () => {
       streak_bonus_cap: 100,
       milestone_bonus_cap: 500,
       break_penalty_xp: 5,
-      makeup_card_price: 10,
       milestones: [{ streak_days: 3, bonus_xp: 10, enabled: true }],
     })
     expect(wrapper.text()).toContain('签到配置已保存')

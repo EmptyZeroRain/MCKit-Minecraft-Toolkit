@@ -87,12 +87,21 @@ function eventLabel(eventType: string): string {
   }
 }
 
+// 补签卡是签到道具，用户侧只在专用区块展示，避免与普通礼物重复。
+const giftCatalog = computed(() => catalog.value.filter((item) => item.kind !== 'makeup_card'))
+const makeupItem = computed(
+  () => catalog.value.find((item) => item.kind === 'makeup_card') ?? null,
+)
+const makeupName = computed(() => makeupItem.value?.name ?? '补签卡')
+const makeupPrice = computed(() => makeupItem.value?.price ?? overview.value?.makeup_card_price ?? 0)
+
 const canBuyMakeupCard = computed(
   () =>
     !!overview.value &&
+    !!makeupItem.value &&
     !buyingMakeup.value &&
-    overview.value.makeup_card_price > 0 &&
-    overview.value.checkin_balance >= overview.value.makeup_card_price,
+    makeupPrice.value > 0 &&
+    overview.value.checkin_balance >= makeupPrice.value,
 )
 
 const canUseMakeupCard = computed(
@@ -213,12 +222,12 @@ async function onBuyMakeupCard(): Promise<void> {
   notice.value = ''
   if (!overview.value) return
   if (!canBuyMakeupCard.value) {
-    error.value = `签到礼物币不足，购买补签卡需要 ${overview.value.makeup_card_price} 签到币。`
+    error.value = `签到礼物币不足，购买补签卡需要 ${makeupPrice.value} 签到币。`
     return
   }
   if (
     !window.confirm(
-      `确定花费 ${overview.value.makeup_card_price} 签到礼物币购买 1 张补签卡吗？`,
+      `确定花费 ${makeupPrice.value} 签到礼物币购买 1 张${makeupName.value}吗？`,
     )
   ) {
     return
@@ -376,11 +385,12 @@ onMounted(loadAll)
       <section class="card mb-6 p-5">
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 class="text-lg font-bold text-text-primary">补签卡</h2>
+            <h2 class="text-lg font-bold text-text-primary">{{ makeupName }}</h2>
             <p class="mt-1 text-xs text-text-muted">
-              持有 {{ overview.makeup_cards }} 张 · 单价 {{ overview.makeup_card_price }} 签到币。
+              持有 {{ overview.makeup_cards }} 张 · 单价 {{ makeupPrice }} 签到币。
               只能使用签到礼物币购买；补签只补经验，不补签到天数、不恢复连续签到、不计入排行榜。
             </p>
+            <p v-if="!makeupItem" class="mt-1 text-[11px] text-text-muted">补签卡暂未上架。</p>
             <p class="mt-1 text-[11px] text-text-muted">
               <template v-if="overview.latest_missed_date">
                 最近漏签日：{{ overview.latest_missed_date }}
@@ -415,9 +425,9 @@ onMounted(loadAll)
           <h2 class="text-lg font-bold text-text-primary">兑换礼物</h2>
           <p class="text-xs text-text-muted">允许签到币的礼物优先扣签到币，不足部分再扣通用币。</p>
         </div>
-        <div v-if="catalog.length" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div v-if="giftCatalog.length" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <article
-            v-for="item in catalog"
+            v-for="item in giftCatalog"
             :key="item.id"
             class="card flex flex-col p-4"
           >

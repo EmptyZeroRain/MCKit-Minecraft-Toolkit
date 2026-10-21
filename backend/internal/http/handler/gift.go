@@ -367,7 +367,6 @@ func (h *GiftHandler) AdminSettingsUpdate(w http.ResponseWriter, r *http.Request
 		StreakBonusCap    *int64                 `json:"streak_bonus_cap"`
 		MilestoneBonusCap *int64                 `json:"milestone_bonus_cap"`
 		BreakPenaltyXP    *int64                 `json:"break_penalty_xp"`
-		MakeupCardPrice   *int64                 `json:"makeup_card_price"`
 		Milestones        *[]gift.MilestoneInput `json:"milestones"`
 	}
 	if !decodeBody(w, r, &req) {
@@ -380,7 +379,6 @@ func (h *GiftHandler) AdminSettingsUpdate(w http.ResponseWriter, r *http.Request
 		StreakBonusCap:    req.StreakBonusCap,
 		MilestoneBonusCap: req.MilestoneBonusCap,
 		BreakPenaltyXP:    req.BreakPenaltyXP,
-		MakeupCardPrice:   req.MakeupCardPrice,
 		Milestones:        req.Milestones,
 	})
 	if err != nil {
@@ -394,7 +392,6 @@ func (h *GiftHandler) AdminSettingsUpdate(w http.ResponseWriter, r *http.Request
 		"streak_bonus_cap":    out.StreakBonusCap,
 		"milestone_bonus_cap": out.MilestoneBonusCap,
 		"break_penalty_xp":    out.BreakPenaltyXP,
-		"makeup_card_price":   out.MakeupCardPrice,
 		"milestones":          out.Milestones,
 	})
 	response.OK(w, out)
@@ -509,6 +506,7 @@ func writeGiftError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, gift.ErrGiftDisabled),
 		errors.Is(err, gift.ErrGiftSoldOut),
 		errors.Is(err, gift.ErrGiftInUse),
+		errors.Is(err, gift.ErrGiftSystemItem),
 		errors.Is(err, gift.ErrGiftCodeTaken),
 		errors.Is(err, gift.ErrMakeupCardNotEnough),
 		errors.Is(err, gift.ErrNoMissedCheckin):
@@ -545,6 +543,8 @@ func giftCode(err error) string {
 		return "GIFT_SOLD_OUT"
 	case errors.Is(err, gift.ErrGiftInUse):
 		return "GIFT_IN_USE"
+	case errors.Is(err, gift.ErrGiftSystemItem):
+		return "GIFT_SYSTEM_ITEM"
 	case errors.Is(err, gift.ErrGiftCodeTaken):
 		return "GIFT_CODE_TAKEN"
 	case errors.Is(err, gift.ErrMakeupCardNotEnough):

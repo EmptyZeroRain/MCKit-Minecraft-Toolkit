@@ -205,7 +205,7 @@ func TestGiftStockIntegration(t *testing.T) {
 		t.Fatalf("目录加载失败: %v", err)
 	}
 	for _, item := range catalog {
-		if item.Code == "limited_gift" {
+		if item.ID == limited.ID {
 			t.Fatalf("售罄礼物不应出现在用户目录: %+v", item)
 		}
 	}
@@ -216,7 +216,7 @@ func TestGiftStockIntegration(t *testing.T) {
 	}
 	var view *DefinitionView
 	for i := range defs {
-		if defs[i].Code == "limited_gift" {
+		if defs[i].ID == limited.ID {
 			view = &defs[i]
 			break
 		}

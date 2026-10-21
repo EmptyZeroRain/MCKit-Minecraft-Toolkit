@@ -38,10 +38,11 @@ var (
 	ErrGiftDisabled        = errors.New("该礼物已下架")
 	ErrGiftSoldOut         = errors.New("礼物库存不足")
 	ErrGiftInUse           = errors.New("该礼物已有兑换记录，只能停用，不能删除")
+	ErrGiftSystemItem      = errors.New("签到道具不能删除，只能停用")
 	ErrAlreadyCheckedIn    = errors.New("今天已经签到过了")
 	ErrMakeupCardNotEnough = errors.New("补签卡不足")
 	ErrNoMissedCheckin     = errors.New("没有可补签的漏签日")
-	ErrCheckinConfig       = errors.New("签到经验配置不合法：经验值需在 0-1000000 之间，补签卡价格需在 1-1000000 之间")
+	ErrCheckinConfig       = errors.New("签到经验配置不合法：经验值需在 0-1000000 之间")
 	ErrMilestoneConfig     = errors.New("里程碑配置不合法：连续天数需为 1-1000000 的唯一整数，奖励经验需在 0-1000000 之间")
 )
 

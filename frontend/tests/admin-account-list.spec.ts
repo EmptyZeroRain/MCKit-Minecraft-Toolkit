@@ -96,6 +96,7 @@ const detail: AccountDetail = {
   favorite_count: 1,
   recent_count: 0,
   seed_count: 0,
+  makeup_cards: 2,
   favorites: [
     {
       id: 'f1',
@@ -332,6 +333,19 @@ describe('统一账号管理列表', () => {
 
     expect(api.deleteAccount).toHaveBeenCalledWith('a1')
     expect(api.listAccounts).toHaveBeenCalled()
+  })
+
+  it('详情展示补签卡持有量', async () => {
+    const wrapper = await mountView(['accounts.admins', 'accounts.users'])
+
+    const row = wrapper.findAll('tbody tr')[0]
+    await row.findAll('button').find((b) => b.text() === '详情')!.trigger('click')
+    await flushPromises()
+
+    expect(api.getAccountDetail).toHaveBeenCalledWith('u1')
+    expect(wrapper.text()).toContain('礼物与签到')
+    expect(wrapper.text()).toContain('补签卡')
+    expect(wrapper.text()).toContain('2 张')
   })
 
   it('导出：按当前筛选调用 CSV 导出', async () => {

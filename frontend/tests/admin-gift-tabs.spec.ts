@@ -33,6 +33,7 @@ const emptyPage = { items: [], total: 0, page: 1, pageSize: 20, totalPages: 0 }
 const dirt: GiftDefinition = {
   id: '00000000-0000-0000-0000-000000000010',
   code: 'dirt_block',
+  kind: 'gift',
   name: '泥土块',
   description: '最基础的礼物',
   icon: '🟫',
