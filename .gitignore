@@ -1,0 +1,33 @@
+# 只忽略根目录下的条目，再显式放行需要纳入版本管理的项。
+# 注意：不要在首行用 `*`——它会连目录内文件一起忽略，并让 Tailwind v4
+# 的自动源探测、ripgrep 等基于 .gitignore 的工具全部失明。
+/*
+!/README.md
+!/LICENSE
+!/SECURITY.md
+!/.gitignore
+!/backend/
+!/deploy/
+!/frontend/
+!/scripts/
+!/images/
+
+# 放行目录内部的派生 / 敏感内容
+backend/api
+backend/wikicrawl
+backend/*.exe
+backend/cache/
+# backend/data 里有一个被跟踪的文档（物品id.md），因此按文件忽略而不是整目录忽略
+backend/data/*
+!backend/data/物品id.md
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+node_modules/
+**/node_modules/
+**/.vite/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

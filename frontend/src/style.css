@@ -1,4 +1,9 @@
-@import 'tailwindcss';
+/* 显式声明扫描源：禁用自动探测，避免被 .gitignore 的忽略规则误伤。
+ * 背景：仓库根 .gitignore 曾用 `*` 全量忽略，而 Tailwind v4 的自动源探测
+ * 会读取 .gitignore 跳过文件，导致工具类零生成（页面无样式、图标撑满屏）。 */
+@import 'tailwindcss' source(none);
+@source '../index.html';
+@source '../src';
 
 /* ===== MC 工具站设计令牌（明暗双主题）=====
  * @theme 层将 Tailwind 工具类名映射到 CSS 变量 —— 变量实际值定义在
