@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"mckit/backend/internal/domain"
 	"mckit/backend/internal/http/middleware"
 )
 
@@ -16,7 +17,7 @@ import (
 //   - 接口只要求已登录，不要求 ops.audit 权限；
 //   - 未登录返回 401。
 func TestAdminLoginHistoryIntegration(t *testing.T) {
-	_, router := integrationSetup(t)
+	gdb, router := integrationSetup(t)
 
 	const agent = "it-agent/1.0 (login-history-test)"
 	body := fmt.Sprintf(`{"username":%q,"password":%q}`, itAdminUser, itPassword)
@@ -82,5 +83,77 @@ func TestAdminLoginHistoryIntegration(t *testing.T) {
 	}
 	if item.CreatedAt == "" {
 		t.Fatal("登录历史缺少登录时间")
+	}
+
+	// 默认每页 10 条：补 12 条登录审计后，第一页只返回 10 条，第二页仍可翻。
+	var acc domain.Account
+	if err := gdb.Where("username = ?", itAdminUser).First(&acc).Error; err != nil {
+		t.Fatalf("查询管理员账号失败: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		row := domain.AuditLog{
+			ActorAdminID:  &acc.ID,
+			Action:        "admin.login",
+			ObjectType:    "admin",
+			Result:        domain.AuditSuccess,
+			SourceIP:      fmt.Sprintf("192.0.2.%d", i+1),
+			BeforeSummary: "{}",
+			AfterSummary:  `{"user_agent":"page-test"}`,
+		}
+		if err := gdb.Create(&row).Error; err != nil {
+			t.Fatalf("写入登录审计失败: %v", err)
+		}
+	}
+	fetch := func(body string) []string {
+		t.Helper()
+		rec := do(t, router, http.MethodPost, "/api/v1/admin/auth/login-history", body, cookie, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("登录历史期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+		}
+		var page struct {
+			Data struct {
+				Items []struct {
+					SourceIP string `json:"source_ip"`
+				} `json:"items"`
+				Total    int `json:"total"`
+				Page     int `json:"page"`
+				PageSize int `json:"page_size"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatalf("解析登录历史失败: %v", err)
+		}
+		wantPage := 1
+		if strings.Contains(body, `"page":2`) {
+			wantPage = 2
+		}
+		if page.Data.Page != wantPage {
+			t.Fatalf("页码回显不符：%+v", page.Data)
+		}
+		if page.Data.PageSize != 10 || page.Data.Total < 12 {
+			t.Fatalf("分页参数不符：%+v", page.Data)
+		}
+		ips := make([]string, 0, len(page.Data.Items))
+		for _, it := range page.Data.Items {
+			ips = append(ips, it.SourceIP)
+		}
+		return ips
+	}
+	p1 := fetch(`{"page":1,"page_size":10}`)
+	p2 := fetch(`{"page":2,"page_size":10}`)
+	if len(p1) != 10 {
+		t.Fatalf("第一页期望 10 条，实际 %d", len(p1))
+	}
+	if len(p2) == 0 || len(p2) > 10 {
+		t.Fatalf("第二页条数异常：%d", len(p2))
+	}
+	seen := map[string]bool{}
+	for _, ip := range p1 {
+		seen[ip] = true
+	}
+	for _, ip := range p2 {
+		if seen[ip] {
+			t.Fatalf("第二页与第一页出现重复记录：%s", ip)
+		}
 	}
 }
