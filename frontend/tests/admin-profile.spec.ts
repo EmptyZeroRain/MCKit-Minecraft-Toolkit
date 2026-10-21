@@ -1,8 +1,8 @@
 // 用户信息页（/admin/profile）测试：
-//   1) 展示用户名 / 角色，并用昵称 / 头像回填表单；
-//   2) 上传图片调用（经压缩工具）后保存，昵称按去除首尾空白提交；
-//   3) 昵称超长时前端拦截，不发起请求；
-//   4) 修改密码：新密码不能与当前密码相同、长度不足时拦截。
+//   1) 页面只保留账号安全三块：修改密码 / 双因子认证 / 登录历史（不再有昵称头像）；
+//   2) 登录历史展示设备、IP、时间与结果，无法识别的 UA 显示「未知设备」；
+//   3) 修改密码：新密码不能与当前密码相同、长度不足时拦截；
+//   4) 双因子认证：绑定流程、恢复码、解绑。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -12,25 +12,14 @@ import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/types/admin'
 
 const authApi = vi.hoisted(() => ({
-  updateProfile: vi.fn(),
   changePassword: vi.fn(),
-  listSessions: vi.fn(),
-  revokeSessions: vi.fn(),
+  listLoginHistory: vi.fn(),
   mfaStatus: vi.fn(),
   mfaSetup: vi.fn(),
   mfaEnable: vi.fn(),
   mfaDisable: vi.fn(),
 }))
 vi.mock('@/api/admin-auth', () => authApi)
-
-// 图片压缩工具在 jsdom 下不可用（无 canvas / 图片解码），此处替换为固定 data URI。
-const imageUtil = vi.hoisted(() => ({
-  fileToAvatarDataUrl: vi.fn(),
-  ALLOWED_AVATAR_TYPES: 'image/png,image/jpeg,image/webp,image/gif',
-}))
-vi.mock('@/utils/image', () => imageUtil)
-
-const UPLOADED = 'data:image/jpeg;base64,AAAA'
 
 function makeRouter() {
   return createRouter({
@@ -51,8 +40,7 @@ async function mountView(user: Partial<AdminUser> = {}) {
   auth.user = {
     id: 'a1',
     username: 'admin',
-    nickname: '旧昵称',
-    avatar_url: 'data:image/png;base64,OLD',
+    nickname: '管理员',
     role: 'admin',
     is_active: true,
     last_login_at: null,
@@ -69,26 +57,16 @@ async function mountView(user: Partial<AdminUser> = {}) {
   return { wrapper, auth }
 }
 
-/** 模拟选择本地图片文件。 */
-async function pickAvatar(wrapper: Awaited<ReturnType<typeof mountView>>['wrapper']) {
-  const fileInput = wrapper.find('input[type="file"]')
-  Object.defineProperty(fileInput.element, 'files', {
-    value: [new File(['x'], 'avatar.png', { type: 'image/png' })],
-    configurable: true,
-  })
-  await fileInput.trigger('change')
-  await flushPromises()
-}
+const MAC_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+const WINDOWS_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36 Edg/125.0'
 
-describe('用户信息页 · 展示资料', () => {
+describe('用户信息页 · 页面结构', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    authApi.updateProfile.mockReset()
-    authApi.changePassword.mockReset()
-    authApi.listSessions.mockReset()
-    authApi.revokeSessions.mockReset()
-    authApi.listSessions.mockResolvedValue([])
-    authApi.revokeSessions.mockResolvedValue({ scope: 'others', revoked: 0 })
+    authApi.listLoginHistory.mockReset()
+    authApi.listLoginHistory.mockResolvedValue([])
     authApi.mfaStatus.mockReset()
     authApi.mfaStatus.mockResolvedValue({
       enabled: false,
@@ -97,58 +75,93 @@ describe('用户信息页 · 展示资料', () => {
       last_used_at: null,
       configured: true,
     })
-    imageUtil.fileToAvatarDataUrl.mockReset()
-    imageUtil.fileToAvatarDataUrl.mockResolvedValue(UPLOADED)
   })
 
-  it('回填昵称与头像，并展示用户名 / 角色', async () => {
+  it('只保留修改密码 / 双因子认证 / 登录历史三块', async () => {
     const { wrapper } = await mountView()
-    const nickname = wrapper.find('input[type="text"]').element as HTMLInputElement
-    expect(nickname.value).toBe('旧昵称')
-    expect(wrapper.find('img[alt="头像预览"]').attributes('src')).toBe('data:image/png;base64,OLD')
-    expect(wrapper.text()).toContain('admin')
+    const text = wrapper.text()
+    expect(text).toContain('修改密码')
+    expect(text).toContain('双因子认证（MFA）')
+    expect(text).toContain('登录历史')
+    // 后台管理账号不再维护昵称 / 头像，也不展示会话指纹。
+    expect(text).not.toContain('用户信息')
+    expect(text).not.toContain('昵称')
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    expect(text).not.toContain('会话指纹')
   })
 
-  it('上传图片后保存资料，调用 updateProfile 并同步本地用户', async () => {
-    authApi.updateProfile.mockResolvedValue({
-      id: 'a1',
-      username: 'admin',
-      nickname: '新昵称',
-      avatar_url: UPLOADED,
-      role: 'admin',
+  it('必须改密时展示提示', async () => {
+    const { wrapper } = await mountView({ must_change_password: true })
+    expect(wrapper.text()).toContain('你的密码已被管理员重置')
+  })
+})
+
+describe('用户信息页 · 登录历史', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    authApi.listLoginHistory.mockReset()
+    authApi.mfaStatus.mockReset()
+    authApi.mfaStatus.mockResolvedValue({
+      enabled: false,
+      pending: false,
+      recovery_codes_left: 0,
+      last_used_at: null,
+      configured: true,
     })
-    const { wrapper, auth } = await mountView()
-    await pickAvatar(wrapper)
-    await wrapper.find('input[type="text"]').setValue('  新昵称  ')
-    await wrapper.find('form').trigger('submit')
-    await flushPromises()
-
-    expect(imageUtil.fileToAvatarDataUrl).toHaveBeenCalledTimes(1)
-    expect(authApi.updateProfile).toHaveBeenCalledWith({
-      nickname: '新昵称',
-      avatar_url: UPLOADED,
-    })
-    expect(auth.displayName).toBe('新昵称')
   })
 
-  it('昵称超长时拦截，不发起请求', async () => {
+  it('展示设备 / IP / 时间 / 结果', async () => {
+    authApi.listLoginHistory.mockResolvedValue([
+      {
+        created_at: '2026-10-20T08:30:00Z',
+        source_ip: '203.0.113.9',
+        user_agent: MAC_UA,
+        result: 'success',
+        action: 'admin.login',
+      },
+      {
+        created_at: '2026-10-19T21:00:00Z',
+        source_ip: '198.51.100.7',
+        user_agent: '',
+        result: 'failure',
+        action: 'admin.login',
+      },
+    ])
+
     const { wrapper } = await mountView()
-    await wrapper.find('input[type="text"]').setValue('字'.repeat(61))
-    await wrapper.find('form').trigger('submit')
-    await flushPromises()
-    expect(authApi.updateProfile).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('昵称长度不能超过 60 个字符')
+    const text = wrapper.text()
+    expect(text).toContain('203.0.113.9')
+    expect(text).toContain('198.51.100.7')
+    expect(text).toContain('Chrome · macOS')
+    // 没有 UA 的历史数据不能假装识别成功。
+    expect(text).toContain('未知设备')
+    expect(text).toContain('成功')
+    expect(text).toContain('失败')
   })
 
-  it('图片处理失败时展示错误且不保存', async () => {
-    imageUtil.fileToAvatarDataUrl.mockRejectedValue(new Error('图片解析失败，请更换图片'))
+  it('多设备按浏览器与系统区分', async () => {
+    authApi.listLoginHistory.mockResolvedValue([
+      {
+        created_at: '2026-10-20T08:30:00Z',
+        source_ip: '203.0.113.9',
+        user_agent: WINDOWS_UA,
+        result: 'success',
+        action: 'admin.login',
+      },
+    ])
     const { wrapper } = await mountView()
-    await pickAvatar(wrapper)
-    expect(wrapper.text()).toContain('图片解析失败，请更换图片')
-    await wrapper.find('form').trigger('submit')
+    expect(wrapper.text()).toContain('Edge · Windows')
+  })
+
+  it('刷新按钮重新拉取登录历史', async () => {
+    authApi.listLoginHistory.mockResolvedValue([])
+    const { wrapper } = await mountView()
+    expect(authApi.listLoginHistory).toHaveBeenCalledTimes(1)
+
+    const refresh = wrapper.findAll('button').find((b) => b.text().includes('刷新'))
+    await refresh!.trigger('click')
     await flushPromises()
-    // 昵称未变且头像未被修改，仍会提交（昵称合法）——这里仅断言错误提示可见。
-    expect(wrapper.find('img[alt="头像预览"]').attributes('src')).toBe('data:image/png;base64,OLD')
+    expect(authApi.listLoginHistory).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -156,6 +169,14 @@ describe('用户信息页 · 修改密码', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     authApi.changePassword.mockReset()
+    authApi.listLoginHistory.mockResolvedValue([])
+    authApi.mfaStatus.mockResolvedValue({
+      enabled: false,
+      pending: false,
+      recovery_codes_left: 0,
+      last_used_at: null,
+      configured: true,
+    })
   })
 
   async function fillPassword(
@@ -201,97 +222,17 @@ describe('用户信息页 · 修改密码', () => {
   })
 })
 
-// 会话管理：展示会话指纹、标记当前设备、支持退出其它设备。
-describe('用户信息页 · 登录会话', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    authApi.updateProfile.mockReset()
-    authApi.changePassword.mockReset()
-    authApi.listSessions.mockReset()
-    authApi.revokeSessions.mockReset()
-    imageUtil.fileToAvatarDataUrl.mockResolvedValue(UPLOADED)
-  })
-
-  it('列出会话并标记当前设备', async () => {
-    authApi.listSessions.mockResolvedValue([
-      {
-        id: 'aaaaaaaaaaaa',
-        role: 'admin',
-        created_at: '2026-10-01T00:00:00Z',
-        last_seen_at: '2026-10-02T00:00:00Z',
-        expires_at: '2026-10-04T00:00:00Z',
-        current: true,
-      },
-      {
-        id: 'bbbbbbbbbbbb',
-        role: 'admin',
-        created_at: '2026-10-01T00:00:00Z',
-        last_seen_at: '2026-10-01T12:00:00Z',
-        expires_at: '2026-10-04T00:00:00Z',
-        current: false,
-      },
-    ])
-    const { wrapper } = await mountView()
-    expect(wrapper.text()).toContain('aaaaaaaaaaaa')
-    expect(wrapper.text()).toContain('bbbbbbbbbbbb')
-    expect(wrapper.text()).toContain('当前设备')
-    expect(wrapper.text()).toContain('其它设备')
-  })
-
-  it('退出其它设备调用 scope=others 并刷新列表', async () => {
-    authApi.listSessions.mockResolvedValue([
-      {
-        id: 'aaaaaaaaaaaa',
-        role: 'admin',
-        created_at: '2026-10-01T00:00:00Z',
-        last_seen_at: '2026-10-02T00:00:00Z',
-        expires_at: '2026-10-04T00:00:00Z',
-        current: true,
-      },
-      {
-        id: 'bbbbbbbbbbbb',
-        role: 'admin',
-        created_at: '2026-10-01T00:00:00Z',
-        last_seen_at: '2026-10-01T12:00:00Z',
-        expires_at: '2026-10-04T00:00:00Z',
-        current: false,
-      },
-    ])
-    authApi.revokeSessions.mockResolvedValue({ scope: 'others', revoked: 1 })
-
-    const { wrapper } = await mountView()
-    const buttons = wrapper.findAll('button')
-    const others = buttons.find((b) => b.text().includes('退出其它设备'))
-    expect(others).toBeTruthy()
-    await others!.trigger('click')
-    await flushPromises()
-
-    expect(authApi.revokeSessions).toHaveBeenCalledWith('others')
-    // 撤销后重新拉取会话列表。
-    expect(authApi.listSessions).toHaveBeenCalledTimes(2)
-  })
-
-  it('必须改密时展示提示', async () => {
-    authApi.listSessions.mockResolvedValue([])
-    const { wrapper } = await mountView({ must_change_password: true })
-    expect(wrapper.text()).toContain('你的密码已被管理员重置')
-  })
-})
-
 // 双因子认证：绑定 / 恢复码展示 / 解绑。
 describe('用户信息页 · 双因子认证', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    authApi.updateProfile.mockReset()
     authApi.changePassword.mockReset()
-    authApi.listSessions.mockReset()
-    authApi.revokeSessions.mockReset()
+    authApi.listLoginHistory.mockReset()
+    authApi.listLoginHistory.mockResolvedValue([])
     authApi.mfaStatus.mockReset()
     authApi.mfaSetup.mockReset()
     authApi.mfaEnable.mockReset()
     authApi.mfaDisable.mockReset()
-    authApi.listSessions.mockResolvedValue([])
-    imageUtil.fileToAvatarDataUrl.mockResolvedValue(UPLOADED)
   })
 
   it('服务端未配置密钥时禁用绑定并给出提示', async () => {

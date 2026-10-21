@@ -93,6 +93,30 @@ export async function revokeSessions(
   return data.data
 }
 
+/**
+ * 登录历史条目。
+ *
+ * 与「会话列表」的区别：会话是当前有效连接，登录历史是发生过的登录事件
+ * （含失败尝试），因此包含设备与来源 IP，且不随会话过期消失。
+ */
+export interface LoginHistoryItem {
+  created_at: string
+  source_ip: string
+  /** 登录时的原始 User-Agent，历史数据可能为空 */
+  user_agent: string
+  result: 'success' | 'failure'
+  action: string
+}
+
+/** 列出当前后台账号最近的登录记录（成功与失败，最多 50 条） */
+export async function listLoginHistory(): Promise<LoginHistoryItem[]> {
+  const { data } = await http.post<ApiResponse<{ items: LoginHistoryItem[]; total: number }>>(
+    '/admin/auth/login-history',
+    {},
+  )
+  return data.data.items ?? []
+}
+
 // ===== 双因子认证（MFA）=====
 
 /** 当前账号的 MFA 状态（不含任何密钥材料） */

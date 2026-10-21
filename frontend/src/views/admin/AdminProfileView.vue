@@ -1,26 +1,30 @@
 <script setup lang="ts">
-// 用户信息：管理个人资料与账号安全（需求 6.1）。
-//   - 用户信息卡片：头像（仅上传图片）/ 昵称可自助修改，用户名与角色只读；
-//   - 修改密码卡片：改密成功后后端使该账号全部会话失效，此处清理本地状态并跳转登录页。
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+// 用户信息：后台管理账号自身的安全设置（需求 6.1）。
+//
+// 只保留三块与「账号安全」直接相关的内容：
+//   - 修改密码：改密成功后后端使该账号全部会话失效；
+//   - 双因子认证：TOTP 绑定 / 解绑；
+//   - 登录历史：最近登录的设备、IP、时间与结果（含失败尝试）。
+//
+// 刻意不放昵称 / 头像等展示资料：这里是后台管理账号，不是社区前台个人主页。
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import FormField from '@/components/common/FormField.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import {
   changePassword,
-  listSessions,
+  listLoginHistory,
   mfaDisable,
   mfaEnable,
   mfaSetup,
   mfaStatus,
-  revokeSessions,
-  type AdminSessionItem,
+  type LoginHistoryItem,
   type MFASetupResult,
   type MFAStatus,
 } from '@/api/admin-auth'
 import { ApiError } from '@/types/api'
-import { ALLOWED_AVATAR_TYPES, fileToAvatarDataUrl } from '@/utils/image'
+import { describeUserAgent } from '@/utils/user-agent'
 import { useSessionLogout } from '@/composables/useSessionLogout'
 
 const router = useRouter()
@@ -30,84 +34,6 @@ const { clearLocalSession } = useSessionLogout()
 
 // 后台账号密码口径：与管理员账号管理 / create-admin 一致，至少 12 位。
 const MIN_PASSWORD_LENGTH = 12
-// 昵称口径与后端 auth.MaxNicknameLength 保持一致（按字符计）。
-const MAX_NICKNAME_LENGTH = 60
-
-// ===== 用户信息（昵称 / 头像）=====
-const profile = reactive({
-  nickname: auth.user?.nickname ?? '',
-  avatar_url: auth.user?.avatar_url ?? '',
-})
-const profileErrors = reactive<Record<string, string>>({})
-const savingProfile = ref(false)
-
-// 头像预览：优先使用选中的图片；未设置或加载失败时展示首字母占位。
-const avatarBroken = ref(false)
-const avatarPreview = computed(() => (avatarBroken.value ? '' : profile.avatar_url))
-const avatarFallback = computed(() => auth.displayName.charAt(0).toUpperCase() || '?')
-
-// 更换头像后重置加载失败标记，让新图片重新尝试加载。
-watch(
-  () => profile.avatar_url,
-  () => {
-    avatarBroken.value = false
-  },
-)
-
-async function onAvatarChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  // 允许重复选择同一文件：无论成功与否都清空原生 input。
-  input.value = ''
-  if (!file) return
-  profileErrors.avatar_url = ''
-  try {
-    profile.avatar_url = await fileToAvatarDataUrl(file)
-  } catch (err) {
-    profileErrors.avatar_url = err instanceof Error ? err.message : '图片处理失败'
-  }
-}
-
-function removeAvatar() {
-  profile.avatar_url = ''
-  profileErrors.avatar_url = ''
-}
-
-function validateProfile(): boolean {
-  profileErrors.nickname = ''
-  let ok = true
-  if ([...profile.nickname.trim()].length > MAX_NICKNAME_LENGTH) {
-    profileErrors.nickname = `昵称长度不能超过 ${MAX_NICKNAME_LENGTH} 个字符`
-    ok = false
-  }
-  return ok
-}
-
-async function saveProfile() {
-  if (!validateProfile() || savingProfile.value) return
-  savingProfile.value = true
-  try {
-    await auth.updateProfile(profile.nickname.trim(), profile.avatar_url)
-    ui.success('资料已保存')
-  } catch (err) {
-    // 后端字段级错误就近渲染到对应输入框。
-    const details = err instanceof ApiError ? err.details : undefined
-    let mapped = false
-    if (details?.length) {
-      for (const d of details) {
-        if (d.field && d.field in profileErrors) {
-          profileErrors[d.field] = d.message
-          mapped = true
-        }
-      }
-    }
-    if (!mapped) {
-      ui.error(err instanceof ApiError ? err.message : '保存失败')
-    }
-  } finally {
-    savingProfile.value = false
-  }
-}
 
 // ===== 修改密码 =====
 const form = reactive({ old_password: '', new_password: '', confirm: '' })
@@ -168,10 +94,9 @@ async function handleSubmit() {
   }
 }
 
-// ===== 会话管理（gj.md §3.3：查看当前会话信息与全部会话注销）=====
-const sessions = ref<AdminSessionItem[]>([])
-const sessionsLoading = ref(false)
-const revokingScope = ref<'' | 'others' | 'all'>('')
+// ===== 登录历史（设备 / IP / 时间）=====
+const history = ref<LoginHistoryItem[]>([])
+const historyLoading = ref(false)
 // 管理员重置密码后，账号必须先完成改密；此处给出显式提示。
 const mustChangePassword = computed(() => auth.user?.must_change_password === true)
 
@@ -180,36 +105,14 @@ function formatDateTime(v: string): string {
   return Number.isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-async function loadSessions() {
-  sessionsLoading.value = true
+async function loadLoginHistory() {
+  historyLoading.value = true
   try {
-    sessions.value = await listSessions()
+    history.value = await listLoginHistory()
   } catch (err) {
-    ui.error(err instanceof ApiError ? err.message : '加载会话失败')
+    ui.error(err instanceof ApiError ? err.message : '加载登录历史失败')
   } finally {
-    sessionsLoading.value = false
-  }
-}
-
-async function handleRevoke(scope: 'others' | 'all') {
-  if (revokingScope.value) return
-  if (scope === 'all' && !window.confirm('将退出所有设备（含当前设备），需要重新登录。确认继续？')) {
-    return
-  }
-  revokingScope.value = scope
-  try {
-    const res = await revokeSessions(scope)
-    if (scope === 'all') {
-      clearLocalSession()
-      router.push({ path: '/login' })
-      return
-    }
-    ui.success(`已退出其它设备（${res.revoked} 个会话）`)
-    await loadSessions()
-  } catch (err) {
-    ui.error(err instanceof ApiError ? err.message : '撤销会话失败')
-  } finally {
-    revokingScope.value = ''
+    historyLoading.value = false
   }
 }
 
@@ -309,14 +212,20 @@ async function copyText(text: string, label: string) {
 }
 
 onMounted(() => {
-  loadSessions()
+  loadLoginHistory()
   loadMFA()
 })
 </script>
 
 <template>
   <div class="max-w-4xl space-y-6">
-    <p class="text-sm text-text-secondary">管理个人资料与账号安全。</p>
+    <!-- 顶栏「用户 → 用户信息」锚点；后台账号只做安全设置，不放展示资料 -->
+    <div id="account" class="scroll-mt-24">
+      <p class="text-sm text-text-secondary">后台管理账号的密码与登录安全。</p>
+      <p class="mt-1 text-xs text-text-muted">
+        当前账号：{{ auth.displayName }}（{{ auth.user?.role ?? '—' }}）
+      </p>
+    </div>
 
     <!-- 强制改密提示：管理员重置密码后，完成改密前无法使用其它后台功能 -->
     <div
@@ -325,92 +234,6 @@ onMounted(() => {
     >
       你的密码已被管理员重置，请先在下方「修改密码」完成改密后继续使用后台功能。
     </div>
-
-    <!-- 用户信息（顶栏「用户 → 用户信息」锚点） -->
-    <section id="account" class="card scroll-mt-24 p-7">
-      <h2 class="mb-6 text-lg font-semibold text-text-primary">用户信息</h2>
-
-      <div class="mb-6 flex flex-col gap-5 sm:flex-row sm:items-center">
-        <img
-          v-if="avatarPreview"
-          :src="avatarPreview"
-          alt="头像预览"
-          class="h-20 w-20 shrink-0 rounded-full border border-border-dark object-cover"
-          @error="avatarBroken = true"
-        />
-        <div
-          v-else
-          class="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-border-dark bg-ink-800 text-2xl font-semibold text-text-muted"
-          aria-hidden="true"
-        >
-          {{ avatarFallback }}
-        </div>
-
-        <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-          <dt class="text-text-muted">用户 ID</dt>
-          <dd class="font-mono text-text-primary">{{ auth.user?.user_no || '—' }}</dd>
-          <dt class="text-text-muted">用户名</dt>
-          <dd class="text-text-primary">{{ auth.user?.username ?? '—' }}</dd>
-          <dt class="text-text-muted">角色</dt>
-          <dd>
-            <span
-              class="inline-flex rounded-full border border-border-dark px-2 py-0.5 text-xs text-text-secondary"
-            >
-              {{ auth.user?.role ?? '—' }}
-            </span>
-          </dd>
-        </dl>
-      </div>
-
-      <form class="space-y-5" novalidate @submit.prevent="saveProfile">
-        <FormField label="昵称" :error="profileErrors.nickname">
-          <template #default="{ id }">
-            <input
-              :id="id"
-              v-model="profile.nickname"
-              type="text"
-              :maxlength="MAX_NICKNAME_LENGTH"
-              placeholder="用于后台展示，留空则显示用户名"
-              class="h-11 w-full rounded-md border border-border-dark bg-ink-900 px-3 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none"
-            />
-          </template>
-        </FormField>
-
-        <FormField label="头像" :error="profileErrors.avatar_url" hint="仅支持上传图片，建议使用方形图片，最大 512KB。">
-          <template #default>
-            <div class="flex flex-wrap items-center gap-3">
-              <label
-                class="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border-dark bg-ink-700 px-3 py-2 text-sm text-text-secondary transition hover:bg-ink-600 hover:text-text-primary"
-              >
-                上传图片
-                <input
-                  type="file"
-                  :accept="ALLOWED_AVATAR_TYPES"
-                  class="sr-only"
-                  @change="onAvatarChange"
-                />
-              </label>
-              <button
-                v-if="avatarPreview"
-                type="button"
-                class="rounded-md border border-danger-mc/40 px-3 py-2 text-sm text-danger-mc transition hover:bg-danger-mc/10"
-                @click="removeAvatar"
-              >
-                移除头像
-              </button>
-            </div>
-          </template>
-        </FormField>
-
-        <button
-          type="submit"
-          class="rounded-md bg-grass-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-grass-500 disabled:opacity-50"
-          :disabled="savingProfile"
-        >
-          {{ savingProfile ? '保存中…' : '保存资料' }}
-        </button>
-      </form>
-    </section>
 
     <!-- 修改密码（顶栏「用户 → 修改密码」锚点） -->
     <section id="password" class="card scroll-mt-24 p-7">
@@ -701,60 +524,54 @@ onMounted(() => {
       </template>
     </section>
 
-    <!-- 会话管理：查看全部有效会话并支持「退出其它设备 / 全部退出」 -->
-    <section id="sessions" class="card scroll-mt-24 p-7">
+    <!-- 登录历史：设备 / IP / 时间 / 结果，形式对齐审计日志 -->
+    <section id="history" class="card scroll-mt-24 p-7">
       <div class="mb-1 flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-lg font-semibold text-text-primary">登录会话</h2>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="rounded-md border border-border-dark px-4 py-2 text-sm text-text-secondary transition hover:text-text-primary disabled:opacity-50"
-            :disabled="revokingScope !== '' || sessions.length <= 1"
-            @click="handleRevoke('others')"
-          >
-            {{ revokingScope === 'others' ? '处理中…' : '退出其它设备' }}
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-red-500/40 px-4 py-2 text-sm text-red-300 transition hover:bg-red-500/10 disabled:opacity-50"
-            :disabled="revokingScope !== ''"
-            @click="handleRevoke('all')"
-          >
-            {{ revokingScope === 'all' ? '处理中…' : '全部退出' }}
-          </button>
-        </div>
+        <h2 class="text-lg font-semibold text-text-primary">登录历史</h2>
+        <button
+          type="button"
+          class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-text-secondary transition hover:bg-ink-700 hover:text-text-primary disabled:opacity-50"
+          :disabled="historyLoading"
+          @click="loadLoginHistory"
+        >
+          {{ historyLoading ? '刷新中…' : '刷新' }}
+        </button>
       </div>
       <p class="mb-4 text-sm text-text-secondary">
-        仅展示会话指纹，不展示会话凭据原文。修改密码或管理员重置密码会自动使全部会话失效。
+        最多显示最近 50 次登录记录，按时间倒序，包含失败尝试。设备信息取自登录时的
+        User-Agent，历史数据可能缺失。
       </p>
 
-      <p v-if="sessionsLoading" class="text-sm text-text-muted">加载中…</p>
-      <p v-else-if="sessions.length === 0" class="text-sm text-text-muted">暂无有效会话</p>
+      <p v-if="historyLoading && history.length === 0" class="text-sm text-text-muted">加载中…</p>
+      <p v-else-if="history.length === 0" class="text-sm text-text-muted">暂无登录记录</p>
       <div v-else class="overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead class="text-xs uppercase text-text-muted">
+        <table class="w-full min-w-[560px] text-left text-sm">
+          <thead class="border-b border-border-dark text-xs text-text-muted">
             <tr>
-              <th class="py-2 pr-4 font-medium">会话指纹</th>
-              <th class="py-2 pr-4 font-medium">角色</th>
-              <th class="py-2 pr-4 font-medium">最近活动</th>
-              <th class="py-2 pr-4 font-medium">过期时间</th>
-              <th class="py-2 font-medium">状态</th>
+              <th class="py-2 pr-4 font-medium">时间</th>
+              <th class="py-2 pr-4 font-medium">设备</th>
+              <th class="py-2 pr-4 font-medium">IP</th>
+              <th class="py-2 font-medium">结果</th>
             </tr>
           </thead>
-          <tbody class="text-text-secondary">
-            <tr v-for="item in sessions" :key="item.id" class="border-t border-border-dark/60">
-              <td class="py-2 pr-4 font-mono text-xs">{{ item.id }}</td>
-              <td class="py-2 pr-4">{{ item.role }}</td>
-              <td class="py-2 pr-4">{{ formatDateTime(item.last_seen_at) }}</td>
-              <td class="py-2 pr-4">{{ formatDateTime(item.expires_at) }}</td>
-              <td class="py-2">
+          <tbody class="divide-y divide-border-dark">
+            <tr v-for="(item, index) in history" :key="`${item.created_at}-${index}`">
+              <td class="whitespace-nowrap py-2.5 pr-4 text-xs text-text-secondary">
+                {{ formatDateTime(item.created_at) }}
+              </td>
+              <td class="py-2.5 pr-4 text-text-primary" :title="item.user_agent || '无 User-Agent'">
+                {{ describeUserAgent(item.user_agent) }}
+              </td>
+              <td class="py-2.5 pr-4 font-mono text-xs text-text-secondary">
+                {{ item.source_ip || '—' }}
+              </td>
+              <td class="py-2.5">
                 <span
-                  v-if="item.current"
-                  class="rounded bg-grass-600/15 px-2 py-0.5 text-xs text-grass-400"
+                  class="text-xs font-medium"
+                  :class="item.result === 'success' ? 'text-grass-300' : 'text-danger-mc'"
                 >
-                  当前设备
+                  {{ item.result === 'success' ? '成功' : '失败' }}
                 </span>
-                <span v-else class="text-xs text-text-muted">其它设备</span>
               </td>
             </tr>
           </tbody>
