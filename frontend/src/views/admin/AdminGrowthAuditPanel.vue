@@ -18,7 +18,7 @@ const total = ref(0)
 const totalPages = ref(1)
 
 const filters = reactive<{ operator_id: string; target_user_id: string; action: string; page: number; pageSize: number }>(
-  { operator_id: '', target_user_id: '', action: '', page: 1, pageSize: 20 },
+  { operator_id: '', target_user_id: '', action: '', page: 1, pageSize: 10 },
 )
 
 const inputClass =

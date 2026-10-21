@@ -40,7 +40,7 @@ function log(partial: Partial<AuditLog> = {}): AuditLog {
 }
 
 function paged(items: AuditLog[]) {
-  return { items, total: items.length, page: 1, pageSize: 20, totalPages: 1, suggestions: [] }
+  return { items, total: items.length, page: 1, pageSize: 10, totalPages: 1, suggestions: [] }
 }
 
 async function mountView() {
@@ -69,7 +69,7 @@ describe('审计日志与安全日志', () => {
   it('默认加载全部审计日志，并展示来源 IP', async () => {
     const wrapper = await mountView()
     expect(api.listAuditLogs).toHaveBeenCalledWith(
-      expect.objectContaining({ page: 1, page_size: 20 }),
+      expect.objectContaining({ page: 1, page_size: 10 }),
     )
     expect(api.listAuditLogs.mock.calls[0][0].security).toBeUndefined()
     expect(wrapper.text()).toContain('admin.login')

@@ -33,7 +33,7 @@ const filters = reactive<{
   sourceIp: string
   page: number
   pageSize: number
-}>({ action: '', objectType: '', result: '', sourceIp: '', page: 1, pageSize: 20 })
+}>({ action: '', objectType: '', result: '', sourceIp: '', page: 1, pageSize: 10 })
 
 const items = ref<AuditLog[]>([])
 const total = ref(0)

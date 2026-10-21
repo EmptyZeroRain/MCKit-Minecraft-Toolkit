@@ -19,7 +19,7 @@ const total = ref(0)
 const totalPages = ref(1)
 
 const filters = reactive<{ user_id: string; source_type: string; page: number; pageSize: number }>(
-  { user_id: '', source_type: '', page: 1, pageSize: 20 },
+  { user_id: '', source_type: '', page: 1, pageSize: 10 },
 )
 
 const sourceOptions = Object.keys(LEDGER_SOURCE_LABELS)
