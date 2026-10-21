@@ -113,6 +113,97 @@ func TestMigrateRollbackRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMigrateRepairsLegacyApplied44 覆盖线上曾出现的状态：
+// schema_migrations 已记录 version=44（旧名称），但新 0044 的曲线表并未建立。
+// 0045 应补建 growth_level_config / growth_level_titles，并移除旧 growth_levels。
+func TestMigrateRepairsLegacyApplied44(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("未设置 TEST_DATABASE_URL，跳过数据库集成测试")
+	}
+	const schema = "migrate_broken_44"
+	ctx := context.Background()
+
+	admin, err := db.Open(url)
+	if err != nil {
+		t.Fatalf("连接测试库失败: %v", err)
+	}
+	defer func() { _ = admin.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") }()
+	if err := admin.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE").Error; err != nil {
+		t.Fatalf("清理 schema 失败: %v", err)
+	}
+	if err := admin.Exec("CREATE SCHEMA " + schema).Error; err != nil {
+		t.Fatalf("创建 schema 失败: %v", err)
+	}
+
+	gormDB, err := db.Open(withSearchPath(url, schema))
+	if err != nil {
+		t.Fatalf("连接 schema 失败: %v", err)
+	}
+
+	// 先迁移到 0043，模拟旧版数据库仍有 growth_levels。
+	if _, err := db.MigrateTo(ctx, gormDB, migrationsDir, 43); err != nil {
+		t.Fatalf("迁移到 0043 失败: %v", err)
+	}
+	if !tableExists(t, gormDB, "growth_levels") {
+		t.Fatal("0043 后应仍存在旧 growth_levels 表")
+	}
+	if tableExists(t, gormDB, "growth_level_config") {
+		t.Fatal("0043 后不应存在 growth_level_config 表")
+	}
+
+	// 模拟旧 0044 已被记录为已应用，但实际没有建表。
+	if err := gormDB.Exec(
+		"INSERT INTO schema_migrations (version, name) VALUES (44, 'growth_level_titles')",
+	).Error; err != nil {
+		t.Fatalf("写入旧 0044 迁移记录失败: %v", err)
+	}
+
+	applied, err := db.Migrate(ctx, gormDB, migrationsDir)
+	if err != nil {
+		t.Fatalf("执行修复迁移失败: %v", err)
+	}
+	if len(applied) != 2 ||
+		applied[0] != "growth_level_reconcile" ||
+		applied[1] != "growth_migration_metadata" {
+		t.Fatalf("应执行 0045 修复迁移与 0046 元数据迁移，实际: %v", applied)
+	}
+	if !tableExists(t, gormDB, "growth_level_config") {
+		t.Fatal("修复后应存在 growth_level_config 表")
+	}
+	if !tableExists(t, gormDB, "growth_level_titles") {
+		t.Fatal("修复后应存在 growth_level_titles 表")
+	}
+	if tableExists(t, gormDB, "growth_levels") {
+		t.Fatal("修复后旧 growth_levels 应被删除")
+	}
+
+	var configCount int64
+	if err := gormDB.Table("growth_level_config").Where("id = 1").Count(&configCount).Error; err != nil {
+		t.Fatalf("查询等级配置失败: %v", err)
+	}
+	if configCount != 1 {
+		t.Fatalf("等级配置应有一条默认记录，实际 %d", configCount)
+	}
+	var titleCount int64
+	if err := gormDB.Table("growth_level_titles").Count(&titleCount).Error; err != nil {
+		t.Fatalf("查询称号规则失败: %v", err)
+	}
+	if titleCount == 0 {
+		t.Fatal("修复后应从旧 growth_levels 回填称号规则")
+	}
+
+	var migrationName string
+	if err := gormDB.Table("schema_migrations").
+		Where("version = 44").
+		Pluck("name", &migrationName).Error; err != nil {
+		t.Fatalf("查询 0044 迁移记录失败: %v", err)
+	}
+	if migrationName != "growth_infinite_levels" {
+		t.Fatalf("0044 迁移名称应修正为 growth_infinite_levels，实际 %q", migrationName)
+	}
+}
+
 // withSearchPath 在 DSN 上追加 search_path 参数。
 func withSearchPath(dsn, schema string) string {
 	sep := "?"

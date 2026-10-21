@@ -44,6 +44,9 @@ func Open(databaseURL string) (*gorm.DB, error) {
 //   - 反向：<序号>_<名称>.down.sql（可缺省，表示该迁移不支持自动回滚）
 //
 // 反向文件不参与正向迁移扫描；回退时按版本降序执行并清除 schema_migrations 记录。
+//
+// 已应用的迁移文件视为不可变：执行器只按版本号判断是否已执行，
+// 改写旧文件不会重新运行；任何结构变更都必须新增版本，而不是修改历史迁移。
 
 // migration 一个版本的正 / 反向迁移文件。
 type migration struct {
