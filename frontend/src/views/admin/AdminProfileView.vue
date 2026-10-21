@@ -19,13 +19,14 @@ import {
   type MFASetupResult,
   type MFAStatus,
 } from '@/api/admin-auth'
-import { setCsrfToken } from '@/api/http'
 import { ApiError } from '@/types/api'
 import { ALLOWED_AVATAR_TYPES, fileToAvatarDataUrl } from '@/utils/image'
+import { useSessionLogout } from '@/composables/useSessionLogout'
 
 const router = useRouter()
 const auth = useAuthStore()
 const ui = useUiStore()
+const { clearLocalSession } = useSessionLogout()
 
 // 后台账号密码口径：与管理员账号管理 / create-admin 一致，至少 12 位。
 const MIN_PASSWORD_LENGTH = 12
@@ -144,9 +145,8 @@ async function handleSubmit() {
   try {
     await changePassword({ old_password: form.old_password, new_password: form.new_password })
     ui.success('密码已修改，请使用新密码重新登录')
-    // 会话已被服务端全部注销，清理本地状态后回到统一登录页。
-    setCsrfToken('')
-    auth.reset()
+    // 会话已被服务端全部注销，前后台登录态一并清理后回到统一登录页。
+    clearLocalSession()
     router.push({ path: '/login' })
   } catch (err) {
     // 把后端字段级错误（如「旧密码不正确」）就近渲染到对应输入框。
@@ -200,8 +200,7 @@ async function handleRevoke(scope: 'others' | 'all') {
   try {
     const res = await revokeSessions(scope)
     if (scope === 'all') {
-      setCsrfToken('')
-      auth.reset()
+      clearLocalSession()
       router.push({ path: '/login' })
       return
     }

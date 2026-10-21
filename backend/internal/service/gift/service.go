@@ -36,15 +36,29 @@ var (
 	ErrBadCoinType         = errors.New("礼物币类型不合法")
 	ErrGiftNotFound        = errors.New("礼物不存在")
 	ErrGiftDisabled        = errors.New("该礼物已下架")
+	ErrGiftSoldOut         = errors.New("礼物库存不足")
 	ErrGiftInUse           = errors.New("该礼物已有兑换记录，只能停用，不能删除")
 	ErrAlreadyCheckedIn    = errors.New("今天已经签到过了")
+	ErrMakeupCardNotEnough = errors.New("补签卡不足")
+	ErrNoMissedCheckin     = errors.New("没有可补签的漏签日")
+	ErrCheckinConfig       = errors.New("签到经验配置不合法：经验值需在 0-1000000 之间，补签卡价格需在 1-1000000 之间")
+	ErrMilestoneConfig     = errors.New("里程碑配置不合法：连续天数需为 1-1000000 的唯一整数，奖励经验需在 0-1000000 之间")
 )
+
+// GrowthEventTxSink 在调用方事务内处理成长事件。
+//
+// 签到服务需要把签到币、签到记录与签到经验放在同一数据库事务中；
+// 由 main 注入 growth.Service 实现，避免礼物包直接依赖成长包内部实现。
+type GrowthEventTxSink interface {
+	HandleEventTx(ctx context.Context, tx *gorm.DB, ev domain.GrowthEvent) error
+}
 
 // Service 礼物币钱包服务。
 type Service struct {
-	db  *gorm.DB
-	now func() time.Time
-	loc *time.Location
+	db     *gorm.DB
+	now    func() time.Time
+	loc    *time.Location
+	growth GrowthEventTxSink
 }
 
 // NewService 创建礼物币服务。
@@ -55,6 +69,12 @@ func NewService(db *gorm.DB) *Service {
 // WithTimezone 覆盖签到业务时区（空 / 非法时回退 Asia/Shanghai）。
 func (s *Service) WithTimezone(name string) *Service {
 	s.loc = loadLocation(name)
+	return s
+}
+
+// WithGrowthSink 注入成长事件接收端；未注入时签到仍可用，但不发放签到经验。
+func (s *Service) WithGrowthSink(sink GrowthEventTxSink) *Service {
+	s.growth = sink
 	return s
 }
 
@@ -98,10 +118,21 @@ type LedgerView struct {
 // Overview 用户本人钱包概览（含最近流水与今日签到状态）。
 type Overview struct {
 	WalletView
-	Recent        []LedgerView `json:"recent"`
-	CheckinReward int64        `json:"checkin_reward"`
-	CheckedIn     bool         `json:"checked_in_today"`
-	CheckinDate   string       `json:"checkin_date"`
+	Recent           []LedgerView `json:"recent"`
+	CheckinReward    int64        `json:"checkin_reward"`
+	CheckedIn        bool         `json:"checked_in_today"`
+	CheckinDate      string       `json:"checkin_date"`
+	CheckinStreak    int          `json:"checkin_streak"`
+	LongestStreak    int          `json:"checkin_longest_streak"`
+	NextStreak       int          `json:"next_checkin_streak"`
+	TodayXP          int64        `json:"checkin_today_xp"`
+	BaseXP           int64        `json:"checkin_base_xp"`
+	StreakXP         int64        `json:"checkin_streak_xp"`
+	MilestoneXP      int64        `json:"checkin_milestone_xp"`
+	PenaltyXP        int64        `json:"checkin_penalty_xp"`
+	MakeupCards      int64        `json:"makeup_cards"`
+	MakeupCardPrice  int64        `json:"makeup_card_price"`
+	LatestMissedDate string       `json:"latest_missed_date"`
 }
 
 // AdjustInput 后台调整入参。
@@ -183,11 +214,22 @@ func (s *Service) SelfOverview(ctx context.Context, userID string) (*Overview, e
 		return nil, err
 	}
 	return &Overview{
-		WalletView:    *wallet,
-		Recent:        recent,
-		CheckinReward: status.Reward,
-		CheckedIn:     status.CheckedIn,
-		CheckinDate:   status.Date,
+		WalletView:       *wallet,
+		Recent:           recent,
+		CheckinReward:    status.Reward,
+		CheckedIn:        status.CheckedIn,
+		CheckinDate:      status.Date,
+		CheckinStreak:    status.Streak,
+		LongestStreak:    status.LongestStreak,
+		NextStreak:       status.NextStreak,
+		TodayXP:          status.TodayXP,
+		BaseXP:           status.BaseXP,
+		StreakXP:         status.StreakXP,
+		MilestoneXP:      status.MilestoneXP,
+		PenaltyXP:        status.PenaltyXP,
+		MakeupCards:      status.MakeupCards,
+		MakeupCardPrice:  status.MakeupCardPrice,
+		LatestMissedDate: status.LatestMissedDate,
 	}, nil
 }
 

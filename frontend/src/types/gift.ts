@@ -37,6 +37,24 @@ export interface GiftOverview extends GiftWallet {
   checkin_reward: number
   checked_in_today: boolean
   checkin_date: string
+  /** 当前连续签到天数 */
+  checkin_streak: number
+  /** 历史最长连续签到天数 */
+  checkin_longest_streak: number
+  /** 今日签到后的连续天数（未签到时为预计值） */
+  next_checkin_streak: number
+  /** 今日已得 / 预计获得的净经验 */
+  checkin_today_xp: number
+  checkin_base_xp: number
+  checkin_streak_xp: number
+  checkin_milestone_xp: number
+  checkin_penalty_xp: number
+  /** 持有的补签卡数量 */
+  makeup_cards: number
+  /** 补签卡单价（签到礼物币） */
+  makeup_card_price: number
+  /** 最近一个尚未补签的漏签日；空字符串表示没有 */
+  latest_missed_date: string
 }
 
 /** 礼物币流水（正数为增加，负数为扣减） */
@@ -82,11 +100,15 @@ export interface GiftDefinition {
   description: string
   icon: string
   price: number
+  /** 总库存；0 表示不限库存 */
+  stock: number
   allow_checkin: boolean
   sort_order: number
   enabled: boolean
   /** 后台列表返回：累计兑换次数 */
   redeemed_count: number
+  /** 剩余库存；不限库存时为 null */
+  remaining: number | null
   created_at: string
   updated_at: string
 }
@@ -114,7 +136,48 @@ export interface GiftCheckinResult {
   checkin_date: string
   reward: number
   checked_in: boolean
+  checkin_streak: number
+  xp: number
+  base_xp: number
+  streak_xp: number
+  milestone_xp: number
+  penalty_xp: number
   wallet: GiftWallet
+}
+
+/** 补签卡购买结果 */
+export interface GiftMakeupCardPurchaseResult {
+  price: number
+  makeup_cards: number
+  wallet: GiftWallet
+}
+
+/** 补签结果 */
+export interface GiftMakeupResult {
+  xp_date: string
+  xp: number
+  base_xp: number
+  streak_xp: number
+  milestone_xp: number
+  makeup_cards: number
+  wallet: GiftWallet
+}
+
+/** 连续签到里程碑 */
+export interface GiftCheckinMilestone {
+  id?: string
+  streak_days: number
+  bonus_xp: number
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+/** 后台保存里程碑入参 */
+export interface GiftCheckinMilestoneInput {
+  streak_days: number
+  bonus_xp: number
+  enabled: boolean
 }
 
 /** 兑换结果 */
@@ -126,16 +189,36 @@ export interface GiftRedeemResult {
 /** 礼物中心配置 */
 export interface GiftSettings {
   checkin_reward: number
+  base_xp: number
+  streak_step_xp: number
+  streak_bonus_cap: number
+  milestone_bonus_cap: number
+  break_penalty_xp: number
+  makeup_card_price: number
+  milestones: GiftCheckinMilestone[]
   updated_at: string
+}
+
+/** 后台更新签到配置入参；字段均可选，milestones 传入时整表替换 */
+export interface GiftSettingsInput {
+  checkin_reward?: number
+  base_xp?: number
+  streak_step_xp?: number
+  streak_bonus_cap?: number
+  milestone_bonus_cap?: number
+  break_penalty_xp?: number
+  makeup_card_price?: number
+  milestones?: GiftCheckinMilestoneInput[]
 }
 
 /** 新建 / 编辑礼物入参 */
 export interface GiftDefinitionInput {
-  code?: string
   name: string
   description: string
   icon: string
   price: number
+  /** 总库存；0 表示不限库存 */
+  stock: number
   allow_checkin: boolean
   sort_order: number
   enabled: boolean

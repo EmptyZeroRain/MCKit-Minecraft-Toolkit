@@ -36,6 +36,7 @@ const overview: GrowthOverview = {
   is_level_overridden: false,
   active_days: 7,
   guest_active_days: 7,
+  guest_pending_xp: 0,
   unlocked_achievements: 2,
   achievement_total: 4,
   today_tasks_completed: 1,
@@ -136,12 +137,16 @@ describe('成长中心页', () => {
       xp_to_next_level: 0,
       level_progress_percent: 42,
       active_days: 3,
+      guest_pending_xp: 450,
     })
     const wrapper = await mountView()
     const text = wrapper.text()
 
     expect(text).toContain('Lv.0 · 访客')
     expect(text).toContain('访客阶段：活跃 3/7 天')
+    expect(text).toContain('访客阶段已攒经验')
+    expect(text).toContain('450')
+    expect(text).toContain('进入 Lv.1 后自动生效')
     expect(text).not.toContain('距下一级还需')
     expect(text).toContain('42%')
   })

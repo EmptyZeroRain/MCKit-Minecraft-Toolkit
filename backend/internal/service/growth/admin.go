@@ -93,7 +93,6 @@ func (s *Service) GetAdminOverview(ctx context.Context) (*AdminOverview, error) 
 
 // RuleInput 经验规则创建 / 更新入参。
 type RuleInput struct {
-	Code            string     `json:"code"`
 	Name            string     `json:"name"`
 	EventType       string     `json:"event_type"`
 	XPAmount        int        `json:"xp_amount"`
@@ -109,9 +108,9 @@ func (s *Service) ListRules(ctx context.Context) ([]domain.GrowthRule, error) {
 	return s.repo.ListRules(ctx)
 }
 
-// CreateRule 新建一条经验规则（版本 1）。编码必须唯一且事件类型合法。
+// CreateRule 新建一条经验规则（版本 1）。编码由系统生成且事件类型合法。
 func (s *Service) CreateRule(ctx context.Context, in RuleInput, operatorID string) (*domain.GrowthRule, error) {
-	code, err := normalizeRuleCode(in.Code)
+	code, err := normalizeRuleCode(generateInternalCode("rule"))
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +137,7 @@ func (s *Service) CreateRule(ctx context.Context, in RuleInput, operatorID strin
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "rule.create", EntityType: "growth_rule", EntityID: rule.ID.String(),
-			Reason: "新建经验规则 " + code, After: ruleSnapshot(rule),
+			Reason: "新建经验规则 " + rule.Name, After: ruleSnapshot(rule),
 		})
 	})
 	if err != nil {
@@ -183,7 +182,7 @@ func (s *Service) UpdateRule(ctx context.Context, id string, in RuleInput, opera
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "rule.update", EntityType: "growth_rule", EntityID: rule.ID.String(),
-			Reason: "更新经验规则 " + old.Code + " 至版本 " + itoa(rule.Version),
+			Reason: "更新经验规则 " + rule.Name + " 至版本 " + itoa(rule.Version),
 			Before: ruleSnapshot(old), After: ruleSnapshot(rule),
 		})
 	})
@@ -210,7 +209,7 @@ func (s *Service) SetRuleEnabled(ctx context.Context, id string, enabled bool, o
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: action, EntityType: "growth_rule", EntityID: rule.ID.String(),
-			Reason: "切换经验规则 " + rule.Code + " 启用状态",
+			Reason: "切换经验规则 " + rule.Name + " 启用状态",
 			After:  map[string]any{"code": rule.Code, "enabled": enabled},
 		})
 	})
@@ -236,14 +235,14 @@ func (s *Service) DeleteRule(ctx context.Context, id string, operatorID string) 
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "rule.delete", EntityType: "growth_rule", EntityID: rule.ID.String(),
-			Reason: "删除经验规则 " + rule.Code, Before: ruleSnapshot(rule),
+			Reason: "删除经验规则 " + rule.Name, Before: ruleSnapshot(rule),
 		})
 	})
 }
 
 // ---- 等级曲线与称号规则 ----
 
-// LevelConfigInput 等级曲线入参。
+// LevelConfigInput 等级曲线入参；MaxLevel=0 表示不设上限。
 type LevelConfigInput struct {
 	MaxLevel int   `json:"max_level"`
 	StepXP   int64 `json:"step_xp"`
@@ -312,7 +311,7 @@ func (s *Service) CreateLevelTitle(ctx context.Context, in LevelTitleInput, oper
 		if err != nil {
 			return err
 		}
-		rule, err := buildLevelTitle(in, cfg.MaxLevel)
+		rule, err := buildLevelTitle(in, effectiveMaxLevel(LevelCurve{MaxLevel: cfg.MaxLevel}))
 		if err != nil {
 			return err
 		}
@@ -360,7 +359,7 @@ func (s *Service) UpdateLevelTitle(ctx context.Context, id string, in LevelTitle
 		if err != nil {
 			return err
 		}
-		rule, err := buildLevelTitle(in, cfg.MaxLevel)
+		rule, err := buildLevelTitle(in, effectiveMaxLevel(LevelCurve{MaxLevel: cfg.MaxLevel}))
 		if err != nil {
 			return err
 		}
@@ -432,7 +431,7 @@ func isUniqueViolation(err error) bool {
 func buildLevelTitle(in LevelTitleInput, maxLevel int) (domain.GrowthLevelTitle, error) {
 	title := strings.TrimSpace(in.Title)
 	if in.MinLevel < GuestLevel || in.MaxLevel < in.MinLevel ||
-		in.MaxLevel > DefaultMaxLevel ||
+		in.MaxLevel > HardMaxLevel ||
 		(in.Enabled && in.MaxLevel > maxLevel) ||
 		title == "" || utf8.RuneCountInString(title) > 100 {
 		return domain.GrowthLevelTitle{}, ErrLevelThreshold
@@ -490,7 +489,7 @@ func syncLevelAchievementProgress(tx *gorm.DB, now time.Time) error {
 type AdjustLevelInput struct {
 	// TargetUserID 对外用户 ID（accounts.user_no），不接受内部 UUID 或用户名。
 	TargetUserID string `json:"target_user_id"`
-	// TargetLevel 直接覆盖的目标等级（绝对值），必须在 0..max_level 之间。
+	// TargetLevel 直接覆盖的目标等级（绝对值），必须在 0..max_level 之间；max_level=0 表示不限。
 	TargetLevel int    `json:"target_level"`
 	Reason      string `json:"reason"`
 	RequestKey  string `json:"request_key"`
@@ -531,7 +530,7 @@ func (s *Service) AdjustLevel(ctx context.Context, in AdjustLevelInput) (*LevelA
 		if err != nil {
 			return err
 		}
-		if in.TargetLevel < GuestLevel || in.TargetLevel > resolver.Curve.MaxLevel {
+		if in.TargetLevel < GuestLevel || in.TargetLevel > effectiveMaxLevel(resolver.Curve) {
 			return ErrLevelRange
 		}
 		g, err := lockGrowth(tx, targetID)
@@ -604,8 +603,8 @@ func (s *Service) RecalculateLevels(ctx context.Context) (int, error) {
 
 // recalculateUserLevels 按给定等级曲线重算用户展示等级。
 //
-// 人工覆盖等级也会被收敛到 0..MaxLevel；若当前上限降低，覆盖值同步收敛，
-// 避免长期保留无效值。
+// 人工覆盖等级也会被收敛到 0..实际上限；若当前上限降低，覆盖值同步收敛，
+// 避免长期保留无效值。上限为 0 时仅受数据库 INT 范围限制。
 func recalculateUserLevels(db *gorm.DB, resolver LevelResolver) (int, error) {
 	var rows []domain.UserGrowth
 	if err := db.Select("user_id, current_xp, level, level_override, active_days").Find(&rows).Error; err != nil {
@@ -619,7 +618,7 @@ func recalculateUserLevels(db *gorm.DB, resolver LevelResolver) (int, error) {
 			updates["level"] = want
 		}
 		if g.LevelOverride != nil {
-			clamped := clampLevel(*g.LevelOverride, resolver.Curve.MaxLevel)
+			clamped := clampLevel(*g.LevelOverride, effectiveMaxLevel(resolver.Curve))
 			if clamped != *g.LevelOverride {
 				updates["level_override"] = clamped
 			}
@@ -805,7 +804,6 @@ func (s *Service) Reverse(ctx context.Context, in ReverseInput) (*domain.Experie
 
 // TaskDefInput 每日任务定义创建 / 更新入参。
 type TaskDefInput struct {
-	Code        string `json:"code"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	EventType   string `json:"event_type"`
@@ -820,9 +818,9 @@ func (s *Service) ListTaskDefs(ctx context.Context) ([]domain.DailyTaskDefinitio
 	return s.repo.ListTaskDefs(ctx, false)
 }
 
-// CreateTaskDef 新建每日任务定义。
+// CreateTaskDef 新建每日任务定义。编码由系统生成。
 func (s *Service) CreateTaskDef(ctx context.Context, in TaskDefInput, operatorID string) (*domain.DailyTaskDefinition, error) {
-	code, err := normalizeRuleCode(in.Code)
+	code, err := normalizeRuleCode(generateInternalCode("task"))
 	if err != nil {
 		return nil, err
 	}
@@ -847,7 +845,7 @@ func (s *Service) CreateTaskDef(ctx context.Context, in TaskDefInput, operatorID
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "task.create", EntityType: "daily_task", EntityID: def.ID.String(),
-			Reason: "新建每日任务 " + code, After: taskSnapshot(def),
+			Reason: "新建每日任务 " + def.Name, After: taskSnapshot(def),
 		})
 	})
 	if err != nil {
@@ -883,7 +881,7 @@ func (s *Service) UpdateTaskDef(ctx context.Context, id string, in TaskDefInput,
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "task.update", EntityType: "daily_task", EntityID: old.ID.String(),
-			Reason: "更新每日任务 " + old.Code, Before: before,
+			Reason: "更新每日任务 " + strings.TrimSpace(in.Name), Before: before,
 			After: map[string]any{"name": in.Name, "target_count": in.TargetCount, "reward_xp": in.RewardXP, "enabled": in.Enabled},
 		})
 	})
@@ -910,7 +908,7 @@ func (s *Service) SetTaskDefEnabled(ctx context.Context, id string, enabled bool
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: action, EntityType: "daily_task", EntityID: def.ID.String(),
-			Reason: "切换每日任务 " + def.Code + " 启用状态",
+			Reason: "切换每日任务 " + def.Name + " 启用状态",
 			After:  map[string]any{"code": def.Code, "enabled": enabled},
 		})
 	})
@@ -936,7 +934,7 @@ func (s *Service) DeleteTaskDef(ctx context.Context, id string, operatorID strin
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "task.delete", EntityType: "daily_task", EntityID: def.ID.String(),
-			Reason: "删除每日任务 " + def.Code, Before: taskSnapshot(def),
+			Reason: "删除每日任务 " + def.Name, Before: taskSnapshot(def),
 		})
 	})
 }
@@ -945,7 +943,6 @@ func (s *Service) DeleteTaskDef(ctx context.Context, id string, operatorID strin
 
 // AchievementInput 成就定义创建 / 更新入参。
 type AchievementInput struct {
-	Code                 string `json:"code"`
 	Name                 string `json:"name"`
 	Description          string `json:"description"`
 	Category             string `json:"category"`
@@ -966,9 +963,9 @@ func (s *Service) ListAchievementDefs(ctx context.Context) ([]domain.Achievement
 	return s.repo.ListAchievementDefs(ctx, false)
 }
 
-// CreateAchievement 新建成就定义。
+// CreateAchievement 新建成就定义。编码由系统生成。
 func (s *Service) CreateAchievement(ctx context.Context, in AchievementInput, operatorID string) (*domain.AchievementDefinition, error) {
-	code, err := normalizeRuleCode(in.Code)
+	code, err := normalizeRuleCode(generateInternalCode("achievement"))
 	if err != nil {
 		return nil, err
 	}
@@ -995,7 +992,7 @@ func (s *Service) CreateAchievement(ctx context.Context, in AchievementInput, op
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "achievement.create", EntityType: "achievement", EntityID: def.ID.String(),
-			Reason: "新建成就 " + code, After: achievementSnapshot(def),
+			Reason: "新建成就 " + def.Name, After: achievementSnapshot(def),
 		})
 	})
 	if err != nil {
@@ -1037,7 +1034,7 @@ func (s *Service) UpdateAchievement(ctx context.Context, id string, in Achieveme
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: "achievement.update", EntityType: "achievement", EntityID: old.ID.String(),
-			Reason: "更新成就 " + old.Code, Before: before,
+			Reason: "更新成就 " + strings.TrimSpace(in.Name), Before: before,
 			After: map[string]any{"name": in.Name, "condition_type": in.ConditionType, "target_value": in.TargetValue, "enabled": in.Enabled},
 		})
 	})
@@ -1064,7 +1061,7 @@ func (s *Service) SetAchievementEnabled(ctx context.Context, id string, enabled 
 		}
 		return writeAudit(tx, auditEntry{
 			OperatorID: operatorID, Action: action, EntityType: "achievement", EntityID: def.ID.String(),
-			Reason: "切换成就 " + def.Code + " 启用状态",
+			Reason: "切换成就 " + def.Name + " 启用状态",
 			After:  map[string]any{"code": def.Code, "enabled": enabled},
 		})
 	})
@@ -1504,6 +1501,12 @@ func findLedgerByID(tx *gorm.DB, id string) (*domain.ExperienceLedger, error) {
 		return nil, ErrLedgerNotFound
 	}
 	return &l, nil
+}
+
+// generateInternalCode 生成后台创建的内部标识。编码仅用于服务端内部关联，
+// 不再由管理员指定，也不在后台展示。
+func generateInternalCode(prefix string) string {
+	return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
 // normalizeRuleCode 校验并归一化规则 / 任务 / 成就编码。

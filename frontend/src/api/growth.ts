@@ -196,7 +196,7 @@ export async function updateGrowthRule(id: string, input: GrowthRuleInput): Prom
   return data.data
 }
 
-/** 启用 / 停用某编码的全部规则版本 */
+/** 启用 / 停用某规则的全部版本 */
 export async function toggleGrowthRule(id: string, enabled: boolean): Promise<void> {
   await http.post<ApiResponse<null>>('/admin/growth/rules/toggle', { id, enabled })
 }

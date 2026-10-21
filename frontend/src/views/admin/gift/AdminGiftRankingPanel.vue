@@ -23,7 +23,6 @@ const days = ref(0)
 const columns: AdminTableColumn[] = [
   { key: 'rank', label: '排名', width: '70px', align: 'center' },
   { key: 'gift', label: '礼物' },
-  { key: 'code', label: '编码', width: '150px' },
   { key: 'redemption_count', label: '兑换次数', width: '100px', align: 'right' },
   { key: 'total_coins', label: '消耗礼物币', width: '120px', align: 'right' },
   { key: 'general_coins', label: '通用币', width: '100px', align: 'right' },
@@ -103,9 +102,6 @@ onMounted(load)
           <span class="text-lg" aria-hidden="true">{{ row.icon }}</span>
           <span class="font-medium text-text-primary">{{ row.name }}</span>
         </div>
-      </template>
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs">{{ row.code }}</span>
       </template>
       <template #cell-redemption_count="{ row }">
         <span class="font-medium text-grass-300">{{ row.redemption_count }}</span>

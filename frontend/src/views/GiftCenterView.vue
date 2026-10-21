@@ -14,7 +14,9 @@ import {
   fetchGiftLedger,
   fetchGiftOverview,
   fetchGiftRedemptions,
+  purchaseMakeupCard,
   redeemGift,
+  useMakeupCard,
 } from '@/api/gift'
 import type {
   GiftCatalogItem,
@@ -43,6 +45,8 @@ const overview = ref<GiftOverview | null>(null)
 const catalog = ref<GiftCatalogItem[]>([])
 const checkingIn = ref(false)
 const redeemingId = ref('')
+const buyingMakeup = ref(false)
+const usingMakeup = ref(false)
 
 const redemptions = ref<GiftRedemption[]>([])
 const redemptionTotal = ref(0)
@@ -76,9 +80,40 @@ function eventLabel(eventType: string): string {
       return '每日签到'
     case 'gift_redeem':
       return '兑换礼物'
+    case 'makeup_card_purchase':
+      return '购买补签卡'
     default:
       return eventType
   }
+}
+
+const canBuyMakeupCard = computed(
+  () =>
+    !!overview.value &&
+    !buyingMakeup.value &&
+    overview.value.makeup_card_price > 0 &&
+    overview.value.checkin_balance >= overview.value.makeup_card_price,
+)
+
+const canUseMakeupCard = computed(
+  () =>
+    !!overview.value &&
+    !usingMakeup.value &&
+    overview.value.makeup_cards > 0 &&
+    !!overview.value.latest_missed_date,
+)
+
+function xpBreakdownText(): string {
+  if (!overview.value) return ''
+  const parts = [`基础 +${overview.value.checkin_base_xp}`]
+  if (overview.value.checkin_streak_xp > 0) parts.push(`连续 +${overview.value.checkin_streak_xp}`)
+  if (overview.value.checkin_milestone_xp > 0) {
+    parts.push(`里程碑 +${overview.value.checkin_milestone_xp}`)
+  }
+  if (overview.value.checkin_penalty_xp > 0) {
+    parts.push(`断签 -${overview.value.checkin_penalty_xp}`)
+  }
+  return parts.join(' / ')
 }
 
 function newRequestKey(): string {
@@ -157,20 +192,72 @@ async function onCheckin(): Promise<void> {
   try {
     const result = await checkinGift()
     applyWallet(result.wallet)
-    if (overview.value) {
-      overview.value.checked_in_today = true
-      overview.value.checkin_reward = result.reward
-      overview.value.checkin_date = result.checkin_date
-    }
+    const xpText =
+      result.xp > 0
+        ? `，获得 ${result.xp} 经验（连续 ${result.checkin_streak} 天）`
+        : `，连续 ${result.checkin_streak} 天`
     notice.value =
       result.reward > 0
-        ? `签到成功，获得 ${result.reward} 签到礼物币。`
-        : '签到成功；今日签到奖励为 0。'
-    await Promise.all([loadCatalog(), loadLedger(1)])
+        ? `签到成功，获得 ${result.reward} 签到礼物币${xpText}。`
+        : `签到成功；今日签到奖励为 0${xpText}。`
+    await Promise.all([loadOverview(), loadCatalog(), loadLedger(1)])
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : '签到失败'
   } finally {
     checkingIn.value = false
+  }
+}
+
+async function onBuyMakeupCard(): Promise<void> {
+  error.value = ''
+  notice.value = ''
+  if (!overview.value) return
+  if (!canBuyMakeupCard.value) {
+    error.value = `签到礼物币不足，购买补签卡需要 ${overview.value.makeup_card_price} 签到币。`
+    return
+  }
+  if (
+    !window.confirm(
+      `确定花费 ${overview.value.makeup_card_price} 签到礼物币购买 1 张补签卡吗？`,
+    )
+  ) {
+    return
+  }
+  buyingMakeup.value = true
+  try {
+    const result = await purchaseMakeupCard(newRequestKey())
+    applyWallet(result.wallet)
+    notice.value = `购买成功，当前持有 ${result.makeup_cards} 张补签卡。`
+    await Promise.all([loadOverview(), loadLedger(1)])
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : '购买补签卡失败'
+  } finally {
+    buyingMakeup.value = false
+  }
+}
+
+async function onUseMakeupCard(): Promise<void> {
+  error.value = ''
+  notice.value = ''
+  if (!overview.value) return
+  if (!canUseMakeupCard.value) {
+    error.value = overview.value.makeup_cards <= 0 ? '没有可用的补签卡。' : '当前没有可补签的漏签日。'
+    return
+  }
+  const date = overview.value.latest_missed_date
+  if (!window.confirm(`确定使用 1 张补签卡补 ${date} 的经验吗？补签不补签到天数。`)) {
+    return
+  }
+  usingMakeup.value = true
+  try {
+    const result = await useMakeupCard(newRequestKey())
+    applyWallet(result.wallet)
+    notice.value = `补签 ${result.xp_date} 成功，获得 ${result.xp} 经验；剩余 ${result.makeup_cards} 张补签卡。`
+    await Promise.all([loadOverview(), loadLedger(1)])
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : '使用补签卡失败'
+  } finally {
+    usingMakeup.value = false
   }
 }
 
@@ -258,10 +345,17 @@ onMounted(loadAll)
               <p class="text-[11px] text-text-muted">可兑换全部礼物</p>
             </div>
           </div>
-          <div class="shrink-0 rounded-card border border-border-dark bg-ink-900/60 p-4 lg:w-64">
-            <p class="text-sm font-medium text-text-primary">每日签到</p>
+          <div class="shrink-0 rounded-card border border-border-dark bg-ink-900/60 p-4 lg:w-80">
+            <div class="flex items-baseline justify-between gap-2">
+              <p class="text-sm font-medium text-text-primary">每日签到</p>
+              <span class="text-[11px] text-text-muted">连续 {{ overview.checkin_streak }} 天 · 最长 {{ overview.checkin_longest_streak }} 天</span>
+            </div>
             <p class="mt-1 text-xs text-text-muted">
-              今日奖励 {{ overview.checkin_reward }} 签到礼物币
+              今日奖励 {{ overview.checkin_reward }} 签到礼物币 · {{ overview.checkin_today_xp }} 经验
+            </p>
+            <p class="mt-1 text-[11px] text-text-muted">{{ xpBreakdownText() }}</p>
+            <p v-if="!overview.checked_in_today" class="mt-1 text-[11px] text-text-muted">
+              签到后连续 {{ overview.next_checkin_streak }} 天
             </p>
             <button
               type="button"
@@ -274,6 +368,43 @@ onMounted(loadAll)
             <p class="mt-2 text-[11px] text-text-muted">
               签到日期：{{ overview.checkin_date }}
             </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 补签卡 -->
+      <section class="card mb-6 p-5">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 class="text-lg font-bold text-text-primary">补签卡</h2>
+            <p class="mt-1 text-xs text-text-muted">
+              持有 {{ overview.makeup_cards }} 张 · 单价 {{ overview.makeup_card_price }} 签到币。
+              只能使用签到礼物币购买；补签只补经验，不补签到天数、不恢复连续签到、不计入排行榜。
+            </p>
+            <p class="mt-1 text-[11px] text-text-muted">
+              <template v-if="overview.latest_missed_date">
+                最近漏签日：{{ overview.latest_missed_date }}
+              </template>
+              <template v-else>当前没有可补签的漏签日。</template>
+            </p>
+          </div>
+          <div class="flex shrink-0 gap-2">
+            <button
+              type="button"
+              class="rounded-md border border-grass-500/50 bg-grass-500/10 px-4 py-2 text-sm font-medium text-grass-300 transition hover:bg-grass-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="!canBuyMakeupCard"
+              @click="onBuyMakeupCard"
+            >
+              {{ buyingMakeup ? '购买中…' : '购买补签卡' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-md bg-grass-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-grass-500 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="!canUseMakeupCard"
+              @click="onUseMakeupCard"
+            >
+              {{ usingMakeup ? '补签中…' : '使用补签卡' }}
+            </button>
           </div>
         </div>
       </section>

@@ -1,6 +1,7 @@
 package growth
 
 import (
+	"math"
 	"sort"
 
 	"mckit/backend/internal/domain"
@@ -16,8 +17,10 @@ const (
 	GuestActiveDaysRequired = 7
 	GuestLevelTitle         = "访客"
 
-	// DefaultMaxLevel 默认等级上限；等级按经验曲线自动生成，不再逐级建表。
-	DefaultMaxLevel = 9999
+	// DefaultMaxLevel 默认等级上限；0 表示不设上限。
+	DefaultMaxLevel = 0
+	// HardMaxLevel 数据库 INT 字段可表示的最大等级，仅作为避免溢出的技术边界。
+	HardMaxLevel = 1<<31 - 1
 	// DefaultLevelStepXP 默认每级递增值：Lv.N 门槛 = step * N * (N-1) / 2。
 	DefaultLevelStepXP int64 = 100
 	// MaxLevelStepXP 防止配置过大导致阈值溢出 int64。
@@ -41,7 +44,7 @@ func NormalizeLevelCurve(cfg *domain.GrowthLevelConfig) LevelCurve {
 	if cfg == nil {
 		return out
 	}
-	if cfg.MaxLevel > 0 && cfg.MaxLevel <= DefaultMaxLevel {
+	if cfg.MaxLevel >= 0 && cfg.MaxLevel <= HardMaxLevel {
 		out.MaxLevel = cfg.MaxLevel
 	}
 	if cfg.StepXP > 0 && cfg.StepXP <= MaxLevelStepXP {
@@ -50,15 +53,23 @@ func NormalizeLevelCurve(cfg *domain.GrowthLevelConfig) LevelCurve {
 	return out
 }
 
-// ValidateLevelCurve 校验后台提交的等级曲线。
+// ValidateLevelCurve 校验后台提交的等级曲线；maxLevel=0 表示不设上限。
 func ValidateLevelCurve(maxLevel int, stepXP int64) error {
-	if maxLevel < 1 || maxLevel > DefaultMaxLevel {
+	if maxLevel < 0 || maxLevel > HardMaxLevel {
 		return ErrLevelThreshold
 	}
 	if stepXP <= 0 || stepXP > MaxLevelStepXP {
 		return ErrLevelThreshold
 	}
 	return nil
+}
+
+// effectiveMaxLevel 返回实际使用的等级上限；0 表示只受数据库 INT 范围限制。
+func effectiveMaxLevel(curve LevelCurve) int {
+	if curve.MaxLevel > 0 {
+		return curve.MaxLevel
+	}
+	return HardMaxLevel
 }
 
 // LevelView 等级展示视图。
@@ -75,6 +86,9 @@ type LevelView struct {
 	ActiveDays int `json:"active_days"`
 	// GuestActiveDays 脱离访客阶段所需的活跃天数。
 	GuestActiveDays int `json:"guest_active_days"`
+	// GuestPendingXP 访客阶段暂存的经验：签到等事件照常入账，但暂不参与升级；
+	// 累计满 GuestActiveDaysRequired 个活跃日进入 Lv.1 后自动生效。
+	GuestPendingXP int64 `json:"guest_pending_xp"`
 }
 
 // LevelResolver 依据等级曲线与称号规则计算展示等级。
@@ -86,11 +100,12 @@ type LevelResolver struct {
 // NewLevelResolver 创建等级解析器；titles 只保留启用规则。
 func NewLevelResolver(cfg *domain.GrowthLevelConfig, titles []domain.GrowthLevelTitle) LevelResolver {
 	out := LevelResolver{Curve: NormalizeLevelCurve(cfg)}
+	maxLevel := effectiveMaxLevel(out.Curve)
 	for _, t := range titles {
 		if !t.Enabled {
 			continue
 		}
-		if t.MinLevel < 0 || t.MaxLevel < t.MinLevel || t.MaxLevel > out.Curve.MaxLevel {
+		if t.MinLevel < 0 || t.MaxLevel < t.MinLevel || t.MaxLevel > maxLevel {
 			continue
 		}
 		out.Titles = append(out.Titles, t)
@@ -109,21 +124,34 @@ func LevelThreshold(level int, curve LevelCurve) int64 {
 	if level <= 1 {
 		return 0
 	}
-	if level > curve.MaxLevel {
-		level = curve.MaxLevel
+	maxLevel := effectiveMaxLevel(curve)
+	if level > maxLevel {
+		level = maxLevel
 	}
-	return curve.StepXP * int64(level) * int64(level-1) / 2
+	if curve.StepXP <= 0 {
+		return 0
+	}
+	// 先算三角形数再乘步长；HardMaxLevel 下三角形数仍在 int64 范围内。
+	tri := int64(level) * int64(level-1) / 2
+	if tri <= 0 {
+		return 0
+	}
+	if curve.StepXP > math.MaxInt64/tri {
+		return math.MaxInt64
+	}
+	return curve.StepXP * tri
 }
 
-// levelForXP 返回当前经验对应的最高等级（1..MaxLevel）。
+// levelForXP 返回当前经验对应的最高等级（1..实际等级上限）。
 func levelForXP(xp int64, curve LevelCurve) int {
 	if xp <= 0 {
 		return 1
 	}
-	if LevelThreshold(curve.MaxLevel, curve) <= xp {
-		return curve.MaxLevel
+	maxLevel := effectiveMaxLevel(curve)
+	if LevelThreshold(maxLevel, curve) <= xp {
+		return maxLevel
 	}
-	lo, hi := 1, curve.MaxLevel
+	lo, hi := 1, maxLevel
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
 		if LevelThreshold(mid, curve) <= xp {
@@ -176,8 +204,9 @@ func (r LevelResolver) Title(level int) string {
 
 // View 计算最终展示等级：人工覆盖优先于经验 / 活跃天数。
 func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
+	maxLevel := effectiveMaxLevel(r.Curve)
 	if override != nil {
-		level := clampLevel(*override, r.Curve.MaxLevel)
+		level := clampLevel(*override, maxLevel)
 		view := LevelView{
 			Level: level, Title: r.Title(level), Overridden: true,
 			ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
@@ -188,7 +217,7 @@ func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
 			// 覆盖等级不参与经验自动升级，进度条固定显示满格。
 			view.ProgressPercent = 100
 		}
-		view.IsMax = level >= r.Curve.MaxLevel
+		view.IsMax = level >= maxLevel
 		return view
 	}
 
@@ -198,6 +227,7 @@ func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
 			ProgressPercent: guestActiveProgress(activeDays),
 			ActiveDays:      activeDays,
 			GuestActiveDays: GuestActiveDaysRequired,
+			GuestPendingXP:  xp,
 		}
 	}
 
@@ -206,7 +236,7 @@ func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
 		Level: level, Title: r.Title(level),
 		ActiveDays: activeDays, GuestActiveDays: GuestActiveDaysRequired,
 	}
-	if level >= r.Curve.MaxLevel {
+	if level >= maxLevel {
 		view.IsMax = true
 		view.ProgressPercent = 100
 		return view
@@ -221,7 +251,8 @@ func (r LevelResolver) View(xp int64, override *int, activeDays int) LevelView {
 	}
 	span := nextThreshold - curThreshold
 	if span > 0 {
-		view.ProgressPercent = int((xp - curThreshold) * 100 / span)
+		// 使用浮点计算，避免高等级时 (xp-cur)*100 超出 int64。
+		view.ProgressPercent = int(float64(xp-curThreshold) / float64(span) * 100)
 		if view.ProgressPercent < 0 {
 			view.ProgressPercent = 0
 		}

@@ -29,7 +29,9 @@ func (s *Service) HandleEvent(ctx context.Context, ev domain.GrowthEvent) error 
 	}
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		err = s.handleEventOnce(ctx, ev)
+		err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return s.handleEventTx(ctx, tx, ev)
+		})
 		if err == nil {
 			return nil
 		}
@@ -38,6 +40,17 @@ func (s *Service) HandleEvent(ctx context.Context, ev domain.GrowthEvent) error 
 		}
 	}
 	return err
+}
+
+// HandleEventTx 在调用方事务内处理成长事件。
+//
+// 签到服务需要把「礼物币发奖 + 签到记录 + 经验入账」放在同一事务，
+// 因此暴露本方法；调用方必须保证 tx 与签到业务事务一致。
+func (s *Service) HandleEventTx(ctx context.Context, tx *gorm.DB, ev domain.GrowthEvent) error {
+	if err := validateEvent(&ev); err != nil {
+		return err
+	}
+	return s.handleEventTx(ctx, tx, ev)
 }
 
 // validateEvent 校验事件必要字段，并补默认发生时间。
@@ -54,44 +67,51 @@ func validateEvent(ev *domain.GrowthEvent) error {
 	return nil
 }
 
-// handleEventOnce 单事务处理事件。
-func (s *Service) handleEventOnce(ctx context.Context, ev domain.GrowthEvent) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. 幂等登记：同一 EventID 重复投递直接返回成功。
-		now := s.now()
-		rec := domain.GrowthEventRecord{
-			EventID:      ev.EventID,
-			EventType:    ev.EventType,
-			ActorUserID:  &ev.ActorUserID,
-			SubjectType:  ev.SubjectType,
-			SubjectID:    ev.SubjectID,
-			SourceModule: ev.SourceModule,
-			OccurredAt:   ev.OccurredAt,
-			ProcessedAt:  &now,
-			Status:       domain.GrowthEventProcessed,
-			Payload:      mustJSONB(ev.Payload),
-		}
-		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rec)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return nil // 已处理过，幂等成功
-		}
+// handleEventTx 在调用方事务内处理事件。
+func (s *Service) handleEventTx(ctx context.Context, tx *gorm.DB, ev domain.GrowthEvent) error {
+	// 1. 幂等登记：同一 EventID 重复投递直接返回成功。
+	now := s.now()
+	rec := domain.GrowthEventRecord{
+		EventID:      ev.EventID,
+		EventType:    ev.EventType,
+		ActorUserID:  &ev.ActorUserID,
+		SubjectType:  ev.SubjectType,
+		SubjectID:    ev.SubjectID,
+		SourceModule: ev.SourceModule,
+		OccurredAt:   ev.OccurredAt,
+		ProcessedAt:  &now,
+		Status:       domain.GrowthEventProcessed,
+		Payload:      mustJSONB(ev.Payload),
+	}
+	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rec)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil // 已处理过，幂等成功
+	}
 
-		// 1.1 记录活跃日：同一业务日期只计一次，满 7 天后不再重复统计。
-		if err := s.refreshActiveDays(tx, ev.ActorUserID); err != nil {
+	// 1.1 记录活跃日：同一业务日期只计一次，满 7 天后不再重复统计。
+	if err := s.refreshActiveDays(tx, ev.ActorUserID); err != nil {
+		return err
+	}
+
+	date := businessDate(ev.OccurredAt, s.loc)
+
+	// 2. 发放经验：签到事件按签到算法，其他事件按后台规则。
+	granted := map[string]bool{}
+	hasRules := false
+	if ev.EventType == domain.EventGiftCheckin || ev.EventType == domain.EventGiftMakeupCheckin {
+		if err := s.applyCheckinXP(tx, ev); err != nil {
 			return err
 		}
-
-		date := businessDate(ev.OccurredAt, s.loc)
-
-		// 2. 加载当前生效规则并发放行为经验。
+		granted[ev.EventType] = true
+	} else {
 		rules, err := loadActiveRules(tx, ev.EventType, ev.OccurredAt)
 		if err != nil {
 			return err
 		}
-		granted := map[string]bool{}
+		hasRules = len(rules) > 0
 		for _, rule := range rules {
 			key, skip := s.ruleKey(rule, ev, date)
 			if skip {
@@ -129,23 +149,23 @@ func (s *Service) handleEventOnce(ctx context.Context, ev domain.GrowthEvent) er
 			granted[rule.Code] = true
 			granted[ev.EventType] = true
 		}
+	}
 
-		// 3. 推进每日任务（含自动发奖）。
-		if err := s.applyDailyTasks(tx, ev, date, len(rules) > 0, granted); err != nil {
-			return err
-		}
+	// 3. 推进每日任务（含自动发奖）。
+	if err := s.applyDailyTasks(tx, ev, date, hasRules, granted); err != nil {
+		return err
+	}
 
-		// 4. 依据最新经验重算等级。
-		if err := s.recalcLevel(tx, ev.ActorUserID); err != nil {
-			return err
-		}
+	// 4. 依据最新经验重算等级。
+	if err := s.recalcLevel(tx, ev.ActorUserID); err != nil {
+		return err
+	}
 
-		// 5. 评估成就解锁（含等级成就，需在等级重算之后）。
-		if err := s.applyAchievements(tx, ev); err != nil {
-			return err
-		}
-		return nil
-	})
+	// 5. 评估成就解锁（含等级成就，需在等级重算之后）。
+	if err := s.applyAchievements(tx, ev); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ruleKey 依据规则限制策略生成幂等键；skip=true 表示该规则无法应用（缺少目标对象）。

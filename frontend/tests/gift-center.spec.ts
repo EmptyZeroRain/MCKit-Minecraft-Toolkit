@@ -8,6 +8,8 @@ vi.mock('@/api/gift', () => ({
   fetchGiftLedger: vi.fn(),
   fetchGiftRedemptions: vi.fn(),
   checkinGift: vi.fn(),
+  purchaseMakeupCard: vi.fn(),
+  useMakeupCard: vi.fn(),
   redeemGift: vi.fn(),
 }))
 
@@ -46,6 +48,17 @@ const overview: GiftOverview = {
   checkin_reward: 5,
   checked_in_today: false,
   checkin_date: '2026-10-20',
+  checkin_streak: 2,
+  checkin_longest_streak: 4,
+  next_checkin_streak: 3,
+  checkin_today_xp: 14,
+  checkin_base_xp: 10,
+  checkin_streak_xp: 4,
+  checkin_milestone_xp: 0,
+  checkin_penalty_xp: 0,
+  makeup_cards: 2,
+  makeup_card_price: 10,
+  latest_missed_date: '2026-10-19',
 }
 
 const dirt: GiftCatalogItem = {
@@ -55,10 +68,12 @@ const dirt: GiftCatalogItem = {
   description: '最基础的礼物',
   icon: '🟫',
   price: 1,
+  stock: 0,
   allow_checkin: true,
   sort_order: 10,
   enabled: true,
   redeemed_count: 0,
+  remaining: null,
   created_at: '2026-10-20T00:00:00Z',
   updated_at: '2026-10-20T00:00:00Z',
   can_afford: true,
@@ -79,6 +94,12 @@ const checkinResult: GiftCheckinResult = {
   checkin_date: '2026-10-20',
   reward: 5,
   checked_in: true,
+  checkin_streak: 3,
+  xp: 14,
+  base_xp: 10,
+  streak_xp: 4,
+  milestone_xp: 0,
+  penalty_xp: 0,
   wallet: {
     ...overview,
     checkin_balance: 10,
@@ -146,11 +167,25 @@ describe('礼物中心', () => {
     expect(wrapper.text()).toContain('泥土块')
     expect(wrapper.text()).toContain('钻石')
     expect(wrapper.text()).toContain('余额不足')
-    expect(wrapper.find('button:disabled').text()).toBe('余额不足')
+    expect(wrapper.findAll('button:disabled').some((b) => b.text() === '余额不足')).toBe(true)
+    expect(wrapper.text()).toContain('补签卡')
+    expect(wrapper.text()).toContain('最近漏签日：2026-10-19')
   })
 
   it('签到成功后更新签到币余额并刷新目录', async () => {
     ;(checkinGift as ReturnType<typeof vi.fn>).mockResolvedValue(checkinResult)
+    ;(fetchGiftOverview as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(overview)
+      .mockResolvedValueOnce({
+        ...overview,
+        checked_in_today: true,
+        checkin_balance: 10,
+        total_balance: 20,
+        checkin_streak: 3,
+        next_checkin_streak: 3,
+        checkin_today_xp: 14,
+        latest_missed_date: '2026-10-19',
+      })
 
     const wrapper = mountView()
     await flushPromises()

@@ -5284,7 +5284,7 @@ paths:
     post:
       tags: [growth]
       summary: 新建经验规则（需 ops.growth）
-      description: 编码唯一；事件类型必须在服务端允许列表内。
+      description: 编码由系统自动生成；事件类型必须在服务端允许列表内。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5326,7 +5326,7 @@ paths:
     post:
       tags: [growth]
       summary: 启用 / 停用经验规则（需 ops.growth）
-      description: 按编码停用 / 启用其全部版本。
+      description: 按规则停用 / 启用其全部版本。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5379,7 +5379,7 @@ paths:
     post:
       tags: [growth]
       summary: 更新等级曲线并重算全部用户等级（需 ops.growth）
-      description: 达到 Lv.N 所需经验 = step_xp × N × (N-1) / 2；Lv.0 / Lv.1 均为 0 XP。保存后立即按新曲线重算全部用户等级，人工覆盖值限制在 0..max_level。
+      description: 达到 Lv.N 所需经验 = step_xp × N × (N-1) / 2；Lv.0 / Lv.1 均为 0 XP。保存后立即按新曲线重算全部用户等级；max_level=0 表示不设等级上限，此时人工覆盖值仅受整数范围限制。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5418,7 +5418,7 @@ paths:
     post:
       tags: [growth]
       summary: 新增称号规则（需 ops.growth）
-      description: min_level = max_level 表示指定等级称号，优先级高于区间称号；启用区间之间不能重叠，同一等级只能有一个启用的指定称号。等级范围不能超过当前 max_level。
+      description: min_level = max_level 表示指定等级称号，优先级高于区间称号；启用区间之间不能重叠，同一等级只能有一个启用的指定称号。等级范围不能超过当前 max_level；max_level=0 表示不设上限。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5517,7 +5517,7 @@ paths:
     post:
       tags: [growth]
       summary: 单用户等级调整（需 ops.growth）
-      description: 直接用目标等级覆盖用户展示等级，不修改等级曲线与称号规则；覆盖是固定值，后续经验变化不会自动改级，直到下一次人工调整。目标等级必须在 0..max_level 之间。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
+      description: 直接用目标等级覆盖用户展示等级，不修改等级曲线与称号规则；覆盖是固定值，后续经验变化不会自动改级，直到下一次人工调整。目标等级必须在 0..max_level 之间；max_level=0 表示不设上限。目标只接受对外用户 ID，不接受内部 UUID 或用户名；普通用户与后台账号均可调整。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -5528,7 +5528,7 @@ paths:
               required: [target_user_id, target_level, reason]
               properties:
                 target_user_id: { type: string, description: 对外用户 ID（如 U7K3M2QX9F）；不接受内部 UUID 或用户名 }
-                target_level: { type: integer, minimum: 0, description: 绝对目标等级；上限由当前等级曲线 max_level 决定 }
+                target_level: { type: integer, minimum: 0, description: 绝对目标等级；max_level=0 时不设上限，否则不能超过 max_level }
                 reason: { type: string, maxLength: 500 }
                 request_key: { type: string, description: 可选，仅用于审计留痕 }
       responses:
@@ -5822,14 +5822,62 @@ paths:
   /gifts/checkin:
     post:
       tags: [gift]
-      summary: 每日签到，发放签到礼物币（需登录 + CSRF）
-      description: 每人每天仅一次；奖励由后台配置。重复签到返回 409 ALREADY_CHECKED_IN。
+      summary: 每日签到，发放签到礼物币与签到经验（需登录 + CSRF）
+      description: >-
+        每人每天仅一次；签到币奖励、基础经验、连续递增、里程碑与断签惩罚均由后台配置。
+        经验在签到同一事务内写入成长账本；重复签到返回 409 ALREADY_CHECKED_IN。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /gifts/makeup-cards/purchase:
+    post:
+      tags: [gift]
+      summary: 使用签到礼物币购买补签卡（需登录 + CSRF）
+      description: >-
+        只能扣签到币，购买数量不设上限。同一 request_key 重复提交只扣一次。
+        补签卡用于补最近一个漏签日的经验，不补签到天数。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                request_key: { type: string, maxLength: 100, description: 客户端幂等键；缺省时服务端生成 }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /gifts/makeup-cards/use:
+    post:
+      tags: [gift]
+      summary: 使用补签卡补最近一个漏签日的经验（需登录 + CSRF）
+      description: >-
+        自动选择首个真实签到之后、今天之前最近的未补签日；补签只发基础 + 连续奖励经验，
+        不写签到天数、不改变连续签到、不计入排行榜、不触发里程碑。
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                request_key: { type: string, maxLength: 100, description: 客户端幂等键；同一键只补一次 }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /gifts/redeem:
     post:
@@ -5984,7 +6032,7 @@ paths:
   /admin/gifts/definitions/update:
     post:
       tags: [gift]
-      summary: 编辑礼物（需 ops.gifts；编码不可变）
+      summary: 编辑礼物（需 ops.gifts；编码由系统生成）
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -6041,7 +6089,10 @@ paths:
   /admin/gifts/settings/update:
     post:
       tags: [gift]
-      summary: 更新签到奖励（需 ops.gifts）
+      summary: 更新签到奖励、签到经验算法与里程碑（需 ops.gifts）
+      description: >-
+        字段均可选，只更新提交的字段；milestones 传入时整表替换，空数组表示清空。
+        补签卡价格单位为签到礼物币，最少 1。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -6050,9 +6101,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [checkin_reward]
               properties:
                 checkin_reward: { type: integer, minimum: 0, maximum: 1000000 }
+                base_xp: { type: integer, minimum: 0, maximum: 1000000 }
+                streak_step_xp: { type: integer, minimum: 0, maximum: 1000000 }
+                streak_bonus_cap: { type: integer, minimum: 0, maximum: 1000000 }
+                milestone_bonus_cap: { type: integer, minimum: 0, maximum: 1000000 }
+                break_penalty_xp: { type: integer, minimum: 0, maximum: 1000000 }
+                makeup_card_price: { type: integer, minimum: 1, maximum: 1000000 }
+                milestones:
+                  type: array
+                  items: { $ref: "#/components/schemas/GiftCheckinMilestoneInput" }
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -8536,7 +8595,7 @@ components:
     GrowthOverview:
       type: object
       properties:
-        current_xp: { type: integer, description: 当前有效经验 }
+        current_xp: { type: integer, description: 当前有效经验；访客阶段为已攒经验（达到 Lv.1 后生效） }
         lifetime_earned_xp: { type: integer, description: 累计获得 }
         lifetime_reversed_xp: { type: integer, description: 累计冲正 }
         level: { type: integer, description: 等级（仅展示；新用户默认 0，满 7 个活跃日后进入 Lv.1） }
@@ -8548,6 +8607,7 @@ components:
         is_level_overridden: { type: boolean, description: 当前等级是否由后台人工直接覆盖 }
         active_days: { type: integer, description: 已累计活跃天数（封顶 guest_active_days） }
         guest_active_days: { type: integer, description: 脱离访客阶段所需活跃天数，当前为 7 }
+        guest_pending_xp: { type: integer, description: 访客阶段已攒经验；达到 Lv.1 后自动生效并参与升级 }
         unlocked_achievements: { type: integer }
         achievement_total: { type: integer }
         today_tasks_completed: { type: integer }
@@ -8695,14 +8755,16 @@ components:
       type: object
       required: [name, price, allow_checkin, sort_order, enabled]
       properties:
-        code:
-          type: string
-          pattern: "^[a-z][a-z0-9_]{2,63}$"
-          description: 新建必填；编辑时忽略（编码不可变）
         name: { type: string, maxLength: 80 }
         description: { type: string, maxLength: 500 }
         icon: { type: string, maxLength: 16, description: Emoji 图标 }
         price: { type: integer, minimum: 1, maximum: 1000000 }
+        stock:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          default: 0
+          description: 总库存；0 表示不限库存
         allow_checkin: { type: boolean, description: 是否允许签到礼物币兑换 }
         sort_order: { type: integer, minimum: -100000, maximum: 100000 }
         enabled: { type: boolean }
@@ -8716,10 +8778,15 @@ components:
         description: { type: string }
         icon: { type: string }
         price: { type: integer }
+        stock: { type: integer, description: 总库存；0 表示不限库存 }
         allow_checkin: { type: boolean }
         sort_order: { type: integer }
         enabled: { type: boolean }
-        redeemed_count: { type: integer }
+        redeemed_count: { type: integer, description: 累计兑换次数 }
+        remaining:
+          type: integer
+          nullable: true
+          description: 剩余库存；不限库存时为 null
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -8747,9 +8814,50 @@ components:
       type: object
       properties:
         checkin_date: { type: string, format: date }
-        reward: { type: integer }
+        reward: { type: integer, description: 签到礼物币 }
         checked_in: { type: boolean }
+        checkin_streak: { type: integer, description: 签到后的连续天数 }
+        xp: { type: integer, description: 本次净经验（基础 + 连续 + 里程碑 - 断签惩罚） }
+        base_xp: { type: integer }
+        streak_xp: { type: integer }
+        milestone_xp: { type: integer }
+        penalty_xp: { type: integer, description: 本次实际扣除的断签惩罚 }
         wallet: { $ref: "#/components/schemas/GiftWallet" }
+
+    GiftMakeupCardPurchaseResult:
+      type: object
+      properties:
+        price: { type: integer, description: 本次购买价格（签到礼物币） }
+        makeup_cards: { type: integer, description: 购买后的补签卡数量 }
+        wallet: { $ref: "#/components/schemas/GiftWallet" }
+
+    GiftMakeupResult:
+      type: object
+      properties:
+        xp_date: { type: string, format: date, description: 被补签的漏签日 }
+        xp: { type: integer }
+        base_xp: { type: integer }
+        streak_xp: { type: integer }
+        milestone_xp: { type: integer, description: 补签不触发里程碑，固定为 0 }
+        makeup_cards: { type: integer, description: 使用后的补签卡数量 }
+        wallet: { $ref: "#/components/schemas/GiftWallet" }
+
+    GiftCheckinMilestoneInput:
+      type: object
+      required: [streak_days, bonus_xp, enabled]
+      properties:
+        streak_days: { type: integer, minimum: 1, maximum: 1000000 }
+        bonus_xp: { type: integer, minimum: 0, maximum: 1000000 }
+        enabled: { type: boolean }
+
+    GiftCheckinMilestone:
+      allOf:
+        - $ref: "#/components/schemas/GiftCheckinMilestoneInput"
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
 
     GiftRedeemResult:
       type: object
@@ -8760,7 +8868,16 @@ components:
     GiftSettings:
       type: object
       properties:
-        checkin_reward: { type: integer }
+        checkin_reward: { type: integer, description: 每日签到礼物币 }
+        base_xp: { type: integer, description: 每次签到 / 补签基础经验 }
+        streak_step_xp: { type: integer, description: 连续签到每多 1 天增加的经验 }
+        streak_bonus_cap: { type: integer, description: 单次签到连续奖励上限 }
+        milestone_bonus_cap: { type: integer, description: 单次签到里程碑奖励合计上限 }
+        break_penalty_xp: { type: integer, description: 断签后首次真实签到扣除的经验 }
+        makeup_card_price: { type: integer, description: 补签卡价格（签到礼物币） }
+        milestones:
+          type: array
+          items: { $ref: "#/components/schemas/GiftCheckinMilestone" }
         updated_at: { type: string, format: date-time }
 
     GiftRankingFilter:
@@ -8977,7 +9094,6 @@ components:
       type: object
       required: [name, event_type, xp_amount, enabled]
       properties:
-        code: { type: string, description: 创建时必填；更新时忽略（沿用原编码） }
         name: { type: string, maxLength: 150 }
         event_type: { type: string, description: 必须在服务端允许列表内 }
         xp_amount: { type: integer, minimum: 0 }
@@ -8991,7 +9107,7 @@ components:
       type: object
       required: [max_level, step_xp]
       properties:
-        max_level: { type: integer, minimum: 1, maximum: 9999, default: 9999, description: 等级上限；Lv.1 - Lv.max_level 连续存在 }
+        max_level: { type: integer, minimum: 0, maximum: 2147483647, default: 0, description: 等级上限；0 表示不设上限，Lv.1 起按经验曲线连续存在 }
         step_xp: { type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 100, description: 每级递增值；达到 Lv.N 所需经验 = step_xp × N × (N-1) / 2 }
         updated_at: { type: string, format: date-time }
 
@@ -8999,7 +9115,7 @@ components:
       type: object
       required: [max_level, step_xp]
       properties:
-        max_level: { type: integer, minimum: 1, maximum: 9999 }
+        max_level: { type: integer, minimum: 0, maximum: 2147483647, description: 0 表示不设等级上限 }
         step_xp: { type: integer, format: int64, minimum: 1, maximum: 1000000000 }
 
     GrowthLevelTitle:
@@ -9019,7 +9135,7 @@ components:
       required: [min_level, max_level, title]
       properties:
         min_level: { type: integer, minimum: 0, description: 区间起点；与 max_level 相同表示指定等级称号 }
-        max_level: { type: integer, minimum: 0, description: 区间终点；必须 >= min_level 且不超过当前 max_level }
+        max_level: { type: integer, minimum: 0, description: 区间终点；必须 >= min_level；当前 max_level=0 时仅受整数范围限制 }
         title: { type: string, maxLength: 100 }
         enabled: { type: boolean, default: true }
 
@@ -9027,7 +9143,6 @@ components:
       type: object
       required: [name, event_type, target_count, reward_xp, enabled]
       properties:
-        code: { type: string, description: 创建时必填；更新时忽略 }
         name: { type: string, maxLength: 150 }
         description: { type: string }
         event_type: { type: string, description: 必须在服务端允许列表内 }
@@ -9040,7 +9155,6 @@ components:
       type: object
       required: [name, category, condition_type, target_value, enabled]
       properties:
-        code: { type: string, description: 创建时必填；更新时忽略 }
         name: { type: string, maxLength: 150 }
         description: { type: string }
         category: { type: string, maxLength: 50 }

@@ -10,6 +10,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useUserAuthStore } from '@/stores/user-auth'
 import type { AdminUser } from '@/types/admin'
 
 const authApi = vi.hoisted(() => ({
@@ -55,6 +56,11 @@ async function mountLayout() {
     last_login_at: null,
     created_at: '2026-10-01T00:00:00Z',
   } as AdminUser
+
+  // 统一账号下管理员也可能拥有前台登录态（例如先切换过前台）。
+  const userAuth = useUserAuthStore()
+  userAuth.user = { id: 'a1', username: 'admin', role: 'admin' }
+  userAuth.initialized = true
 
   const router = makeRouter()
   await router.push('/admin')
@@ -144,5 +150,9 @@ describe('管理后台顶栏 · 用户菜单', () => {
     await flushPromises()
     expect(authApi.logout).toHaveBeenCalledTimes(1)
     expect(router.currentRoute.value.path).toBe('/login')
+    // 管理员从后台退出后，前台登录态也必须清空，
+    // 否则再访问 /login 会被守卫判定为「已登录用户」而送回工作台。
+    expect(useAuthStore().isLoggedIn).toBe(false)
+    expect(useUserAuthStore().isLoggedIn).toBe(false)
   })
 })

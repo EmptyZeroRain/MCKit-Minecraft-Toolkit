@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"mckit/backend/internal/domain"
 )
@@ -57,16 +58,6 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 	if err := s.ensureUser(ctx, userID); err != nil {
 		return nil, err
 	}
-	var gift domain.GiftDefinition
-	if err := s.db.WithContext(ctx).Where("id = ?", giftID).First(&gift).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrGiftNotFound
-		}
-		return nil, err
-	}
-	if !gift.Enabled {
-		return nil, ErrGiftDisabled
-	}
 	requestKey := strings.TrimSpace(in.RequestKey)
 	if requestKey == "" {
 		requestKey = uuid.NewString()
@@ -88,6 +79,29 @@ func (s *Service) Redeem(ctx context.Context, in RedeemInput) (*RedeemResult, er
 		if existing != nil {
 			redemption = existing
 			return nil
+		}
+
+		// 锁定礼物行，串行化同一礼物的库存校验，避免并发超兑。
+		var gift domain.GiftDefinition
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", giftID).First(&gift).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrGiftNotFound
+			}
+			return err
+		}
+		if !gift.Enabled {
+			return ErrGiftDisabled
+		}
+		if gift.Stock > 0 {
+			var redeemed int64
+			if err := tx.Model(&domain.GiftRedemption{}).
+				Where("gift_id = ?", gift.ID).Count(&redeemed).Error; err != nil {
+				return err
+			}
+			if redeemed >= gift.Stock {
+				return ErrGiftSoldOut
+			}
 		}
 
 		checkinSpent, generalSpent := splitPayment(&gift, w)

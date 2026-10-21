@@ -6,6 +6,7 @@ import GlobalSearch from '@/components/search/GlobalSearch.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import MobileNav from '@/components/layout/MobileNav.vue'
 import { useUserAuthStore } from '@/stores/user-auth'
+import { useSessionLogout } from '@/composables/useSessionLogout'
 
 interface NavItem {
   label: string
@@ -29,6 +30,7 @@ const scrolled = ref(false)
 const searchOpen = ref(false)
 const drawerOpen = ref(false)
 const userAuth = useUserAuthStore()
+const { logout } = useSessionLogout()
 /** 后台账号登录后仍可使用前台能力；仅在确认为后台账号时显示管理入口。 */
 const isAdminAccount = computed(
   () => !!userAuth.user?.role && userAuth.user.role !== 'user',
@@ -46,8 +48,9 @@ onMounted(() => {
 })
 
 async function onLogout() {
-  await userAuth.logout()
-  if (route.path.startsWith('/workspace')) router.push('/')
+  await logout()
+  // 受限页依赖登录态，退出后回到首页，避免停留在半空的工作台。
+  if (route.meta.requiresUser) router.push('/')
 }
 
 function isActive(to: string): boolean {

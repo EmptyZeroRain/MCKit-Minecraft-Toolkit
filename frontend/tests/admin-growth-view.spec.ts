@@ -126,7 +126,7 @@ describe('用户成长后台页', () => {
     await flushPromises()
 
     expect(fetchGrowthRules).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('resource_approved')
+    expect(wrapper.text()).not.toContain('resource_approved')
     expect(wrapper.text()).toContain('投稿审核通过')
     expect(wrapper.text()).toContain('v2')
   })

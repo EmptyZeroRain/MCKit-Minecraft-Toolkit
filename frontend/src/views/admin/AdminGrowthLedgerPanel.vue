@@ -18,8 +18,8 @@ const items = ref<GrowthLedgerItem[]>([])
 const total = ref(0)
 const totalPages = ref(1)
 
-const filters = reactive<{ user_id: string; rule_code: string; source_type: string; page: number; pageSize: number }>(
-  { user_id: '', rule_code: '', source_type: '', page: 1, pageSize: 20 },
+const filters = reactive<{ user_id: string; source_type: string; page: number; pageSize: number }>(
+  { user_id: '', source_type: '', page: 1, pageSize: 20 },
 )
 
 const sourceOptions = Object.keys(LEDGER_SOURCE_LABELS)
@@ -44,7 +44,6 @@ const columns: AdminTableColumn[] = [
   { key: 'delta_xp', label: '变动', width: '90px' },
   { key: 'balance_after', label: '余额', width: '90px' },
   { key: 'source_type', label: '来源', width: '100px' },
-  { key: 'rule_code', label: '规则' },
   { key: 'reason', label: '说明' },
   { key: 'action', label: '操作', align: 'right', width: '90px' },
 ]
@@ -64,7 +63,6 @@ async function load() {
   try {
     const res = await fetchAdminGrowthLedger({
       user_id: filters.user_id.trim() || undefined,
-      rule_code: filters.rule_code.trim() || undefined,
       source_type: filters.source_type || undefined,
       page: filters.page,
       page_size: filters.pageSize,
@@ -202,9 +200,8 @@ async function submitReverse() {
     </div>
 
     <!-- 筛选 -->
-    <form class="mb-4 grid gap-3 sm:grid-cols-4" @submit.prevent="search">
+    <form class="mb-4 grid gap-3 sm:grid-cols-3" @submit.prevent="search">
       <input v-model="filters.user_id" :class="inputClass" type="text" placeholder="UUID / 对外用户 ID" />
-      <input v-model="filters.rule_code" :class="inputClass" type="text" placeholder="规则编码" />
       <select v-model="filters.source_type" :class="inputClass">
         <option value="">全部来源</option>
         <option v-for="s in sourceOptions" :key="s" :value="s">{{ sourceLabel(s) }}</option>
@@ -228,9 +225,6 @@ async function submitReverse() {
         </span>
       </template>
       <template #cell-source_type="{ row }">{{ sourceLabel(row.source_type) }}</template>
-      <template #cell-rule_code="{ row }">
-        <span class="font-mono text-xs text-text-muted">{{ row.rule_code || '—' }}</span>
-      </template>
       <template #cell-action="{ row }">
         <button
           v-if="row.source_type !== 'reversal' && row.delta_xp !== 0"

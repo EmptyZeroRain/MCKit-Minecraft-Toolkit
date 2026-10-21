@@ -119,13 +119,13 @@ func TestGiftCheckinAndRedeemIntegration(t *testing.T) {
 
 	// 目录管理：新建 -> 编辑 -> 删除；已兑换礼物只能停用。
 	created, err := svc.CreateDefinition(ctx, DefinitionInput{
-		Code: "test_gift", Name: "测试礼物", Description: "集成测试", Icon: "🧪",
+		Name: "测试礼物", Description: "集成测试", Icon: "🧪",
 		Price: 2, AllowCheckin: true, SortOrder: 5, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("新建礼物失败: %v", err)
 	}
-	if created.Code != "test_gift" || created.Price != 2 || !created.AllowCheckin {
+	if created.Code == "" || created.Price != 2 || !created.AllowCheckin {
 		t.Fatalf("新建礼物结果异常: %+v", created)
 	}
 	updated, err := svc.UpdateDefinition(ctx, created.ID, DefinitionInput{
@@ -145,13 +145,6 @@ func TestGiftCheckinAndRedeemIntegration(t *testing.T) {
 		t.Fatalf("已兑换礼物删除应返回 ErrGiftInUse，实际 %v", err)
 	}
 
-	// 重复编码被拒绝。
-	if _, err := svc.CreateDefinition(ctx, DefinitionInput{
-		Code: "dirt_block", Name: "重复", Price: 1, Enabled: true,
-	}); !errors.Is(err, ErrGiftCodeTaken) {
-		t.Fatalf("重复编码应返回 ErrGiftCodeTaken，实际 %v", err)
-	}
-
 	// 停用后的礼物不可兑换。
 	if _, err := svc.UpdateDefinition(ctx, dirt.ID, DefinitionInput{
 		Name: dirt.Name, Description: dirt.Description, Icon: dirt.Icon,
@@ -163,6 +156,84 @@ func TestGiftCheckinAndRedeemIntegration(t *testing.T) {
 		UserID: user.ID.String(), GiftID: dirt.ID, RequestKey: "redeem-disabled",
 	}); !errors.Is(err, ErrGiftDisabled) {
 		t.Fatalf("停用礼物兑换应返回 ErrGiftDisabled，实际 %v", err)
+	}
+}
+
+// TestGiftStockIntegration 覆盖限量库存、售罄拦截与后台剩余库存展示。
+func TestGiftStockIntegration(t *testing.T) {
+	gdb := setupGiftDB(t)
+	ctx := context.Background()
+	svc := NewService(gdb).WithTimezone("Asia/Shanghai")
+
+	user := createGiftUser(t, gdb, "it-gift-stock-user", domain.RoleUser)
+	if _, err := svc.UpdateSettings(ctx, 5); err != nil {
+		t.Fatalf("更新签到奖励失败: %v", err)
+	}
+	if _, err := svc.Checkin(ctx, user.ID.String()); err != nil {
+		t.Fatalf("签到失败: %v", err)
+	}
+
+	if _, err := svc.CreateDefinition(ctx, DefinitionInput{
+		Name: "限量礼物", Price: 1, Stock: -1, AllowCheckin: true, Enabled: true,
+	}); !errors.Is(err, ErrGiftStockBad) {
+		t.Fatalf("负库存应返回 ErrGiftStockBad，实际 %v", err)
+	}
+
+	limited, err := svc.CreateDefinition(ctx, DefinitionInput{
+		Name: "限量礼物", Price: 1, Stock: 1, AllowCheckin: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("新建限量礼物失败: %v", err)
+	}
+	if limited.Stock != 1 || limited.Remaining == nil || *limited.Remaining != 1 {
+		t.Fatalf("新建限量礼物库存异常: %+v", limited)
+	}
+
+	if _, err := svc.Redeem(ctx, RedeemInput{
+		UserID: user.ID.String(), GiftID: limited.ID, RequestKey: "stock-redeem-1",
+	}); err != nil {
+		t.Fatalf("首次兑换限量礼物失败: %v", err)
+	}
+	if _, err := svc.Redeem(ctx, RedeemInput{
+		UserID: user.ID.String(), GiftID: limited.ID, RequestKey: "stock-redeem-2",
+	}); !errors.Is(err, ErrGiftSoldOut) {
+		t.Fatalf("售罄后兑换应返回 ErrGiftSoldOut，实际 %v", err)
+	}
+
+	catalog, err := svc.Catalog(ctx, user.ID.String())
+	if err != nil {
+		t.Fatalf("目录加载失败: %v", err)
+	}
+	for _, item := range catalog {
+		if item.Code == "limited_gift" {
+			t.Fatalf("售罄礼物不应出现在用户目录: %+v", item)
+		}
+	}
+
+	defs, err := svc.ListDefinitions(ctx)
+	if err != nil {
+		t.Fatalf("后台目录加载失败: %v", err)
+	}
+	var view *DefinitionView
+	for i := range defs {
+		if defs[i].Code == "limited_gift" {
+			view = &defs[i]
+			break
+		}
+	}
+	if view == nil || view.RedeemedCount != 1 || view.Remaining == nil || *view.Remaining != 0 {
+		t.Fatalf("后台库存统计异常: %+v", view)
+	}
+
+	updated, err := svc.UpdateDefinition(ctx, limited.ID, DefinitionInput{
+		Name: limited.Name, Price: limited.Price, Stock: 3,
+		AllowCheckin: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("调整库存失败: %v", err)
+	}
+	if updated.Remaining == nil || *updated.Remaining != 2 {
+		t.Fatalf("调整后剩余库存异常: %+v", updated)
 	}
 }
 

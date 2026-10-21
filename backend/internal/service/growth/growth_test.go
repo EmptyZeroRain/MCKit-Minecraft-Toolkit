@@ -49,6 +49,30 @@ func TestLevelForXP(t *testing.T) {
 	}
 }
 
+// TestLevelUnlimited 默认 0 上限表示不设等级上限。
+func TestLevelUnlimited(t *testing.T) {
+	curve := LevelCurve{MaxLevel: 0, StepXP: 100}
+	const wantThreshold int64 = 100 * 10000 * 9999 / 2
+	if got := LevelThreshold(10000, curve); got != wantThreshold {
+		t.Fatalf("Lv.10000 门槛 = %d，期望 %d", got, wantThreshold)
+	}
+	if got := levelForXP(wantThreshold-1, curve); got != 9999 {
+		t.Fatalf("%d XP 应为 Lv.9999，实际 Lv.%d", wantThreshold-1, got)
+	}
+	if got := levelForXP(wantThreshold, curve); got != 10000 {
+		t.Fatalf("%d XP 应为 Lv.10000，实际 Lv.%d", wantThreshold, got)
+	}
+
+	resolver := testLevelResolver(0)
+	view := resolver.View(wantThreshold, nil, GuestActiveDaysRequired)
+	if view.Level != 10000 || view.IsMax {
+		t.Fatalf("无限曲线下应为 Lv.10000 且非满级，实际 %+v", view)
+	}
+	if view.NextThreshold == nil || *view.NextThreshold <= wantThreshold {
+		t.Fatalf("无限曲线下应继续展示下一级门槛，实际 %+v", view)
+	}
+}
+
 // TestLevelView 覆盖等级计算的关键边界。
 func TestLevelView(t *testing.T) {
 	resolver := testLevelResolver(100)
@@ -98,12 +122,15 @@ func TestLevelGuestGate(t *testing.T) {
 	if view.ActiveDays != 3 || view.GuestActiveDays != GuestActiveDaysRequired {
 		t.Fatalf("活跃天数展示异常: %+v", view)
 	}
+	if view.GuestPendingXP != 5000 {
+		t.Fatalf("访客阶段应暂存 5000 经验，实际 %d", view.GuestPendingXP)
+	}
 	wantPercent := 3 * 100 / GuestActiveDaysRequired
 	if view.ProgressPercent != wantPercent {
 		t.Fatalf("访客进度 = %d，期望 %d", view.ProgressPercent, wantPercent)
 	}
-	if got := resolver.View(5000, nil, GuestActiveDaysRequired).Level; got != 10 {
-		t.Fatalf("满 7 个活跃日后 5000 XP 应为 Lv.10，实际 Lv.%d", got)
+	if got := resolver.View(5000, nil, GuestActiveDaysRequired); got.Level != 10 || got.GuestPendingXP != 0 {
+		t.Fatalf("满 7 个活跃日后 5000 XP 应为 Lv.10 且不再暂存，实际 %+v", got)
 	}
 }
 
@@ -148,6 +175,11 @@ func TestBuildLevelTitle(t *testing.T) {
 		MinLevel: 100, MaxLevel: 100, Title: "超出当前上限但停用", Enabled: false,
 	}, 50); err != nil {
 		t.Fatalf("停用规则允许暂存于当前上限之外: %v", err)
+	}
+	if _, err := buildLevelTitle(LevelTitleInput{
+		MinLevel: 10000, MaxLevel: 10000, Title: "无上限", Enabled: true,
+	}, effectiveMaxLevel(LevelCurve{MaxLevel: 0})); err != nil {
+		t.Fatalf("无限曲线应允许 Lv.10000 称号: %v", err)
 	}
 }
 

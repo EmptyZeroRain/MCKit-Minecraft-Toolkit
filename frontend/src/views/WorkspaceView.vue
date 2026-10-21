@@ -14,6 +14,7 @@ import {
 } from '@/types/user'
 import { useUserAuthStore } from '@/stores/user-auth'
 import { useUserWorkspaceStore } from '@/stores/user-workspace'
+import { useSessionLogout } from '@/composables/useSessionLogout'
 import { applyPageMeta } from '@/utils/seo'
 import { fetchGiftOverview } from '@/api/gift'
 import { fetchGrowthOverview } from '@/api/growth'
@@ -29,6 +30,7 @@ applyPageMeta({
 const router = useRouter()
 const userAuth = useUserAuthStore()
 const workspace = useUserWorkspaceStore()
+const { logout } = useSessionLogout()
 
 const error = ref('')
 const notice = ref('')
@@ -95,7 +97,10 @@ const growthProgress = computed(() => {
 const growthHint = computed(() => {
   if (!growth.value) return ''
   if (growth.value.level === 0) {
-    return `活跃 ${growth.value.active_days}/${growth.value.guest_active_days} 天解锁 Lv.1`
+    const pending = growth.value.guest_pending_xp
+    return pending > 0
+      ? `活跃 ${growth.value.active_days}/${growth.value.guest_active_days} 天解锁 Lv.1 · 已攒 ${pending} 经验`
+      : `活跃 ${growth.value.active_days}/${growth.value.guest_active_days} 天解锁 Lv.1`
   }
   if (growth.value.is_max_level) return '已达到当前最高等级'
   return `距下一级还需 ${growth.value.xp_to_next_level} 经验`
@@ -139,7 +144,7 @@ onMounted(async () => {
 })
 
 async function handleLogout() {
-  await userAuth.logout()
+  await logout()
   await router.push('/')
 }
 

@@ -163,10 +163,45 @@ func TestMigrateRepairsLegacyApplied44(t *testing.T) {
 	if err != nil {
 		t.Fatalf("执行修复迁移失败: %v", err)
 	}
-	if len(applied) != 2 ||
-		applied[0] != "growth_level_reconcile" ||
-		applied[1] != "growth_migration_metadata" {
-		t.Fatalf("应执行 0045 修复迁移与 0046 元数据迁移，实际: %v", applied)
+	// 0045 / 0046 / 0047 / 0048 / 0049 / 0050 必须按顺序执行；后续迁移由其他功能追加，不在此断言。
+	wantApplied := []string{
+		"growth_level_reconcile",
+		"growth_migration_metadata",
+		"growth_unlimited_levels",
+		"checkin_xp_and_makeup_cards",
+		"gift_stock",
+		"growth_level_title_constraints",
+	}
+	if len(applied) < len(wantApplied) {
+		t.Fatalf("应至少执行 %d 个修复迁移，实际: %v", len(wantApplied), applied)
+	}
+	for i, want := range wantApplied {
+		if applied[i] != want {
+			t.Fatalf("第 %d 个修复迁移应为 %s，实际: %v", i+1, want, applied)
+		}
+	}
+	if !tableExists(t, gormDB, "gift_checkin_xp") || !tableExists(t, gormDB, "gift_checkin_streaks") ||
+		!tableExists(t, gormDB, "gift_makeup_cards") || !tableExists(t, gormDB, "gift_checkin_milestones") {
+		t.Fatal("0048 后应存在签到经验、连续签到、补签卡与里程碑表")
+	}
+	var stockColumns int64
+	if err := gormDB.Raw(`SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
+		"gift_definitions", "stock").Scan(&stockColumns).Error; err != nil {
+		t.Fatalf("查询礼物库存字段失败: %v", err)
+	}
+	if stockColumns != 1 {
+		t.Fatal("0049 后 gift_definitions 应存在 stock 字段")
+	}
+	var legacyLevelChecks int64
+	if err := gormDB.Raw(`SELECT count(*) FROM pg_constraint
+		WHERE conrelid = 'growth_level_titles'::regclass
+		  AND contype = 'c'
+		  AND pg_get_constraintdef(oid) LIKE '%9999%'`).Scan(&legacyLevelChecks).Error; err != nil {
+		t.Fatalf("查询称号范围约束失败: %v", err)
+	}
+	if legacyLevelChecks != 0 {
+		t.Fatalf("0050 后不应残留 9999 称号上限约束，实际 %d 条", legacyLevelChecks)
 	}
 	if !tableExists(t, gormDB, "growth_level_config") {
 		t.Fatal("修复后应存在 growth_level_config 表")
@@ -184,6 +219,13 @@ func TestMigrateRepairsLegacyApplied44(t *testing.T) {
 	}
 	if configCount != 1 {
 		t.Fatalf("等级配置应有一条默认记录，实际 %d", configCount)
+	}
+	var maxLevel int
+	if err := gormDB.Table("growth_level_config").Where("id = 1").Pluck("max_level", &maxLevel).Error; err != nil {
+		t.Fatalf("查询等级上限失败: %v", err)
+	}
+	if maxLevel != 0 {
+		t.Fatalf("等级上限应为 0（不限），实际 %d", maxLevel)
 	}
 	var titleCount int64
 	if err := gormDB.Table("growth_level_titles").Count(&titleCount).Error; err != nil {

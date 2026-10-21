@@ -2,7 +2,7 @@
 // 经验规则管理（jingyan.md §10.4）。
 //
 // 规则版本化：修改会生成新版本（version+1），历史版本保留，已发奖流水的
-// rule_version 仍可追溯。停用某编码时后端会停用其全部版本。
+// rule_version 仍可追溯。停用某规则时后端会停用其全部版本。
 import { computed, onMounted, reactive, ref } from 'vue'
 import AdminTable from '@/components/admin/AdminTable.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -40,7 +40,6 @@ const inputClass =
   'w-full rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
 
 const form = reactive<{
-  code: string
   name: string
   event_type: string
   xp_amount: number
@@ -50,7 +49,6 @@ const form = reactive<{
   effective_from: string
   effective_until: string
 }>({
-  code: '',
   name: '',
   event_type: GROWTH_EVENT_TYPES[0],
   xp_amount: 0,
@@ -62,7 +60,6 @@ const form = reactive<{
 })
 
 const columns: AdminTableColumn[] = [
-  { key: 'code', label: '编码' },
   { key: 'name', label: '名称' },
   { key: 'event_type', label: '事件类型' },
   { key: 'xp_amount', label: '经验', width: '80px' },
@@ -102,7 +99,6 @@ function openCreate() {
   editingId.value = ''
   formError.value = ''
   Object.assign(form, {
-    code: '',
     name: '',
     event_type: GROWTH_EVENT_TYPES[0],
     xp_amount: 0,
@@ -119,7 +115,6 @@ function openEdit(rule: GrowthRule) {
   editingId.value = rule.id
   formError.value = ''
   Object.assign(form, {
-    code: rule.code,
     name: rule.name,
     event_type: rule.event_type,
     xp_amount: rule.xp_amount,
@@ -134,7 +129,6 @@ function openEdit(rule: GrowthRule) {
 
 function buildInput(): GrowthRuleInput {
   return {
-    code: form.code.trim(),
     name: form.name.trim(),
     event_type: form.event_type,
     xp_amount: Number(form.xp_amount) || 0,
@@ -151,10 +145,6 @@ async function save() {
   notice.value = ''
   if (!form.name.trim()) {
     formError.value = '名称不能为空'
-    return
-  }
-  if (!editingId.value && !form.code.trim()) {
-    formError.value = '编码不能为空'
     return
   }
   saving.value = true
@@ -208,7 +198,7 @@ async function confirmDelete() {
   <div>
     <div class="mb-4 flex items-center justify-between">
       <p class="text-xs text-text-muted">
-        修改规则会生成新版本；停用编码会停用其全部版本；已被账本引用的规则不可删除。
+        修改规则会生成新版本；停用规则会停用其全部版本；已被账本引用的规则不可删除。
       </p>
       <button
         type="button"
@@ -231,10 +221,6 @@ async function confirmDelete() {
       <h2 class="text-sm font-medium text-text-secondary sm:col-span-2">
         {{ editingId ? '编辑规则（生成新版本）' : '新建规则' }}
       </h2>
-      <label class="text-xs text-text-muted">
-        编码
-        <input v-model="form.code" :class="inputClass" type="text" :disabled="!!editingId" placeholder="如 resource_approved" />
-      </label>
       <label class="text-xs text-text-muted">
         名称
         <input v-model="form.name" :class="inputClass" type="text" placeholder="如 投稿审核通过" />
@@ -283,9 +269,6 @@ async function confirmDelete() {
     </form>
 
     <AdminTable :columns="columns" :rows="rules" :loading="loading" row-key="id" empty-text="暂无经验规则">
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs text-text-primary">{{ row.code }}</span>
-      </template>
       <template #cell-event_type="{ row }">{{ eventLabel(row.event_type) }}</template>
       <template #cell-xp_amount="{ row }">+{{ row.xp_amount }}</template>
       <template #cell-limits="{ row }">
@@ -315,7 +298,7 @@ async function confirmDelete() {
     <ConfirmDialog
       :open="!!toDelete"
       title="删除经验规则"
-      :message="toDelete ? `确定删除规则「${toDelete.code}」的全部版本吗？已被账本引用的规则将被拒绝。` : ''"
+      :message="toDelete ? `确定删除规则「${toDelete.name}」的全部版本吗？已被账本引用的规则将被拒绝。` : ''"
       confirm-text="删除"
       dangerous
       :confirm-disabled="deleting"

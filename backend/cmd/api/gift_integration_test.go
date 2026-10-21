@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,7 +118,7 @@ func TestGiftCenterAPI(t *testing.T) {
 	}
 
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/create",
-		`{"code":"it_api_gift","name":"接口测试礼物","description":"test","icon":"🧪","price":2,"allow_checkin":true,"sort_order":99,"enabled":true}`,
+		`{"name":"接口测试礼物","description":"test","icon":"🧪","price":2,"stock":10,"allow_checkin":true,"sort_order":99,"enabled":true}`,
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("新建礼物期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
@@ -127,12 +128,25 @@ func TestGiftCenterAPI(t *testing.T) {
 	if giftID == "" {
 		t.Fatal("新建礼物响应缺少 id")
 	}
+	if code, _ := created["code"].(string); !strings.HasPrefix(code, "gift_") {
+		t.Fatalf("礼物编码应由系统生成，实际 %q", code)
+	}
+	if got := created["stock"].(float64); got != 10 {
+		t.Fatalf("新建礼物库存期望 10，实际 %v", got)
+	}
+	if got := created["remaining"].(float64); got != 10 {
+		t.Fatalf("新建礼物剩余库存期望 10，实际 %v", got)
+	}
 
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/update",
-		fmt.Sprintf(`{"id":%q,"name":"接口测试礼物（改）","description":"test2","icon":"🧪","price":3,"allow_checkin":false,"sort_order":100,"enabled":false}`, giftID),
+		fmt.Sprintf(`{"id":%q,"name":"接口测试礼物（改）","description":"test2","icon":"🧪","price":3,"stock":5,"allow_checkin":false,"sort_order":100,"enabled":false}`, giftID),
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("编辑礼物期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	updated := decodeData(t, rec)
+	if got := updated["stock"].(float64); got != 5 {
+		t.Fatalf("编辑礼物库存期望 5，实际 %v", got)
 	}
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/gifts/definitions/delete",
 		fmt.Sprintf(`{"id":%q}`, giftID), adminCookie, adminCSRF)

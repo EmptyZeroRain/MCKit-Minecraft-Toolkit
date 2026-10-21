@@ -57,6 +57,7 @@ import {
 import AdminGiftsView from '@/views/admin/AdminGiftsView.vue'
 import AdminGrowthAchievementsPanel from '@/views/admin/AdminGrowthAchievementsPanel.vue'
 import AdminGrowthLevelsPanel from '@/views/admin/AdminGrowthLevelsPanel.vue'
+import AdminGrowthTitlesPanel from '@/views/admin/AdminGrowthTitlesPanel.vue'
 import type { GiftLedgerItem, GiftWallet } from '@/types/gift'
 import type {
   AdminUserAchievement,
@@ -167,7 +168,7 @@ describe('后台礼物钱包', () => {
   })
 })
 
-describe('后台单用户等级调整', () => {
+describe('后台等级与称号规则', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(fetchGrowthLevelConfig as ReturnType<typeof vi.fn>).mockResolvedValue(levelConfig)
@@ -239,6 +240,26 @@ describe('后台单用户等级调整', () => {
     expect(wrapper.text()).toContain('重算修正 4 个用户等级')
   })
 
+  it('等级上限 0 表示无限，允许保存', async () => {
+    ;(fetchGrowthLevelConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      max_level: 0,
+      step_xp: 100,
+    })
+    ;(updateGrowthLevelConfig as ReturnType<typeof vi.fn>).mockResolvedValue(0)
+
+    const wrapper = mount(AdminGrowthLevelsPanel)
+    await flushPromises()
+    expect(wrapper.text()).toContain('不设等级上限')
+
+    const form = wrapper.find('form[data-test="level-config-form"]')
+    const numbers = form.findAll('input[type="number"]')
+    await numbers[0].setValue('0')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(updateGrowthLevelConfig).toHaveBeenCalledWith({ max_level: 0, step_xp: 100 })
+  })
+
   it('新增区间称号、指定等级称号并保存 / 删除规则', async () => {
     ;(createGrowthLevelTitle as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: 'title-20',
@@ -257,7 +278,7 @@ describe('后台单用户等级调整', () => {
     ;(deleteGrowthLevelTitle as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
     vi.spyOn(window, 'confirm').mockReturnValue(true)
 
-    const wrapper = mount(AdminGrowthLevelsPanel)
+    const wrapper = mount(AdminGrowthTitlesPanel)
     await flushPromises()
 
     const rangeForm = wrapper.find('form[data-test="range-title-form"]')
@@ -304,6 +325,35 @@ describe('后台单用户等级调整', () => {
     await flushPromises()
     expect(window.confirm).toHaveBeenCalled()
     expect(deleteGrowthLevelTitle).toHaveBeenCalledWith('title-1')
+  })
+
+  it('称号规则默认每页 5 条，可翻页查看剩余规则', async () => {
+    const many: GrowthLevelTitle[] = Array.from({ length: 8 }, (_, index) => ({
+      id: `title-${index}`,
+      min_level: index * 10,
+      max_level: index * 10 + 5,
+      title: `称号 ${index}`,
+      enabled: true,
+    }))
+    ;(fetchGrowthLevelTitles as ReturnType<typeof vi.fn>).mockResolvedValue(many)
+
+    const wrapper = mount(AdminGrowthTitlesPanel)
+    await flushPromises()
+
+    expect(wrapper.findAll('tbody tr')).toHaveLength(5)
+    expect(wrapper.text()).toContain('第 1/2 页')
+
+    const pager = wrapper.find('nav[aria-label="分页"]')
+    await pager.findAll('button').find((b) => b.text() === '2')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.text()).toContain('第 2/2 页')
+    const lastTitleInput = wrapper
+      .findAll('tbody tr')
+      .at(-1)!
+      .find('input[type="text"]').element as HTMLInputElement
+    expect(lastTitleInput.value).toBe('称号 7')
   })
 })
 

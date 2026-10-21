@@ -37,10 +37,12 @@ const dirt: GiftDefinition = {
   description: '最基础的礼物',
   icon: '🟫',
   price: 1,
+  stock: 10,
   allow_checkin: true,
   sort_order: 10,
   enabled: true,
   redeemed_count: 3,
+  remaining: 7,
   created_at: '2026-10-20T00:00:00Z',
   updated_at: '2026-10-20T00:00:00Z',
 }

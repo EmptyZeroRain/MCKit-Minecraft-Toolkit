@@ -158,8 +158,20 @@ onMounted(async () => {
               </span>
             </div>
             <p class="mt-1 text-sm text-text-secondary">
-              当前有效经验 <span class="font-semibold text-text-primary">{{ overview.current_xp }}</span>
+              <template v-if="overview.level === 0 && !overview.is_level_overridden">
+                访客阶段已攒经验
+                <span class="font-semibold text-amber-300">{{ overview.guest_pending_xp }}</span>
+              </template>
+              <template v-else>
+                当前有效经验 <span class="font-semibold text-text-primary">{{ overview.current_xp }}</span>
+              </template>
               · 今日获得 <span class="font-semibold text-grass-300">{{ overview.today_xp }}</span>
+            </p>
+            <p
+              v-if="overview.level === 0 && !overview.is_level_overridden && overview.guest_pending_xp > 0"
+              class="mt-1 text-xs text-amber-300/90"
+            >
+              经验已为用户保存，累计满 {{ overview.guest_active_days }} 个活跃日进入 Lv.1 后自动生效。
             </p>
           </div>
         </div>

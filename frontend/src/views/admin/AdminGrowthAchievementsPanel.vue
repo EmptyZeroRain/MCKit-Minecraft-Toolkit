@@ -59,7 +59,6 @@ const inputClass =
   'w-full rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
 
 const form = reactive<{
-  code: string
   name: string
   description: string
   category: string
@@ -74,7 +73,6 @@ const form = reactive<{
   enabled: boolean
   sort_order: number
 }>({
-  code: '',
   name: '',
   description: '',
   category: '探索',
@@ -94,7 +92,6 @@ const rarityOptions = Object.keys(RARITY_LABELS)
 
 const columns: AdminTableColumn[] = [
   { key: 'sort_order', label: '排序', width: '70px' },
-  { key: 'code', label: '编码' },
   { key: 'name', label: '名称' },
   { key: 'category', label: '分类', width: '90px' },
   { key: 'rarity', label: '稀有度', width: '80px' },
@@ -107,7 +104,6 @@ const columns: AdminTableColumn[] = [
 
 const userColumns: AdminTableColumn[] = [
   { key: 'name', label: '成就' },
-  { key: 'code', label: '编码', width: '180px' },
   { key: 'reward_xp', label: '奖励', width: '70px' },
   { key: 'status', label: '状态', width: '110px' },
   { key: 'action', label: '操作', align: 'right', width: '150px' },
@@ -147,7 +143,6 @@ function openCreate() {
   editingId.value = ''
   formError.value = ''
   Object.assign(form, {
-    code: '',
     name: '',
     description: '',
     category: '探索',
@@ -169,7 +164,6 @@ function openEdit(def: GrowthAchievementDefinition) {
   editingId.value = def.id
   formError.value = ''
   Object.assign(form, {
-    code: def.code,
     name: def.name,
     description: def.description,
     category: def.category,
@@ -189,7 +183,6 @@ function openEdit(def: GrowthAchievementDefinition) {
 
 function buildInput(): GrowthAchievementInput {
   return {
-    code: form.code.trim(),
     name: form.name.trim(),
     description: form.description.trim(),
     category: form.category.trim(),
@@ -211,10 +204,6 @@ async function save() {
   notice.value = ''
   if (!form.name.trim()) {
     formError.value = '名称不能为空'
-    return
-  }
-  if (!editingId.value && !form.code.trim()) {
-    formError.value = '编码不能为空'
     return
   }
   if (!form.category.trim()) {
@@ -403,9 +392,6 @@ async function confirmRecalculate() {
       row-key="achievement_id"
       empty-text="暂无成就定义"
     >
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs text-text-primary">{{ row.code }}</span>
-      </template>
       <template #cell-reward_xp="{ row }">+{{ row.reward_xp }}</template>
       <template #cell-status="{ row }">
         <span v-if="row.revoked" class="text-danger-mc">已撤销</span>
@@ -464,10 +450,6 @@ async function confirmRecalculate() {
       <h2 class="text-sm font-medium text-text-secondary sm:col-span-2">
         {{ editingId ? '编辑成就' : '新建成就' }}
       </h2>
-      <label class="text-xs text-text-muted">
-        编码
-        <input v-model="form.code" :class="inputClass" type="text" :disabled="!!editingId" placeholder="如 tool_explorer_10" />
-      </label>
       <label class="text-xs text-text-muted">
         名称
         <input v-model="form.name" :class="inputClass" type="text" placeholder="如 工具达人" />
@@ -539,9 +521,6 @@ async function confirmRecalculate() {
     </form>
 
     <AdminTable :columns="columns" :rows="defs" :loading="loading" row-key="id" empty-text="暂无成就定义">
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs text-text-primary">{{ row.code }}</span>
-      </template>
       <template #cell-name="{ row }">
         <span>{{ row.name }}</span>
         <span v-if="row.is_hidden" class="ml-1 rounded bg-ink-700 px-1.5 py-0.5 text-[10px] text-text-muted">隐藏</span>

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"mckit/backend/internal/domain"
@@ -284,26 +285,23 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 
 	adminCookie, adminCSRF := loginAs(t, router, itAdminUser)
 
-	// 新建经验规则。
+	// 新建经验规则：编码由服务端自动生成。
 	rec := do(t, router, http.MethodPost, "/api/v1/admin/growth/rules/create",
-		`{"code":"it_bonus","name":"测试奖励","event_type":"tool.used_validly","xp_amount":7,"enabled":true}`,
+		`{"name":"测试奖励","event_type":"tool.used_validly","xp_amount":7,"enabled":true}`,
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("新建规则期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	ruleID, _ := decodeData(t, rec)["id"].(string)
-
-	// 重复编码应冲突。
-	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/rules/create",
-		`{"code":"it_bonus","name":"重复","event_type":"tool.used_validly","xp_amount":1,"enabled":true}`,
-		adminCookie, adminCSRF)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("重复规则编码期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
+	createdRule := decodeData(t, rec)
+	ruleID, _ := createdRule["id"].(string)
+	ruleCode, _ := createdRule["code"].(string)
+	if !strings.HasPrefix(ruleCode, "rule_") {
+		t.Fatalf("规则编码应由系统生成，实际 %q", ruleCode)
 	}
 
 	// 更新规则：版本号递增（版本化）。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/rules/update",
-		fmt.Sprintf(`{"id":%q,"code":"it_bonus","name":"测试奖励v2","event_type":"tool.used_validly","xp_amount":9,"enabled":true}`, ruleID),
+		fmt.Sprintf(`{"id":%q,"name":"测试奖励v2","event_type":"tool.used_validly","xp_amount":9,"enabled":true}`, ruleID),
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("更新规则期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
@@ -314,7 +312,7 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 
 	// 非法事件类型应被拒绝。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/rules/create",
-		`{"code":"it_bad","name":"非法","event_type":"not.an.event","xp_amount":1,"enabled":true}`,
+		`{"name":"非法","event_type":"not.an.event","xp_amount":1,"enabled":true}`,
 		adminCookie, adminCSRF)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("非法事件类型期望 422，实际 %d（%s）", rec.Code, rec.Body.String())
@@ -350,8 +348,8 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("读取等级曲线期望 200，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
-	if maxLevel := toInt(decodeData(t, rec)["max_level"]); maxLevel != 9999 {
-		t.Fatalf("默认等级上限期望 9999，实际 %d", maxLevel)
+	if maxLevel := toInt(decodeData(t, rec)["max_level"]); maxLevel != 0 {
+		t.Fatalf("默认等级上限期望 0（不限），实际 %d", maxLevel)
 	}
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/levels/config/update",
 		`{"max_level":9999,"step_xp":0}`, adminCookie, adminCSRF)
@@ -399,6 +397,17 @@ func TestGrowthAdminDefinitions(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("重复指定等级称号期望 409，实际 %d（%s）", rec.Code, rec.Body.String())
 	}
+
+	// 无限等级：允许创建超过旧 9999 上限的称号。
+	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/create",
+		`{"min_level":99999,"max_level":99999,"title":"接口测试无限等级","enabled":true}`, adminCookie, adminCSRF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("创建超 9999 级称号期望 201，实际 %d（%s）", rec.Code, rec.Body.String())
+	}
+	unlimitedID := decodeData(t, rec)["id"].(string)
+	t.Cleanup(func() {
+		_ = itDB.Where("id = ?", unlimitedID).Delete(&domain.GrowthLevelTitle{}).Error
+	})
 
 	// 更新与删除。
 	rec = do(t, router, http.MethodPost, "/api/v1/admin/growth/level-titles/update",

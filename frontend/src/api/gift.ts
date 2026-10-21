@@ -14,12 +14,15 @@ import type {
   GiftRankingItem,
   GiftLedgerFilter,
   GiftLedgerItem,
+  GiftMakeupCardPurchaseResult,
+  GiftMakeupResult,
   GiftOverview,
   GiftPublicLedgerItem,
   GiftRankingFilter,
   GiftRedeemResult,
   GiftRedemption,
   GiftSettings,
+  GiftSettingsInput,
   GiftWallet,
 } from '@/types/gift'
 
@@ -62,6 +65,26 @@ export async function fetchGiftCatalog(): Promise<GiftCatalogItem[]> {
 /** 每日签到，获得签到礼物币 */
 export async function checkinGift(): Promise<GiftCheckinResult> {
   const { data } = await userHttp.post<ApiResponse<GiftCheckinResult>>('/gifts/checkin', {})
+  return data.data
+}
+
+/** 使用签到礼物币购买补签卡；requestKey 用于防重复扣款 */
+export async function purchaseMakeupCard(
+  requestKey: string,
+): Promise<GiftMakeupCardPurchaseResult> {
+  const { data } = await userHttp.post<ApiResponse<GiftMakeupCardPurchaseResult>>(
+    '/gifts/makeup-cards/purchase',
+    { request_key: requestKey },
+  )
+  return data.data
+}
+
+/** 使用补签卡补最近一个漏签日的经验；requestKey 用于防重复补签 */
+export async function useMakeupCard(requestKey: string): Promise<GiftMakeupResult> {
+  const { data } = await userHttp.post<ApiResponse<GiftMakeupResult>>(
+    '/gifts/makeup-cards/use',
+    { request_key: requestKey },
+  )
   return data.data
 }
 
@@ -158,11 +181,16 @@ export async function fetchGiftSettings(): Promise<GiftSettings> {
   return data.data
 }
 
-/** 后台更新签到奖励 */
-export async function updateGiftSettings(checkinReward: number): Promise<GiftSettings> {
-  const { data } = await http.post<ApiResponse<GiftSettings>>('/admin/gifts/settings/update', {
-    checkin_reward: checkinReward,
-  })
+/** 后台更新签到奖励与经验算法；传数字时兼容旧的仅更新签到奖励调用 */
+export async function updateGiftSettings(
+  input: GiftSettingsInput | number,
+): Promise<GiftSettings> {
+  const payload: GiftSettingsInput =
+    typeof input === 'number' ? { checkin_reward: input } : input
+  const { data } = await http.post<ApiResponse<GiftSettings>>(
+    '/admin/gifts/settings/update',
+    payload,
+  )
   return data.data
 }
 

@@ -350,7 +350,9 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 	growthHandler := handler.NewGrowthHandler(growthSvc)
 
 	// 礼物币钱包：用户查看本人余额 / 流水，后台通过独立 ops.gifts 权限受控增减。
-	giftSvc := gift.NewService(gormDB).WithTimezone(cfgInstance.GrowthTimezone)
+	giftSvc := gift.NewService(gormDB).
+		WithTimezone(cfgInstance.GrowthTimezone).
+		WithGrowthSink(growthSvc)
 	giftHandler := handler.NewGiftHandler(giftSvc).WithAudit(auditSvc)
 
 	// 社区（帖子 / 留言 / 点赞）：公开读匿名可用，写操作要求普通用户会话；
@@ -525,6 +527,8 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 		gr.Group(func(wr chi.Router) {
 			wr.Use(middleware.CSRF)
 			wr.Post("/checkin", giftHandler.SelfCheckin)
+			wr.Post("/makeup-cards/purchase", giftHandler.SelfPurchaseMakeupCard)
+			wr.Post("/makeup-cards/use", giftHandler.SelfUseMakeupCard)
 			wr.Post("/redeem", giftHandler.SelfRedeem)
 		})
 	})

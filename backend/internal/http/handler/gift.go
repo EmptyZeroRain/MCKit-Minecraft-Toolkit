@@ -98,6 +98,48 @@ func (h *GiftHandler) SelfCheckin(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, out)
 }
 
+// SelfPurchaseMakeupCard POST /api/v1/gifts/makeup-cards/purchase
+func (h *GiftHandler) SelfPurchaseMakeupCard(w http.ResponseWriter, r *http.Request) {
+	userID, ok := currentUserID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestKey string `json:"request_key"`
+	}
+	if err := decodeOptionalBody(w, r, &req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	out, err := h.svc.PurchaseMakeupCard(r.Context(), userID, req.RequestKey)
+	if err != nil {
+		writeGiftError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
+// SelfUseMakeupCard POST /api/v1/gifts/makeup-cards/use
+func (h *GiftHandler) SelfUseMakeupCard(w http.ResponseWriter, r *http.Request) {
+	userID, ok := currentUserID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestKey string `json:"request_key"`
+	}
+	if err := decodeOptionalBody(w, r, &req); err != nil {
+		response.BadRequest(w, r, "请求体格式错误")
+		return
+	}
+	out, err := h.svc.UseMakeupCard(r.Context(), userID, req.RequestKey)
+	if err != nil {
+		writeGiftError(w, r, err)
+		return
+	}
+	response.OK(w, out)
+}
+
 // SelfRedeem POST /api/v1/gifts/redeem
 func (h *GiftHandler) SelfRedeem(w http.ResponseWriter, r *http.Request) {
 	userID, ok := currentUserID(w, r)
@@ -251,7 +293,7 @@ func (h *GiftHandler) AdminDefinitionCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.writeAudit(r, "gift.definition.create", "gift_definition", item.ID, map[string]any{
-		"code": item.Code, "name": item.Name, "price": item.Price,
+		"code": item.Code, "name": item.Name, "price": item.Price, "stock": item.Stock,
 		"allow_checkin": item.AllowCheckin, "enabled": item.Enabled,
 	})
 	response.Created(w, item)
@@ -261,11 +303,11 @@ func (h *GiftHandler) AdminDefinitionCreate(w http.ResponseWriter, r *http.Reque
 func (h *GiftHandler) AdminDefinitionUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID           string `json:"id"`
-		Code         string `json:"code"`
 		Name         string `json:"name"`
 		Description  string `json:"description"`
 		Icon         string `json:"icon"`
 		Price        int64  `json:"price"`
+		Stock        int64  `json:"stock"`
 		AllowCheckin bool   `json:"allow_checkin"`
 		SortOrder    int    `json:"sort_order"`
 		Enabled      bool   `json:"enabled"`
@@ -274,8 +316,9 @@ func (h *GiftHandler) AdminDefinitionUpdate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	in := gift.DefinitionInput{
-		Code: req.Code, Name: req.Name, Description: req.Description, Icon: req.Icon,
-		Price: req.Price, AllowCheckin: req.AllowCheckin, SortOrder: req.SortOrder, Enabled: req.Enabled,
+		Name: req.Name, Description: req.Description, Icon: req.Icon,
+		Price: req.Price, Stock: req.Stock, AllowCheckin: req.AllowCheckin,
+		SortOrder: req.SortOrder, Enabled: req.Enabled,
 	}
 	item, err := h.svc.UpdateDefinition(r.Context(), req.ID, in)
 	if err != nil {
@@ -283,7 +326,7 @@ func (h *GiftHandler) AdminDefinitionUpdate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.writeAudit(r, "gift.definition.update", "gift_definition", item.ID, map[string]any{
-		"code": item.Code, "name": item.Name, "price": item.Price,
+		"code": item.Code, "name": item.Name, "price": item.Price, "stock": item.Stock,
 		"allow_checkin": item.AllowCheckin, "enabled": item.Enabled,
 	})
 	response.OK(w, item)
@@ -318,18 +361,41 @@ func (h *GiftHandler) AdminSettingsGet(w http.ResponseWriter, r *http.Request) {
 // AdminSettingsUpdate POST /api/v1/admin/gifts/settings/update
 func (h *GiftHandler) AdminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CheckinReward int64 `json:"checkin_reward"`
+		CheckinReward     *int64                 `json:"checkin_reward"`
+		BaseXP            *int64                 `json:"base_xp"`
+		StreakStepXP      *int64                 `json:"streak_step_xp"`
+		StreakBonusCap    *int64                 `json:"streak_bonus_cap"`
+		MilestoneBonusCap *int64                 `json:"milestone_bonus_cap"`
+		BreakPenaltyXP    *int64                 `json:"break_penalty_xp"`
+		MakeupCardPrice   *int64                 `json:"makeup_card_price"`
+		Milestones        *[]gift.MilestoneInput `json:"milestones"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	out, err := h.svc.UpdateSettings(r.Context(), req.CheckinReward)
+	out, err := h.svc.UpdateCheckinSettings(r.Context(), gift.CheckinSettingsInput{
+		CheckinReward:     req.CheckinReward,
+		BaseXP:            req.BaseXP,
+		StreakStepXP:      req.StreakStepXP,
+		StreakBonusCap:    req.StreakBonusCap,
+		MilestoneBonusCap: req.MilestoneBonusCap,
+		BreakPenaltyXP:    req.BreakPenaltyXP,
+		MakeupCardPrice:   req.MakeupCardPrice,
+		Milestones:        req.Milestones,
+	})
 	if err != nil {
 		writeGiftError(w, r, err)
 		return
 	}
 	h.writeAudit(r, "gift.settings.update", "gift_settings", "", map[string]any{
-		"checkin_reward": out.CheckinReward,
+		"checkin_reward":      out.CheckinReward,
+		"base_xp":             out.BaseXP,
+		"streak_step_xp":      out.StreakStepXP,
+		"streak_bonus_cap":    out.StreakBonusCap,
+		"milestone_bonus_cap": out.MilestoneBonusCap,
+		"break_penalty_xp":    out.BreakPenaltyXP,
+		"makeup_card_price":   out.MakeupCardPrice,
+		"milestones":          out.Milestones,
 	})
 	response.OK(w, out)
 }
@@ -406,11 +472,11 @@ func (h *GiftHandler) writeAudit(r *http.Request, action, objectType, objID stri
 
 func decodeDefinitionInput(w http.ResponseWriter, r *http.Request) (gift.DefinitionInput, bool) {
 	var req struct {
-		Code         string `json:"code"`
 		Name         string `json:"name"`
 		Description  string `json:"description"`
 		Icon         string `json:"icon"`
 		Price        int64  `json:"price"`
+		Stock        int64  `json:"stock"`
 		AllowCheckin bool   `json:"allow_checkin"`
 		SortOrder    int    `json:"sort_order"`
 		Enabled      bool   `json:"enabled"`
@@ -419,8 +485,9 @@ func decodeDefinitionInput(w http.ResponseWriter, r *http.Request) (gift.Definit
 		return gift.DefinitionInput{}, false
 	}
 	return gift.DefinitionInput{
-		Code: req.Code, Name: req.Name, Description: req.Description, Icon: req.Icon,
-		Price: req.Price, AllowCheckin: req.AllowCheckin, SortOrder: req.SortOrder, Enabled: req.Enabled,
+		Name: req.Name, Description: req.Description, Icon: req.Icon,
+		Price: req.Price, Stock: req.Stock, AllowCheckin: req.AllowCheckin,
+		SortOrder: req.SortOrder, Enabled: req.Enabled,
 	}, true
 }
 
@@ -440,8 +507,11 @@ func writeGiftError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, gift.ErrInsufficientBalance),
 		errors.Is(err, gift.ErrAlreadyCheckedIn),
 		errors.Is(err, gift.ErrGiftDisabled),
+		errors.Is(err, gift.ErrGiftSoldOut),
 		errors.Is(err, gift.ErrGiftInUse),
-		errors.Is(err, gift.ErrGiftCodeTaken):
+		errors.Is(err, gift.ErrGiftCodeTaken),
+		errors.Is(err, gift.ErrMakeupCardNotEnough),
+		errors.Is(err, gift.ErrNoMissedCheckin):
 		response.Error(w, r, http.StatusConflict, giftCode(err), err.Error(), nil)
 	case errors.Is(err, gift.ErrBadInput),
 		errors.Is(err, gift.ErrReasonRequired),
@@ -452,8 +522,11 @@ func writeGiftError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, gift.ErrGiftDescBad),
 		errors.Is(err, gift.ErrGiftIconBad),
 		errors.Is(err, gift.ErrGiftPriceBad),
+		errors.Is(err, gift.ErrGiftStockBad),
 		errors.Is(err, gift.ErrGiftSortBad),
-		errors.Is(err, gift.ErrCheckinReward):
+		errors.Is(err, gift.ErrCheckinReward),
+		errors.Is(err, gift.ErrCheckinConfig),
+		errors.Is(err, gift.ErrMilestoneConfig):
 		response.Validation(w, r, []response.ErrorDetail{{Message: err.Error()}})
 	default:
 		response.HandleError(w, r, err)
@@ -468,10 +541,16 @@ func giftCode(err error) string {
 		return "ALREADY_CHECKED_IN"
 	case errors.Is(err, gift.ErrGiftDisabled):
 		return "GIFT_DISABLED"
+	case errors.Is(err, gift.ErrGiftSoldOut):
+		return "GIFT_SOLD_OUT"
 	case errors.Is(err, gift.ErrGiftInUse):
 		return "GIFT_IN_USE"
 	case errors.Is(err, gift.ErrGiftCodeTaken):
 		return "GIFT_CODE_TAKEN"
+	case errors.Is(err, gift.ErrMakeupCardNotEnough):
+		return "MAKEUP_CARD_NOT_ENOUGH"
+	case errors.Is(err, gift.ErrNoMissedCheckin):
+		return "NO_MISSED_CHECKIN"
 	default:
 		return "GIFT_CONFLICT"
 	}

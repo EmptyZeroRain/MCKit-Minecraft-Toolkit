@@ -29,20 +29,20 @@ const formError = ref('')
 const editingId = ref('')
 
 const form = reactive<{
-  code: string
   name: string
   description: string
   icon: string
   price: number
+  stock: number
   allow_checkin: boolean
   sort_order: number
   enabled: boolean
 }>({
-  code: '',
   name: '',
   description: '',
   icon: '🎁',
   price: 1,
+  stock: 0,
   allow_checkin: false,
   sort_order: 0,
   enabled: true,
@@ -51,10 +51,11 @@ const form = reactive<{
 const columns: AdminTableColumn[] = [
   { key: 'icon', label: '图标', width: '60px', align: 'center' },
   { key: 'name', label: '礼物' },
-  { key: 'code', label: '编码', width: '150px' },
   { key: 'price', label: '价格', width: '90px' },
   { key: 'allow_checkin', label: '签到币可兑', width: '110px', align: 'center' },
+  { key: 'stock', label: '库存', width: '90px', align: 'center' },
   { key: 'redeemed_count', label: '已兑换', width: '80px', align: 'center' },
+  { key: 'remaining', label: '剩余', width: '80px', align: 'center' },
   { key: 'status', label: '状态', width: '80px', align: 'center' },
   { key: 'action', label: '操作', width: '180px', align: 'right' },
 ]
@@ -75,11 +76,11 @@ function openCreate() {
   editingId.value = ''
   formError.value = ''
   Object.assign(form, {
-    code: '',
     name: '',
     description: '',
     icon: '🎁',
     price: 1,
+    stock: 0,
     allow_checkin: false,
     sort_order: 0,
     enabled: true,
@@ -91,11 +92,11 @@ function openEdit(def: GiftDefinition) {
   editingId.value = def.id
   formError.value = ''
   Object.assign(form, {
-    code: def.code,
     name: def.name,
     description: def.description,
     icon: def.icon,
     price: def.price,
+    stock: def.stock ?? 0,
     allow_checkin: def.allow_checkin,
     sort_order: def.sort_order,
     enabled: def.enabled,
@@ -103,13 +104,19 @@ function openEdit(def: GiftDefinition) {
   showForm.value = true
 }
 
+function statusText(def: GiftDefinition): string {
+  if (!def.enabled) return '停用'
+  if (def.remaining !== null && def.remaining <= 0) return '已兑完'
+  return '启用'
+}
+
 function buildInput(): GiftDefinitionInput {
   return {
-    code: form.code.trim(),
     name: form.name.trim(),
     description: form.description.trim(),
     icon: form.icon.trim() || '🎁',
     price: Number(form.price),
+    stock: Number(form.stock),
     allow_checkin: form.allow_checkin,
     sort_order: Number(form.sort_order),
     enabled: form.enabled,
@@ -123,12 +130,12 @@ async function save() {
     formError.value = '请填写礼物名称'
     return
   }
-  if (!editingId.value && !form.code.trim()) {
-    formError.value = '请填写礼物编码'
-    return
-  }
   if (!Number.isInteger(Number(form.price)) || Number(form.price) <= 0) {
     formError.value = '礼物价格必须是大于 0 的整数'
+    return
+  }
+  if (!Number.isInteger(Number(form.stock)) || Number(form.stock) < 0) {
+    formError.value = '库存必须是大于等于 0 的整数（0 表示不限）'
     return
   }
   saving.value = true
@@ -155,11 +162,11 @@ async function toggleEnabled(def: GiftDefinition) {
   notice.value = ''
   try {
     await updateGiftDefinition(def.id, {
-      code: def.code,
       name: def.name,
       description: def.description,
       icon: def.icon,
       price: def.price,
+      stock: def.stock ?? 0,
       allow_checkin: def.allow_checkin,
       sort_order: def.sort_order,
       enabled: !def.enabled,
@@ -198,7 +205,7 @@ onMounted(loadDefs)
   <div>
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <p class="text-xs text-text-muted">
-        配置礼物价格与「是否允许签到礼物币兑换」；已有兑换记录的礼物只能停用，不能删除。
+        配置礼物价格、库存与「是否允许签到礼物币兑换」；库存填 0 表示不限。已有兑换记录的礼物只能停用，不能删除。
       </p>
       <button
         type="button"
@@ -217,10 +224,6 @@ onMounted(loadDefs)
         {{ editingId ? '编辑礼物' : '新建礼物' }}
       </h2>
       <label class="text-xs text-text-muted">
-        编码（小写字母开头，创建后不可修改）
-        <input v-model="form.code" :class="inputClass" type="text" :disabled="!!editingId" placeholder="如 dirt_block" />
-      </label>
-      <label class="text-xs text-text-muted">
         名称
         <input v-model="form.name" :class="inputClass" type="text" maxlength="80" placeholder="如 泥土块" />
       </label>
@@ -235,6 +238,10 @@ onMounted(loadDefs)
       <label class="text-xs text-text-muted">
         价格（礼物币 / 个）
         <input v-model.number="form.price" :class="inputClass" type="number" min="1" step="1" />
+      </label>
+      <label class="text-xs text-text-muted">
+        库存（0 = 不限）
+        <input v-model.number="form.stock" :class="inputClass" type="number" min="0" step="1" />
       </label>
       <label class="text-xs text-text-muted">
         排序值（越小越靠前）
@@ -269,9 +276,6 @@ onMounted(loadDefs)
         <div class="font-medium text-text-primary">{{ row.name }}</div>
         <div class="text-[11px] text-text-muted">{{ row.description || '—' }}</div>
       </template>
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs">{{ row.code }}</span>
-      </template>
       <template #cell-price="{ row }">
         <span class="font-medium text-grass-300">{{ row.price }}</span>
         <span class="text-[11px] text-text-muted"> 币</span>
@@ -281,9 +285,20 @@ onMounted(loadDefs)
           {{ row.allow_checkin ? '可兑换' : '仅通用币' }}
         </span>
       </template>
+      <template #cell-stock="{ row }">
+        <span class="text-text-secondary">{{ row.stock > 0 ? row.stock : '不限' }}</span>
+      </template>
+      <template #cell-redeemed_count="{ row }">
+        <span class="text-text-secondary">{{ row.redeemed_count }}</span>
+      </template>
+      <template #cell-remaining="{ row }">
+        <span :class="row.remaining === 0 ? 'text-danger-mc' : 'text-text-secondary'">
+          {{ row.remaining === null ? '不限' : row.remaining }}
+        </span>
+      </template>
       <template #cell-status="{ row }">
         <span :class="row.enabled ? 'text-grass-300' : 'text-text-muted'">
-          {{ row.enabled ? '启用' : '停用' }}
+          {{ statusText(row) }}
         </span>
       </template>
       <template #cell-action="{ row }">

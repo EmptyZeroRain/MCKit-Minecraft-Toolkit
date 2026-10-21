@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"mckit/backend/internal/domain"
 )
@@ -18,8 +19,10 @@ var giftCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
 
 const (
 	maxGiftPrice     int64 = 1_000_000
+	maxGiftStock     int64 = 1_000_000_000
 	maxSortOrder           = 100000
 	maxCheckinReward int64 = 1_000_000
+	maxCheckinXP     int64 = 1_000_000
 )
 
 var (
@@ -29,24 +32,29 @@ var (
 	ErrGiftDescBad   = errors.New("礼物描述不能超过 500 个字符")
 	ErrGiftIconBad   = errors.New("礼物图标不能超过 16 个字符")
 	ErrGiftPriceBad  = errors.New("礼物价格需在 1-1000000 之间")
+	ErrGiftStockBad  = errors.New("礼物库存需在 0-1000000000 之间（0 表示不限）")
 	ErrGiftSortBad   = errors.New("排序值超出允许范围")
 	ErrCheckinReward = errors.New("签到奖励需在 0-1000000 之间")
 )
 
 // DefinitionView 礼物目录视图。
 type DefinitionView struct {
-	ID            string    `json:"id"`
-	Code          string    `json:"code"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description"`
-	Icon          string    `json:"icon"`
-	Price         int64     `json:"price"`
-	AllowCheckin  bool      `json:"allow_checkin"`
-	SortOrder     int       `json:"sort_order"`
-	Enabled       bool      `json:"enabled"`
-	RedeemedCount int64     `json:"redeemed_count"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+	Price       int64  `json:"price"`
+	// Stock 总库存；0 表示不限库存。
+	Stock         int64 `json:"stock"`
+	AllowCheckin  bool  `json:"allow_checkin"`
+	SortOrder     int   `json:"sort_order"`
+	Enabled       bool  `json:"enabled"`
+	RedeemedCount int64 `json:"redeemed_count"`
+	// Remaining 剩余库存；不限库存时为 null。
+	Remaining *int64    `json:"remaining"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CatalogItem 用户侧礼物目录条目（附带当前账号是否买得起）。
@@ -57,22 +65,59 @@ type CatalogItem struct {
 
 // DefinitionInput 新建 / 编辑礼物目录入参。
 //
-// Code 只在新建时使用；编辑时编码不可变，避免历史快照与外部引用失配。
+// 编码由系统自动生成，管理员不可指定，也不在后台展示。
 type DefinitionInput struct {
-	Code         string
-	Name         string
-	Description  string
-	Icon         string
-	Price        int64
+	Name        string
+	Description string
+	Icon        string
+	Price       int64
+	// Stock 总库存；0 表示不限库存。
+	Stock        int64
 	AllowCheckin bool
 	SortOrder    int
 	Enabled      bool
 }
 
-// SettingsView 礼物中心全局配置。
+// SettingsView 礼物中心全局配置（含签到经验算法与里程碑）。
 type SettingsView struct {
-	CheckinReward int64     `json:"checkin_reward"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CheckinReward     int64           `json:"checkin_reward"`
+	BaseXP            int64           `json:"base_xp"`
+	StreakStepXP      int64           `json:"streak_step_xp"`
+	StreakBonusCap    int64           `json:"streak_bonus_cap"`
+	MilestoneBonusCap int64           `json:"milestone_bonus_cap"`
+	BreakPenaltyXP    int64           `json:"break_penalty_xp"`
+	MakeupCardPrice   int64           `json:"makeup_card_price"`
+	Milestones        []MilestoneView `json:"milestones"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+// MilestoneView 连续签到里程碑。
+type MilestoneView struct {
+	ID         string    `json:"id"`
+	StreakDays int       `json:"streak_days"`
+	BonusXP    int64     `json:"bonus_xp"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// MilestoneInput 后台保存里程碑的入参。
+type MilestoneInput struct {
+	StreakDays int   `json:"streak_days"`
+	BonusXP    int64 `json:"bonus_xp"`
+	Enabled    bool  `json:"enabled"`
+}
+
+// CheckinSettingsInput 后台更新签到配置；nil 字段表示保持不变。
+type CheckinSettingsInput struct {
+	CheckinReward     *int64
+	BaseXP            *int64
+	StreakStepXP      *int64
+	StreakBonusCap    *int64
+	MilestoneBonusCap *int64
+	BreakPenaltyXP    *int64
+	MakeupCardPrice   *int64
+	Milestones        *[]MilestoneInput
 }
 
 // ListDefinitions 后台礼物目录（含停用项与兑换次数）。
@@ -81,17 +126,9 @@ func (s *Service) ListDefinitions(ctx context.Context) ([]DefinitionView, error)
 	if err := s.db.WithContext(ctx).Order("sort_order ASC, created_at ASC").Find(&defs).Error; err != nil {
 		return nil, err
 	}
-	counts := map[string]int64{}
-	var rows []struct {
-		GiftID uuid.UUID
-		N      int64
-	}
-	if err := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).
-		Select("gift_id, count(*) AS n").Group("gift_id").Scan(&rows).Error; err != nil {
+	counts, err := s.redemptionCounts(ctx)
+	if err != nil {
 		return nil, err
-	}
-	for _, r := range rows {
-		counts[r.GiftID.String()] = r.N
 	}
 	out := make([]DefinitionView, 0, len(defs))
 	for _, d := range defs {
@@ -115,24 +152,45 @@ func (s *Service) Catalog(ctx context.Context, userID string) ([]CatalogItem, er
 		Order("sort_order ASC, created_at ASC").Find(&defs).Error; err != nil {
 		return nil, err
 	}
+	counts, err := s.redemptionCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]CatalogItem, 0, len(defs))
 	for _, d := range defs {
+		redeemed := counts[d.ID.String()]
+		// 已兑完的限量礼物不再出现在用户目录；0 表示不限库存。
+		if d.Stock > 0 && redeemed >= d.Stock {
+			continue
+		}
 		available := wallet.GeneralBalance
 		if d.AllowCheckin {
 			available += wallet.CheckinBalance
 		}
 		out = append(out, CatalogItem{
-			DefinitionView: definitionView(d, 0),
+			DefinitionView: definitionView(d, redeemed),
 			CanAfford:      available >= d.Price,
 		})
 	}
 	return out, nil
 }
 
-// CreateDefinition 新建礼物。
+// generateGiftCode 生成后台创建礼物的内部编码；管理员不可指定。
+func generateGiftCode() string {
+	return "gift_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
+// CreateDefinition 新建礼物。编码由系统生成。
 func (s *Service) CreateDefinition(ctx context.Context, in DefinitionInput) (*DefinitionView, error) {
-	code, name, desc, icon, err := validateDefinition(in, true)
+	code := generateGiftCode()
+	if !giftCodeRe.MatchString(code) {
+		return nil, ErrGiftCodeBad
+	}
+	name, desc, icon, err := validateDefinition(in)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateStock(in.Stock); err != nil {
 		return nil, err
 	}
 	var existing int64
@@ -149,6 +207,7 @@ func (s *Service) CreateDefinition(ctx context.Context, in DefinitionInput) (*De
 		Description:  desc,
 		Icon:         icon,
 		Price:        in.Price,
+		Stock:        in.Stock,
 		AllowCheckin: in.AllowCheckin,
 		SortOrder:    in.SortOrder,
 		Enabled:      in.Enabled,
@@ -166,8 +225,11 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 	if err != nil {
 		return nil, ErrGiftNotFound
 	}
-	_, name, desc, icon, err := validateDefinition(in, false)
+	name, desc, icon, err := validateDefinition(in)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateStock(in.Stock); err != nil {
 		return nil, err
 	}
 	var d domain.GiftDefinition
@@ -182,6 +244,7 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 		"description":   desc,
 		"icon":          icon,
 		"price":         in.Price,
+		"stock":         in.Stock,
 		"allow_checkin": in.AllowCheckin,
 		"sort_order":    in.SortOrder,
 		"enabled":       in.Enabled,
@@ -194,7 +257,12 @@ func (s *Service) UpdateDefinition(ctx context.Context, id string, in Definition
 	if err := s.db.WithContext(ctx).Where("id = ?", parsed).First(&d).Error; err != nil {
 		return nil, err
 	}
-	v := definitionView(d, 0)
+	var redeemed int64
+	if err := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).
+		Where("gift_id = ?", parsed).Count(&redeemed).Error; err != nil {
+		return nil, err
+	}
+	v := definitionView(d, redeemed)
 	return &v, nil
 }
 
@@ -222,37 +290,180 @@ func (s *Service) DeleteDefinition(ctx context.Context, id string) error {
 	return nil
 }
 
-// GetSettings 读取礼物中心配置；缺失时返回默认值。
-func (s *Service) GetSettings(ctx context.Context) (*SettingsView, error) {
-	var row domain.GiftSettings
-	err := s.db.WithContext(ctx).Where("id = true").First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return &SettingsView{CheckinReward: 1}, nil
+// defaultGiftSettings 返回与 0048 迁移一致的默认签到配置。
+func defaultGiftSettings() domain.GiftSettings {
+	return domain.GiftSettings{
+		ID:                true,
+		CheckinReward:     1,
+		BaseXP:            10,
+		StreakStepXP:      2,
+		StreakBonusCap:    100,
+		MilestoneBonusCap: 500,
+		BreakPenaltyXP:    5,
+		MakeupCardPrice:   10,
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &SettingsView{CheckinReward: row.CheckinReward, UpdatedAt: row.UpdatedAt}, nil
 }
 
-// UpdateSettings 更新签到奖励。
+// GetSettings 读取礼物中心配置；缺失时返回默认值。
+func (s *Service) GetSettings(ctx context.Context) (*SettingsView, error) {
+	db := s.db.WithContext(ctx)
+	var row domain.GiftSettings
+	err := db.Where("id = true").First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		row = defaultGiftSettings()
+	} else if err != nil {
+		return nil, err
+	}
+	var milestones []domain.GiftCheckinMilestone
+	if err := db.Order("streak_days ASC").Find(&milestones).Error; err != nil {
+		return nil, err
+	}
+	return settingsView(row, milestones), nil
+}
+
+// UpdateSettings 兼容旧后台：只更新每日签到礼物币。
 func (s *Service) UpdateSettings(ctx context.Context, checkinReward int64) (*SettingsView, error) {
 	if checkinReward < 0 || checkinReward > maxCheckinReward {
 		return nil, ErrCheckinReward
 	}
-	updates := map[string]any{
-		"checkin_reward": checkinReward,
-		"updated_at":     s.now(),
+	return s.UpdateCheckinSettings(ctx, CheckinSettingsInput{CheckinReward: &checkinReward})
+}
+
+// UpdateCheckinSettings 更新签到奖励、经验算法与里程碑列表。
+//
+// 里程碑使用「整表替换」语义：传入 nil 表示不改动，传入空数组表示清空。
+func (s *Service) UpdateCheckinSettings(ctx context.Context, in CheckinSettingsInput) (*SettingsView, error) {
+	if in.CheckinReward == nil && in.BaseXP == nil && in.StreakStepXP == nil &&
+		in.StreakBonusCap == nil && in.MilestoneBonusCap == nil &&
+		in.BreakPenaltyXP == nil && in.MakeupCardPrice == nil && in.Milestones == nil {
+		return nil, ErrBadInput
 	}
-	if err := s.db.WithContext(ctx).Model(&domain.GiftSettings{}).
-		Where("id = true").Updates(updates).Error; err != nil {
+	if err := validateCheckinSettings(in); err != nil {
+		return nil, err
+	}
+	return s.updateCheckinSettings(ctx, in)
+}
+
+// updateCheckinSettings 实际落库，独立出来便于测试替换事务外查询。
+func (s *Service) updateCheckinSettings(ctx context.Context, in CheckinSettingsInput) (*SettingsView, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		def := defaultGiftSettings()
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&def).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{"updated_at": s.now()}
+		if in.CheckinReward != nil {
+			updates["checkin_reward"] = *in.CheckinReward
+		}
+		if in.BaseXP != nil {
+			updates["base_xp"] = *in.BaseXP
+		}
+		if in.StreakStepXP != nil {
+			updates["streak_step_xp"] = *in.StreakStepXP
+		}
+		if in.StreakBonusCap != nil {
+			updates["streak_bonus_cap"] = *in.StreakBonusCap
+		}
+		if in.MilestoneBonusCap != nil {
+			updates["milestone_bonus_cap"] = *in.MilestoneBonusCap
+		}
+		if in.BreakPenaltyXP != nil {
+			updates["break_penalty_xp"] = *in.BreakPenaltyXP
+		}
+		if in.MakeupCardPrice != nil {
+			updates["makeup_card_price"] = *in.MakeupCardPrice
+		}
+		if err := tx.Model(&domain.GiftSettings{}).Where("id = true").Updates(updates).Error; err != nil {
+			return err
+		}
+		if in.Milestones != nil {
+			if err := tx.Where("1 = 1").Delete(&domain.GiftCheckinMilestone{}).Error; err != nil {
+				return err
+			}
+			if len(*in.Milestones) > 0 {
+				rows := make([]domain.GiftCheckinMilestone, 0, len(*in.Milestones))
+				for _, m := range *in.Milestones {
+					rows = append(rows, domain.GiftCheckinMilestone{
+						StreakDays: m.StreakDays,
+						BonusXP:    m.BonusXP,
+						Enabled:    m.Enabled,
+					})
+				}
+				if err := tx.Create(&rows).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSettings(ctx)
+}
+
+func validateCheckinSettings(in CheckinSettingsInput) error {
+	check := func(v *int64, min, max int64) bool {
+		return v == nil || (*v >= min && *v <= max)
+	}
+	if !check(in.CheckinReward, 0, maxCheckinReward) ||
+		!check(in.BaseXP, 0, maxCheckinXP) ||
+		!check(in.StreakStepXP, 0, maxCheckinXP) ||
+		!check(in.StreakBonusCap, 0, maxCheckinXP) ||
+		!check(in.MilestoneBonusCap, 0, maxCheckinXP) ||
+		!check(in.BreakPenaltyXP, 0, maxCheckinXP) ||
+		!check(in.MakeupCardPrice, 1, maxCheckinXP) {
+		return ErrCheckinConfig
+	}
+	if in.Milestones == nil {
+		return nil
+	}
+	seen := make(map[int]bool, len(*in.Milestones))
+	for _, m := range *in.Milestones {
+		if m.StreakDays < 1 || m.StreakDays > 1_000_000 || m.BonusXP < 0 || m.BonusXP > maxCheckinXP || seen[m.StreakDays] {
+			return ErrMilestoneConfig
+		}
+		seen[m.StreakDays] = true
+	}
+	return nil
+}
+
+func settingsView(row domain.GiftSettings, milestones []domain.GiftCheckinMilestone) *SettingsView {
+	out := &SettingsView{
+		CheckinReward:     row.CheckinReward,
+		BaseXP:            row.BaseXP,
+		StreakStepXP:      row.StreakStepXP,
+		StreakBonusCap:    row.StreakBonusCap,
+		MilestoneBonusCap: row.MilestoneBonusCap,
+		BreakPenaltyXP:    row.BreakPenaltyXP,
+		MakeupCardPrice:   row.MakeupCardPrice,
+		Milestones:        make([]MilestoneView, 0, len(milestones)),
+		UpdatedAt:         row.UpdatedAt,
+	}
+	for _, m := range milestones {
+		out.Milestones = append(out.Milestones, MilestoneView{
+			ID:         m.ID.String(),
+			StreakDays: m.StreakDays,
+			BonusXP:    m.BonusXP,
+			Enabled:    m.Enabled,
+			CreatedAt:  m.CreatedAt,
+			UpdatedAt:  m.UpdatedAt,
+		})
+	}
+	return out
+}
+
+// loadSettingsTx 在事务内读取签到配置；缺失时创建默认行。
+func (s *Service) loadSettingsTx(tx *gorm.DB) (*domain.GiftSettings, error) {
+	def := defaultGiftSettings()
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&def).Error; err != nil {
 		return nil, err
 	}
 	var row domain.GiftSettings
-	if err := s.db.WithContext(ctx).Where("id = true").First(&row).Error; err != nil {
+	if err := tx.Where("id = true").First(&row).Error; err != nil {
 		return nil, err
 	}
-	return &SettingsView{CheckinReward: row.CheckinReward, UpdatedAt: row.UpdatedAt}, nil
+	return &row, nil
 }
 
 // checkinReward 读取当前签到奖励（事务内外均可使用）。
@@ -260,7 +471,7 @@ func (s *Service) checkinReward(ctx context.Context) (int64, error) {
 	var row domain.GiftSettings
 	err := s.db.WithContext(ctx).Where("id = true").First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 1, nil
+		return defaultGiftSettings().CheckinReward, nil
 	}
 	if err != nil {
 		return 0, err
@@ -268,35 +479,65 @@ func (s *Service) checkinReward(ctx context.Context) (int64, error) {
 	return row.CheckinReward, nil
 }
 
-func validateDefinition(in DefinitionInput, requireCode bool) (code, name, desc, icon string, err error) {
-	code = strings.TrimSpace(in.Code)
-	if requireCode {
-		if !giftCodeRe.MatchString(code) {
-			return "", "", "", "", ErrGiftCodeBad
-		}
+func validateStock(stock int64) error {
+	if stock < 0 || stock > maxGiftStock {
+		return ErrGiftStockBad
 	}
+	return nil
+}
+
+// redemptionCounts 统计每个礼物的累计兑换次数（按礼物 ID 索引）。
+func (s *Service) redemptionCounts(ctx context.Context) (map[string]int64, error) {
+	var rows []struct {
+		GiftID uuid.UUID
+		N      int64
+	}
+	if err := s.db.WithContext(ctx).Model(&domain.GiftRedemption{}).
+		Select("gift_id, count(*) AS n").Group("gift_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		counts[r.GiftID.String()] = r.N
+	}
+	return counts, nil
+}
+
+// remainingStock 计算剩余库存；0 表示不限，返回 nil。
+func remainingStock(stock, redeemed int64) *int64 {
+	if stock <= 0 {
+		return nil
+	}
+	left := stock - redeemed
+	if left < 0 {
+		left = 0
+	}
+	return &left
+}
+
+func validateDefinition(in DefinitionInput) (name, desc, icon string, err error) {
 	name = strings.TrimSpace(in.Name)
 	if n := len([]rune(name)); n == 0 || n > 80 {
-		return "", "", "", "", ErrGiftNameBad
+		return "", "", "", ErrGiftNameBad
 	}
 	desc = strings.TrimSpace(in.Description)
 	if len([]rune(desc)) > 500 {
-		return "", "", "", "", ErrGiftDescBad
+		return "", "", "", ErrGiftDescBad
 	}
 	icon = strings.TrimSpace(in.Icon)
 	if icon == "" {
 		icon = "🎁"
 	}
 	if len([]rune(icon)) > 16 {
-		return "", "", "", "", ErrGiftIconBad
+		return "", "", "", ErrGiftIconBad
 	}
 	if in.Price <= 0 || in.Price > maxGiftPrice {
-		return "", "", "", "", ErrGiftPriceBad
+		return "", "", "", ErrGiftPriceBad
 	}
 	if in.SortOrder < -maxSortOrder || in.SortOrder > maxSortOrder {
-		return "", "", "", "", ErrGiftSortBad
+		return "", "", "", ErrGiftSortBad
 	}
-	return code, name, desc, icon, nil
+	return name, desc, icon, nil
 }
 
 func definitionView(d domain.GiftDefinition, redeemed int64) DefinitionView {
@@ -307,10 +548,12 @@ func definitionView(d domain.GiftDefinition, redeemed int64) DefinitionView {
 		Description:   d.Description,
 		Icon:          d.Icon,
 		Price:         d.Price,
+		Stock:         d.Stock,
 		AllowCheckin:  d.AllowCheckin,
 		SortOrder:     d.SortOrder,
 		Enabled:       d.Enabled,
 		RedeemedCount: redeemed,
+		Remaining:     remainingStock(d.Stock, redeemed),
 		CreatedAt:     d.CreatedAt,
 		UpdatedAt:     d.UpdatedAt,
 	}

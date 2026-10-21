@@ -8,7 +8,7 @@ import Breadcrumbs from '@/components/layout/Breadcrumbs.vue'
 import { ApiError } from '@/types/api'
 import { MAX_NICKNAME_LENGTH, MIN_USER_PASSWORD_LENGTH } from '@/types/user'
 import { useUserAuthStore } from '@/stores/user-auth'
-import { useUserWorkspaceStore } from '@/stores/user-workspace'
+import { useSessionLogout } from '@/composables/useSessionLogout'
 import { ALLOWED_AVATAR_TYPES, fileToAvatarDataUrl } from '@/utils/image'
 import { applyPageMeta } from '@/utils/seo'
 
@@ -20,7 +20,7 @@ applyPageMeta({
 
 const router = useRouter()
 const userAuth = useUserAuthStore()
-const workspace = useUserWorkspaceStore()
+const { clearLocalSession } = useSessionLogout()
 
 const inputClass =
   'w-full min-w-0 rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
@@ -110,7 +110,8 @@ async function changePassword() {
   busy.value = 'pwd'
   try {
     await userAuth.changePassword(pwdForm.oldPassword, pwdForm.newPassword)
-    workspace.reset()
+    // 改密后服务端注销该账号全部会话：前后台登录态一并清理。
+    clearLocalSession()
     await router.push('/login')
   } catch (e) {
     error.value = errText(e, '修改密码失败')
@@ -131,7 +132,7 @@ async function deleteAccount() {
   busy.value = 'delete'
   try {
     await userAuth.deleteAccount(deletePassword.value)
-    workspace.reset()
+    clearLocalSession()
     await router.push('/')
   } catch (e) {
     error.value = errText(e, '删除账号失败（请确认密码正确）')

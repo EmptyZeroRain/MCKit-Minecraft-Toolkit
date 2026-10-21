@@ -49,7 +49,9 @@ type Overview struct {
 	// ActiveDays 累计活跃天数（封顶 guest_active_days）。
 	ActiveDays int `json:"active_days"`
 	// GuestActiveDays 脱离访客阶段所需活跃天数。
-	GuestActiveDays      int   `json:"guest_active_days"`
+	GuestActiveDays int `json:"guest_active_days"`
+	// GuestPendingXP 访客阶段已攒、达到 Lv.1 后自动生效的经验。
+	GuestPendingXP       int64 `json:"guest_pending_xp"`
 	UnlockedAchievements int   `json:"unlocked_achievements"`
 	AchievementTotal     int   `json:"achievement_total"`
 	TodayTasksCompleted  int   `json:"today_tasks_completed"`
@@ -115,6 +117,7 @@ func (s *Service) GetOverview(ctx context.Context, userID string) (*Overview, er
 		IsLevelOverridden:    view.Overridden,
 		ActiveDays:           view.ActiveDays,
 		GuestActiveDays:      view.GuestActiveDays,
+		GuestPendingXP:       view.GuestPendingXP,
 		UnlockedAchievements: len(unlocked),
 		AchievementTotal:     len(allDefs),
 		TodayTasksCompleted:  completed,

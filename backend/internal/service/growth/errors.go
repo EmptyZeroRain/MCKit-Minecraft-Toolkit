@@ -26,7 +26,7 @@ var (
 	// ErrLevelNotFound 等级称号规则不存在。
 	ErrLevelNotFound = errors.New("等级称号规则不存在")
 	// ErrLevelThreshold 等级曲线或称号规则不合法。
-	ErrLevelThreshold = errors.New("等级曲线或称号规则不合法：等级上限 1-9999、每级递增值必须为正，称号不能为空")
+	ErrLevelThreshold = errors.New("等级曲线或称号规则不合法：等级上限不能为负数（0 表示不限）、每级递增值必须为正，称号不能为空")
 	// ErrLevelExists 称号规则冲突。
 	ErrLevelExists = errors.New("称号规则冲突：区间称号不能重叠，指定等级称号不能重复")
 	// ErrLevelRange 目标等级超出当前等级上限。

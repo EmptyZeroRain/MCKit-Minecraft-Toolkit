@@ -20,6 +20,8 @@ export interface GrowthOverview {
   active_days: number
   /** 脱离访客阶段所需活跃天数 */
   guest_active_days: number
+  /** 访客阶段已攒经验：达到 Lv.1 后自动生效并参与升级 */
+  guest_pending_xp: number
   unlocked_achievements: number
   achievement_total: number
   today_tasks_completed: number
@@ -180,7 +182,6 @@ export interface GrowthRule {
 
 /** 经验规则创建 / 更新入参 */
 export interface GrowthRuleInput {
-  code?: string
   name: string
   event_type: string
   xp_amount: number
@@ -191,7 +192,7 @@ export interface GrowthRuleInput {
   effective_until?: string | null
 }
 
-/** 等级曲线配置：Lv.N 门槛 = step_xp * N * (N-1) / 2 */
+/** 等级曲线配置：Lv.N 门槛 = step_xp * N * (N-1) / 2；max_level=0 表示不设上限 */
 export interface GrowthLevelConfig {
   max_level: number
   step_xp: number
@@ -235,7 +236,6 @@ export interface GrowthTaskDefinition {
 
 /** 每日任务定义创建 / 更新入参 */
 export interface GrowthTaskInput {
-  code?: string
   name: string
   description: string
   event_type: string
@@ -270,7 +270,6 @@ export interface GrowthAchievementDefinition {
 
 /** 成就定义创建 / 更新入参 */
 export interface GrowthAchievementInput {
-  code?: string
   name: string
   description: string
   category: string
@@ -304,7 +303,6 @@ export interface GrowthAuditLog {
 /** 全局经验流水筛选（后台） */
 export interface GrowthLedgerFilter {
   user_id?: string
-  rule_code?: string
   source_type?: string
   page?: number
   page_size?: number

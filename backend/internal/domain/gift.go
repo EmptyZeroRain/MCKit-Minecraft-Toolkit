@@ -14,6 +14,18 @@ const (
 	GiftEventDailyCheckin = "daily_checkin"
 	// GiftEventGiftRedeem 使用礼物币兑换礼物。
 	GiftEventGiftRedeem = "gift_redeem"
+	// GiftEventMakeupCardPurchase 使用签到礼物币购买补签卡。
+	GiftEventMakeupCardPurchase = "makeup_card_purchase"
+)
+
+// 签到经验明细类型。
+const (
+	// CheckinXPKindActual 真实签到。
+	CheckinXPKindActual = "actual"
+	// CheckinXPKindMakeup 补签（只补经验，不计签到天数）。
+	CheckinXPKindMakeup = "makeup"
+	// CheckinXPKindBreak 断签惩罚。
+	CheckinXPKindBreak = "break"
 )
 
 // 礼物币币种：签到获得的币与通用币分账管理。
@@ -63,12 +75,14 @@ func (GiftLedger) TableName() string { return "gift_ledger" }
 
 // GiftDefinition 礼物目录（后台可维护）。
 type GiftDefinition struct {
-	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Code         string    `gorm:"size:64;not null;uniqueIndex" json:"code"`
-	Name         string    `gorm:"size:80;not null" json:"name"`
-	Description  string    `gorm:"size:500;not null;default:''" json:"description"`
-	Icon         string    `gorm:"size:32;not null;default:'🎁'" json:"icon"`
-	Price        int64     `gorm:"not null" json:"price"`
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Code        string    `gorm:"size:64;not null;uniqueIndex" json:"code"`
+	Name        string    `gorm:"size:80;not null" json:"name"`
+	Description string    `gorm:"size:500;not null;default:''" json:"description"`
+	Icon        string    `gorm:"size:32;not null;default:'🎁'" json:"icon"`
+	Price       int64     `gorm:"not null" json:"price"`
+	// Stock 总库存；0 表示不限库存，兑换时按已兑换记录数校验剩余库存。
+	Stock        int64     `gorm:"not null;default:0" json:"stock"`
 	AllowCheckin bool      `gorm:"column:allow_checkin;not null;default:false" json:"allow_checkin"`
 	SortOrder    int       `gorm:"not null;default:0" json:"sort_order"`
 	Enabled      bool      `gorm:"not null;default:true" json:"enabled"`
@@ -110,10 +124,76 @@ func (GiftCheckin) TableName() string { return "gift_checkins" }
 
 // GiftSettings 礼物中心全局配置（单行表）。
 type GiftSettings struct {
-	ID            bool      `gorm:"primaryKey" json:"id"`
-	CheckinReward int64     `gorm:"column:checkin_reward;not null;default:1" json:"checkin_reward"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            bool  `gorm:"primaryKey" json:"id"`
+	CheckinReward int64 `gorm:"column:checkin_reward;not null;default:1" json:"checkin_reward"`
+	// BaseXP 每次真实签到 / 补签的基础经验。
+	BaseXP int64 `gorm:"column:base_xp;not null;default:10" json:"base_xp"`
+	// StreakStepXP 连续签到每多 1 天增加的经验。
+	StreakStepXP int64 `gorm:"column:streak_step_xp;not null;default:2" json:"streak_step_xp"`
+	// StreakBonusCap 单次签到连续奖励上限。
+	StreakBonusCap int64 `gorm:"column:streak_bonus_cap;not null;default:100" json:"streak_bonus_cap"`
+	// MilestoneBonusCap 单次签到里程碑奖励合计上限。
+	MilestoneBonusCap int64 `gorm:"column:milestone_bonus_cap;not null;default:500" json:"milestone_bonus_cap"`
+	// BreakPenaltyXP 断签后首次真实签到扣除的经验。
+	BreakPenaltyXP int64 `gorm:"column:break_penalty_xp;not null;default:5" json:"break_penalty_xp"`
+	// MakeupCardPrice 单张补签卡价格（只能使用签到礼物币购买）。
+	MakeupCardPrice int64     `gorm:"column:makeup_card_price;not null;default:10" json:"makeup_card_price"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名。
 func (GiftSettings) TableName() string { return "gift_settings" }
+
+// GiftCheckinMilestone 连续签到里程碑：真实签到达到 streak_days 时发放 bonus_xp。
+type GiftCheckinMilestone struct {
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	StreakDays int       `gorm:"column:streak_days;not null;uniqueIndex" json:"streak_days"`
+	BonusXP    int64     `gorm:"column:bonus_xp;not null;default:0" json:"bonus_xp"`
+	Enabled    bool      `gorm:"not null;default:true" json:"enabled"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (GiftCheckinMilestone) TableName() string { return "gift_checkin_milestones" }
+
+// GiftCheckinStreak 连续签到投影（可由 gift_checkins 重建）。
+type GiftCheckinStreak struct {
+	UserID          uuid.UUID  `gorm:"column:user_id;type:uuid;primaryKey" json:"user_id"`
+	CurrentStreak   int        `gorm:"column:current_streak;not null;default:0" json:"current_streak"`
+	LongestStreak   int        `gorm:"column:longest_streak;not null;default:0" json:"longest_streak"`
+	LastCheckinDate *time.Time `gorm:"column:last_checkin_date;type:date" json:"last_checkin_date"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (GiftCheckinStreak) TableName() string { return "gift_checkin_streaks" }
+
+// GiftMakeupCard 补签卡库存。
+type GiftMakeupCard struct {
+	UserID    uuid.UUID `gorm:"column:user_id;type:uuid;primaryKey" json:"user_id"`
+	Quantity  int64     `gorm:"not null;default:0" json:"quantity"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TableName 指定表名。
+func (GiftMakeupCard) TableName() string { return "gift_makeup_cards" }
+
+// GiftCheckinXP 签到经验明细：保留每次签到 / 补签 / 断签惩罚的计算快照。
+type GiftCheckinXP struct {
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	UserID      uuid.UUID `gorm:"column:user_id;type:uuid;not null" json:"user_id"`
+	XpDate      time.Time `gorm:"column:xp_date;type:date;not null" json:"xp_date"`
+	Kind        string    `gorm:"size:16;not null" json:"kind"`
+	RequestKey  string    `gorm:"column:request_key;size:128;not null;default:''" json:"request_key"`
+	StreakDay   int       `gorm:"column:streak_day;not null;default:0" json:"streak_day"`
+	BaseXP      int64     `gorm:"column:base_xp;not null;default:0" json:"base_xp"`
+	StreakXP    int64     `gorm:"column:streak_xp;not null;default:0" json:"streak_xp"`
+	MilestoneXP int64     `gorm:"column:milestone_xp;not null;default:0" json:"milestone_xp"`
+	PenaltyXP   int64     `gorm:"column:penalty_xp;not null;default:0" json:"penalty_xp"`
+	TotalXP     int64     `gorm:"column:total_xp;not null" json:"total_xp"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// TableName 指定表名。
+func (GiftCheckinXP) TableName() string { return "gift_checkin_xp" }

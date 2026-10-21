@@ -29,6 +29,10 @@ const (
 	EventPostCommentCreated      = "post.comment_created"
 	EventPostCommentDeleted      = "post.comment_deleted"
 	EventWikiContribution        = "wiki.contribution_approved"
+	// EventGiftCheckin 真实签到（成长模块据此写入签到经验）。
+	EventGiftCheckin = "gift.checkin"
+	// EventGiftMakeupCheckin 补签（只补经验，不计签到天数）。
+	EventGiftMakeupCheckin = "gift.makeup_checkin"
 )
 
 // GrowthEventTypes 全部合法成长事件类型（规则 / 任务定义只允许引用此集合，
@@ -49,6 +53,8 @@ var GrowthEventTypes = []string{
 	EventPostCommentCreated,
 	EventPostCommentDeleted,
 	EventWikiContribution,
+	EventGiftCheckin,
+	EventGiftMakeupCheckin,
 }
 
 // IsValidGrowthEventType 判断事件类型是否合法。
@@ -111,6 +117,7 @@ const (
 	LedgerSourceAchievement = "achievement" // 成就奖励（首期默认 0）
 	LedgerSourceManual      = "manual"      // 人工调整
 	LedgerSourceReversal    = "reversal"    // 冲正
+	LedgerSourceCheckin     = "checkin"     // 每日签到 / 补签 / 断签惩罚
 )
 
 // 成就条件类型（后端允许列表，禁止任意代码执行条件）。
@@ -225,7 +232,7 @@ func (GrowthRule) TableName() string { return "growth_rules" }
 // GrowthLevelConfig 等级曲线配置（单行，id 固定为 1）。
 //
 // 等级不再逐条存储，而是按 max_level / step_xp 自动计算：
-// 达到 Lv.N 所需经验 = step_xp * N * (N-1) / 2。
+// 达到 Lv.N 所需经验 = step_xp * N * (N-1) / 2；max_level=0 表示不设上限。
 type GrowthLevelConfig struct {
 	ID        int       `gorm:"primaryKey" json:"-"`
 	MaxLevel  int       `gorm:"column:max_level;not null" json:"max_level"`

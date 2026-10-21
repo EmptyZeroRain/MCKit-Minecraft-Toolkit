@@ -40,7 +40,6 @@ const inputClass =
   'w-full rounded-md border border-border-dark bg-ink-900 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-grass-500 focus:outline-none'
 
 const form = reactive<{
-  code: string
   name: string
   description: string
   event_type: string
@@ -49,7 +48,6 @@ const form = reactive<{
   enabled: boolean
   sort_order: number
 }>({
-  code: '',
   name: '',
   description: '',
   event_type: GROWTH_EVENT_TYPES[0],
@@ -61,7 +59,6 @@ const form = reactive<{
 
 const columns: AdminTableColumn[] = [
   { key: 'sort_order', label: '排序', width: '70px' },
-  { key: 'code', label: '编码' },
   { key: 'name', label: '名称' },
   { key: 'event_type', label: '事件类型' },
   { key: 'target_count', label: '目标次数', width: '90px' },
@@ -93,7 +90,6 @@ function openCreate() {
   editingId.value = ''
   formError.value = ''
   Object.assign(form, {
-    code: '',
     name: '',
     description: '',
     event_type: GROWTH_EVENT_TYPES[0],
@@ -109,7 +105,6 @@ function openEdit(task: GrowthTaskDefinition) {
   editingId.value = task.id
   formError.value = ''
   Object.assign(form, {
-    code: task.code,
     name: task.name,
     description: task.description,
     event_type: task.event_type,
@@ -123,7 +118,6 @@ function openEdit(task: GrowthTaskDefinition) {
 
 function buildInput(): GrowthTaskInput {
   return {
-    code: form.code.trim(),
     name: form.name.trim(),
     description: form.description.trim(),
     event_type: form.event_type,
@@ -139,10 +133,6 @@ async function save() {
   notice.value = ''
   if (!form.name.trim()) {
     formError.value = '名称不能为空'
-    return
-  }
-  if (!editingId.value && !form.code.trim()) {
-    formError.value = '编码不能为空'
     return
   }
   if (Number(form.target_count) <= 0) {
@@ -219,10 +209,6 @@ async function confirmDelete() {
         {{ editingId ? '编辑任务' : '新建任务' }}
       </h2>
       <label class="text-xs text-text-muted">
-        编码
-        <input v-model="form.code" :class="inputClass" type="text" :disabled="!!editingId" placeholder="如 daily_login" />
-      </label>
-      <label class="text-xs text-text-muted">
         名称
         <input v-model="form.name" :class="inputClass" type="text" placeholder="如 每日登录" />
       </label>
@@ -263,9 +249,6 @@ async function confirmDelete() {
     </form>
 
     <AdminTable :columns="columns" :rows="tasks" :loading="loading" row-key="id" empty-text="暂无每日任务">
-      <template #cell-code="{ row }">
-        <span class="font-mono text-xs text-text-primary">{{ row.code }}</span>
-      </template>
       <template #cell-event_type="{ row }">{{ eventLabel(row.event_type) }}</template>
       <template #cell-target_count="{ row }">{{ row.target_count }}</template>
       <template #cell-reward_xp="{ row }">+{{ row.reward_xp }}</template>
@@ -291,7 +274,7 @@ async function confirmDelete() {
     <ConfirmDialog
       :open="!!toDelete"
       title="删除每日任务"
-      :message="toDelete ? `确定删除任务「${toDelete.code}」吗？已产生用户进度的任务将被拒绝。` : ''"
+      :message="toDelete ? `确定删除任务「${toDelete.name}」吗？已产生用户进度的任务将被拒绝。` : ''"
       confirm-text="删除"
       dangerous
       :confirm-disabled="deleting"

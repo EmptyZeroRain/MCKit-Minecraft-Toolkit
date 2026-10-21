@@ -139,7 +139,7 @@ func TestGrowthAdminControlsIntegration(t *testing.T) {
 	// 超出等级范围应拒绝，且不写入。
 	if _, err := svc.AdjustLevel(ctx, AdjustLevelInput{
 		TargetUserID: user.UserNo,
-		TargetLevel:  DefaultMaxLevel + 1,
+		TargetLevel:  HardMaxLevel + 1,
 		Reason:       "越界测试",
 		OperatorID:   operator.ID.String(),
 	}); !errors.Is(err, ErrLevelRange) {

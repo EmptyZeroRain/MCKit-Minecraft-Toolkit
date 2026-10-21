@@ -293,7 +293,8 @@ onMounted(() => loadUsers())
                 当前等级由后台人工覆盖，经验继续累积但不会自动改变等级。
               </template>
               <template v-else-if="detail.user.level === 0">
-                当前为访客等级，累计满 {{ detail.user.guest_active_days }} 个活跃日后进入 Lv.1。
+                当前为访客等级，已攒 {{ detail.user.current_xp }} 经验；累计满
+                {{ detail.user.guest_active_days }} 个活跃日后进入 Lv.1，经验自动生效。
               </template>
               <template v-else>等级进度会随经验变化自动更新。</template>
             </p>
@@ -318,7 +319,7 @@ onMounted(() => loadUsers())
               <div class="border-t border-border-dark px-3 py-2 text-xs text-text-secondary">
                 <p>{{ item.description || '—' }}</p>
                 <p class="mt-1 text-text-muted">
-                  编码 {{ item.code }} · {{ item.category || '未分类' }} · {{ rarityLabel(item.rarity) }} ·
+                  {{ item.category || '未分类' }} · {{ rarityLabel(item.rarity) }} ·
                   奖励 {{ item.reward_xp }} 经验 · {{ item.grant_source === 'manual' ? '人工授予' : '自动解锁' }}
                 </p>
               </div>
@@ -345,7 +346,7 @@ onMounted(() => loadUsers())
                 <span class="ml-2 text-xs text-text-muted">{{ formatDateTime(item.created_at) }}</span>
               </summary>
               <div class="border-t border-border-dark px-3 py-2 text-xs text-text-secondary">
-                <p>来源：{{ sourceLabel(item.source_type) }}{{ item.rule_code ? ` · 规则 ${item.rule_code}` : '' }}</p>
+                <p>来源：{{ sourceLabel(item.source_type) }}</p>
                 <p class="mt-1 text-text-muted">
                   变动后余额 {{ item.balance_after }} XP · 来源 ID {{ item.source_id || '—' }} ·
                   流水 {{ item.id }}
