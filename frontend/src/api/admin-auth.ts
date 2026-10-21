@@ -108,13 +108,21 @@ export interface LoginHistoryItem {
   action: string
 }
 
-/** 列出当前后台账号最近的登录记录（成功与失败，最多 50 条） */
-export async function listLoginHistory(): Promise<LoginHistoryItem[]> {
-  const { data } = await http.post<ApiResponse<{ items: LoginHistoryItem[]; total: number }>>(
-    '/admin/auth/login-history',
-    {},
-  )
-  return data.data.items ?? []
+/** 登录历史分页结果（默认第 1 页、每页 10 条） */
+export interface LoginHistoryPage {
+  items: LoginHistoryItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+/** 分页列出当前后台账号的登录记录（成功与失败，按时间倒序） */
+export async function listLoginHistory(page = 1, pageSize = 10): Promise<LoginHistoryPage> {
+  const { data } = await http.post<ApiResponse<LoginHistoryPage>>('/admin/auth/login-history', {
+    page,
+    page_size: pageSize,
+  })
+  return data.data
 }
 
 // ===== 双因子认证（MFA）=====

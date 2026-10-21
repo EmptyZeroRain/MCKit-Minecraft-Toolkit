@@ -586,22 +586,36 @@ type loginHistoryItem struct {
 	Action    string `json:"action"`
 }
 
+// loginHistoryRequest 登录历史分页入参；省略时按第 1 页、每页 10 条。
+type loginHistoryRequest struct {
+	Page     int `json:"page"`
+	PageSize int `json:"page_size"`
+}
+
 // LoginHistory POST /api/v1/admin/auth/login-history
 //
 // 当前后台账号最近的登录记录（成功 + 失败），供「用户信息 → 登录历史」展示。
 // 登录时写入的 user_agent 从审计的 after_summary 里取出；历史数据没有该字段时为空，
-// 前端按「未知设备」展示。
+// 前端按「未知设备」展示。默认每页 10 条，单页最多 50 条。
 func (h *AuthHandler) LoginHistory(w http.ResponseWriter, r *http.Request) {
 	session := middleware.SessionFrom(r.Context())
 	if !isAdminSide(session) {
 		response.Unauthorized(w, r)
 		return
 	}
+	// 允许空 body：不传分页参数时取默认值。
+	var req loginHistoryRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req)
+	}
+	page, pageSize := normalizeLoginHistoryPage(req.Page, req.PageSize)
 	if h.audit == nil {
-		response.OK(w, map[string]any{"items": []loginHistoryItem{}, "total": 0})
+		response.OK(w, map[string]any{
+			"items": []loginHistoryItem{}, "total": 0, "page": page, "page_size": pageSize,
+		})
 		return
 	}
-	logs, err := h.audit.LoginHistory(r.Context(), session.AccountID, session.Username, audit.LoginHistoryMax)
+	logs, total, err := h.audit.LoginHistory(r.Context(), session.AccountID, session.Username, page, pageSize)
 	if err != nil {
 		response.HandleError(w, r, err)
 		return
@@ -617,7 +631,18 @@ func (h *AuthHandler) LoginHistory(w http.ResponseWriter, r *http.Request) {
 			Action:    l.Action,
 		})
 	}
-	response.OK(w, map[string]any{"items": items, "total": len(items)})
+	response.OK(w, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize})
+}
+
+// normalizeLoginHistoryPage 收敛登录历史分页参数：页码 ≥ 1，单页 1-50 条（默认 10）。
+func normalizeLoginHistoryPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > audit.LoginHistoryMax {
+		pageSize = audit.LoginHistoryPageSize
+	}
+	return page, pageSize
 }
 
 // revokeSessionsRequest 撤销会话请求体。

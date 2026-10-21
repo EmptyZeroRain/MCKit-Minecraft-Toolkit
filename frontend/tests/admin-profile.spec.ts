@@ -33,6 +33,11 @@ function makeRouter() {
   })
 }
 
+/** 构造登录历史分页响应（默认每页 10 条）。 */
+function historyPage(items: unknown[] = [], total = items.length, page = 1) {
+  return { items, total, page, page_size: 10 }
+}
+
 async function mountView(user: Partial<AdminUser> = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -77,7 +82,7 @@ describe('用户信息页 · 页面结构', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     authApi.listLoginHistory.mockReset()
-    authApi.listLoginHistory.mockResolvedValue([])
+    authApi.listLoginHistory.mockResolvedValue(historyPage())
     authApi.mfaStatus.mockReset()
     authApi.mfaStatus.mockResolvedValue({
       enabled: false,
@@ -154,22 +159,27 @@ describe('用户信息页 · 登录历史', () => {
   })
 
   it('展示设备 / IP / 时间 / 结果', async () => {
-    authApi.listLoginHistory.mockResolvedValue([
-      {
-        created_at: '2026-10-20T08:30:00Z',
-        source_ip: '203.0.113.9',
-        user_agent: MAC_UA,
-        result: 'success',
-        action: 'admin.login',
-      },
-      {
-        created_at: '2026-10-19T21:00:00Z',
-        source_ip: '198.51.100.7',
-        user_agent: '',
-        result: 'failure',
-        action: 'admin.login',
-      },
-    ])
+    authApi.listLoginHistory.mockResolvedValue(
+      historyPage(
+        [
+          {
+            created_at: '2026-10-20T08:30:00Z',
+            source_ip: '203.0.113.9',
+            user_agent: MAC_UA,
+            result: 'success',
+            action: 'admin.login',
+          },
+          {
+            created_at: '2026-10-19T21:00:00Z',
+            source_ip: '198.51.100.7',
+            user_agent: '',
+            result: 'failure',
+            action: 'admin.login',
+          },
+        ],
+        2,
+      ),
+    )
 
     const { wrapper } = await mountView()
     await openTab(wrapper, '登录历史')
@@ -184,30 +194,71 @@ describe('用户信息页 · 登录历史', () => {
   })
 
   it('多设备按浏览器与系统区分', async () => {
-    authApi.listLoginHistory.mockResolvedValue([
-      {
-        created_at: '2026-10-20T08:30:00Z',
-        source_ip: '203.0.113.9',
-        user_agent: WINDOWS_UA,
-        result: 'success',
-        action: 'admin.login',
-      },
-    ])
+    authApi.listLoginHistory.mockResolvedValue(
+      historyPage(
+        [
+          {
+            created_at: '2026-10-20T08:30:00Z',
+            source_ip: '203.0.113.9',
+            user_agent: WINDOWS_UA,
+            result: 'success',
+            action: 'admin.login',
+          },
+        ],
+        1,
+      ),
+    )
     const { wrapper } = await mountView()
     await openTab(wrapper, '登录历史')
     expect(wrapper.text()).toContain('Edge · Windows')
   })
 
   it('刷新按钮重新拉取登录历史', async () => {
-    authApi.listLoginHistory.mockResolvedValue([])
+    authApi.listLoginHistory.mockResolvedValue(historyPage())
     const { wrapper } = await mountView()
     await openTab(wrapper, '登录历史')
     expect(authApi.listLoginHistory).toHaveBeenCalledTimes(1)
+    expect(authApi.listLoginHistory).toHaveBeenCalledWith(1, 10)
 
     const refresh = wrapper.findAll('button').find((b) => b.text().includes('刷新'))
     await refresh!.trigger('click')
     await flushPromises()
     expect(authApi.listLoginHistory).toHaveBeenCalledTimes(2)
+  })
+
+  it('默认每页 10 条，可翻页加载更多', async () => {
+    const makeItem = (ip: string, day: number) => ({
+      created_at: `2026-10-${String(day).padStart(2, '0')}T00:00:00Z`,
+      source_ip: ip,
+      user_agent: MAC_UA,
+      result: 'success',
+      action: 'admin.login',
+    })
+    authApi.listLoginHistory.mockImplementation(async (page: number) =>
+      page === 2
+        ? historyPage([makeItem('198.51.100.11', 2), makeItem('198.51.100.12', 1)], 12, 2)
+        : historyPage(
+            Array.from({ length: 10 }, (_, i) => makeItem(`203.0.113.${i + 1}`, 20 - i)),
+            12,
+            1,
+          ),
+    )
+
+    const { wrapper } = await mountView()
+    await openTab(wrapper, '登录历史')
+
+    // 服务端分页：首屏只渲染接口返回的 10 条，并给出总条数。
+    expect(authApi.listLoginHistory).toHaveBeenCalledWith(1, 10)
+    expect(wrapper.findAll('tbody tr')).toHaveLength(10)
+    expect(wrapper.text()).toContain('共 12 条')
+
+    await wrapper.find('nav[aria-label="分页"] button[aria-label="下一页"]').trigger('click')
+    await flushPromises()
+
+    expect(authApi.listLoginHistory).toHaveBeenLastCalledWith(2, 10)
+    expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+    expect(wrapper.text()).toContain('198.51.100.11')
+    expect(wrapper.text()).toContain('第 2/2 页')
   })
 })
 
@@ -215,7 +266,7 @@ describe('用户信息页 · 修改密码', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     authApi.changePassword.mockReset()
-    authApi.listLoginHistory.mockResolvedValue([])
+    authApi.listLoginHistory.mockResolvedValue(historyPage())
     authApi.mfaStatus.mockResolvedValue({
       enabled: false,
       pending: false,
@@ -274,7 +325,7 @@ describe('用户信息页 · 双因子认证', () => {
     setActivePinia(createPinia())
     authApi.changePassword.mockReset()
     authApi.listLoginHistory.mockReset()
-    authApi.listLoginHistory.mockResolvedValue([])
+    authApi.listLoginHistory.mockResolvedValue(historyPage())
     authApi.mfaStatus.mockReset()
     authApi.mfaSetup.mockReset()
     authApi.mfaEnable.mockReset()

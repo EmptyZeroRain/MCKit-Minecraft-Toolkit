@@ -1587,10 +1587,19 @@ paths:
       tags: [admin-auth]
       summary: 当前后台账号的登录历史
       description: >
-        返回最近 50 次登录记录（成功与失败，按时间倒序），含登录设备
-        （登录时记录的 User-Agent）、来源 IP 与结果。仅需已登录，不要求
-        ops.audit 权限：接口强制限定为会话所属账号，不能查询他人。
+        分页返回登录记录（成功与失败，按时间倒序），含登录设备（登录时记录的
+        User-Agent）、来源 IP 与结果。默认第 1 页、每页 10 条，单页最多 50 条。
+        仅需已登录，不要求 ops.audit 权限：接口强制限定为会话所属账号，不能查询他人。
       security: [{ cookieAuth: [] }]
+      requestBody:
+        description: 省略时取默认分页（第 1 页 / 每页 10 条）
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page: { type: integer, minimum: 1, default: 1 }
+                page_size: { type: integer, minimum: 1, maximum: 50, default: 10 }
       responses:
         "200":
           description: 登录历史
@@ -1612,7 +1621,9 @@ paths:
                             user_agent: { type: string, description: 登录时的 User-Agent，历史数据可能为空 }
                             result: { type: string, enum: [success, failure] }
                             action: { type: string, description: "admin.login / admin.login.mfa" }
-                      total: { type: integer }
+                      total: { type: integer, description: 符合条件的总条数 }
+                      page: { type: integer, description: 当前页码 }
+                      page_size: { type: integer, description: 每页条数 }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /admin/auth/sessions/revoke:
     post:

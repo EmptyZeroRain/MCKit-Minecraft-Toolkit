@@ -192,21 +192,27 @@ func (s *Service) List(f ListFilter) ([]LogItem, int64, error) {
 	return items, total, nil
 }
 
-// LoginHistoryMax 登录历史单次返回上限。
-const LoginHistoryMax = 50
+// 登录历史分页参数：默认每页 10 条，单页上限 50 条。
+const (
+	LoginHistoryPageSize = 10
+	LoginHistoryMax      = 50
+)
 
 // loginActions 计入「登录历史」的动作：密码登录成功 / 失败，以及 MFA 第二因子登录。
 // 刻意不含 admin.login.mfa_challenge：密码通过但未完成第二因子，尚未形成登录。
 var loginActions = []string{"admin.login", "admin.login.mfa"}
 
-// LoginHistory 查询某后台账号的登录历史（成功与失败，按时间倒序）。
+// LoginHistory 分页查询某后台账号的登录历史（成功与失败，按时间倒序）。
 //
 // 成功登录的 actor_admin_id 有值，直接按账号归集；失败登录 actor 为空，
 // 只能靠 after_summary.username 归集——这样「有人在撞你的账号」也能被本人看到。
 // 该查询不经过 ops.audit 权限，因此返回字段限定为登录相关，不含变更摘要。
-func (s *Service) LoginHistory(ctx context.Context, accountID, username string, limit int) ([]LogItem, error) {
-	if limit <= 0 || limit > LoginHistoryMax {
-		limit = LoginHistoryMax
+func (s *Service) LoginHistory(ctx context.Context, accountID, username string, page, pageSize int) ([]LogItem, int64, error) {
+	if pageSize <= 0 || pageSize > LoginHistoryMax {
+		pageSize = LoginHistoryPageSize
+	}
+	if page < 1 {
+		page = 1
 	}
 	q := s.db.WithContext(ctx).Model(&domain.AuditLog{}).Where("action IN ?", loginActions)
 	if username != "" {
@@ -218,15 +224,23 @@ func (s *Service) LoginHistory(ctx context.Context, accountID, username string, 
 		q = q.Where("actor_admin_id = ?", accountID)
 	}
 
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
 	var logs []domain.AuditLog
-	if err := q.Order("created_at DESC").Limit(limit).Find(&logs).Error; err != nil {
-		return nil, err
+	if err := q.Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&logs).Error; err != nil {
+		return nil, 0, err
 	}
 	items := make([]LogItem, 0, len(logs))
 	for _, l := range logs {
 		items = append(items, toLogItem(l))
 	}
-	return items, nil
+	return items, total, nil
 }
 
 func toLogItem(l domain.AuditLog) LogItem {

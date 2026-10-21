@@ -55,7 +55,9 @@ func TestAdminLoginHistoryIntegration(t *testing.T) {
 				UserAgent string `json:"user_agent"`
 				Result    string `json:"result"`
 			} `json:"items"`
-			Total int `json:"total"`
+			Total    int `json:"total"`
+			Page     int `json:"page"`
+			PageSize int `json:"page_size"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(history.Body.Bytes(), &resp); err != nil {
@@ -63,6 +65,10 @@ func TestAdminLoginHistoryIntegration(t *testing.T) {
 	}
 	if resp.Data.Total < 1 || len(resp.Data.Items) < 1 {
 		t.Fatalf("登录后应至少有 1 条记录，实际 total=%d", resp.Data.Total)
+	}
+	// 默认第 1 页、每页 10 条。
+	if resp.Data.Page != 1 || resp.Data.PageSize != 10 {
+		t.Fatalf("默认分页参数不符：page=%d page_size=%d", resp.Data.Page, resp.Data.PageSize)
 	}
 	item := resp.Data.Items[0]
 	if item.Result != "success" {

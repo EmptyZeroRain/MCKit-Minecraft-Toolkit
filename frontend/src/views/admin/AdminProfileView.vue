@@ -11,6 +11,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AdminTabs from '@/components/admin/AdminTabs.vue'
 import FormField from '@/components/common/FormField.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import { useAdminTabs } from '@/composables/useAdminTabs'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -108,8 +109,15 @@ async function handleSubmit() {
 }
 
 // ===== 登录历史（设备 / IP / 时间）=====
+// 服务端分页，默认每页 10 条；页码变化时只重拉当前页，不在前端切片。
 const history = ref<LoginHistoryItem[]>([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historyPageSize = 10
 const historyLoading = ref(false)
+const historyTotalPages = computed(() =>
+  Math.max(1, Math.ceil(historyTotal.value / historyPageSize)),
+)
 // 管理员重置密码后，账号必须先完成改密；此处给出显式提示。
 const mustChangePassword = computed(() => auth.user?.must_change_password === true)
 
@@ -118,10 +126,19 @@ function formatDateTime(v: string): string {
   return Number.isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-async function loadLoginHistory() {
+async function loadLoginHistory(page = historyPage.value) {
   historyLoading.value = true
   try {
-    history.value = await listLoginHistory()
+    const resp = await listLoginHistory(page, historyPageSize)
+    const lastPage = Math.max(1, Math.ceil(resp.total / historyPageSize))
+    // 记录变少时（例如清理了审计日志）当前页可能越界，回退到最后一页。
+    if (page > lastPage) {
+      await loadLoginHistory(lastPage)
+      return
+    }
+    history.value = resp.items ?? []
+    historyTotal.value = resp.total ?? 0
+    historyPage.value = resp.page || page
   } catch (err) {
     ui.error(err instanceof ApiError ? err.message : '加载登录历史失败')
   } finally {
@@ -573,13 +590,13 @@ onMounted(() => {
             type="button"
             class="rounded-md border border-border-dark px-3 py-1.5 text-xs text-text-secondary transition hover:bg-ink-700 hover:text-text-primary disabled:opacity-50"
             :disabled="historyLoading"
-            @click="loadLoginHistory"
+            @click="loadLoginHistory()"
           >
             {{ historyLoading ? '刷新中…' : '刷新' }}
           </button>
         </div>
         <p class="mb-4 text-sm text-text-secondary">
-          最多显示最近 50 次登录记录，按时间倒序，包含失败尝试。设备信息取自登录时的
+          默认每页 10 条、按时间倒序，包含失败尝试，可翻页查看更多。设备信息取自登录时的
           User-Agent，历史数据可能缺失。
         </p>
 
@@ -618,6 +635,14 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+        <Pagination
+          :page="historyPage"
+          :page-size="historyPageSize"
+          :total="historyTotal"
+          :total-pages="historyTotalPages"
+          class="mt-4"
+          @change="loadLoginHistory"
+        />
       </section>
     </AdminTabs>
   </div>

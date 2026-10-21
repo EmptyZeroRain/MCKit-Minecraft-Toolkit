@@ -175,9 +175,12 @@ func TestLoginHistoryScopesToAccount(t *testing.T) {
 	seed(other, "admin.login", domain.AuditSuccess, "198.51.100.13", `{}`)
 	seed(me, "resource.update", domain.AuditSuccess, "198.51.100.14", `{}`)
 
-	items, err := svc.LoginHistory(context.Background(), me, "alice", audit.LoginHistoryMax)
+	items, total, err := svc.LoginHistory(context.Background(), me, "alice", 1, audit.LoginHistoryMax)
 	if err != nil {
 		t.Fatalf("查询登录历史失败: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("期望 2 条（本人成功 + 针对本人的失败），实际 total=%d", total)
 	}
 	if len(items) != 2 {
 		t.Fatalf("期望 2 条（本人成功 + 针对本人的失败），实际 %d 条: %+v", len(items), items)
@@ -189,5 +192,18 @@ func TestLoginHistoryScopesToAccount(t *testing.T) {
 	}
 	if got["198.51.100.10"] != "UA-OK" || got["198.51.100.11"] != "UA-FAIL" {
 		t.Fatalf("登录历史内容不符: %+v", got)
+	}
+
+	// 分页：每页 1 条时第 1 / 2 页应返回不同记录。
+	p1, total1, err := svc.LoginHistory(context.Background(), me, "alice", 1, 1)
+	if err != nil {
+		t.Fatalf("查询第 1 页失败: %v", err)
+	}
+	p2, _, err := svc.LoginHistory(context.Background(), me, "alice", 2, 1)
+	if err != nil {
+		t.Fatalf("查询第 2 页失败: %v", err)
+	}
+	if total1 != 2 || len(p1) != 1 || len(p2) != 1 || p1[0].ID == p2[0].ID {
+		t.Fatalf("分页结果不符：total=%d p1=%+v p2=%+v", total1, p1, p2)
 	}
 }
