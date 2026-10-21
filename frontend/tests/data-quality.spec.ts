@@ -1,5 +1,5 @@
 // 数据质量监控测试（TODO §2 / §4）
-// 覆盖两层：展示辅助纯函数 + 概览视图（检查项 / 汇总 / 导入任务）。
+// 覆盖两层：展示辅助纯函数 + 概览视图（汇总 / 需要关注 / 分类折叠）。
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -78,17 +78,11 @@ describe('数据质量展示辅助函数', () => {
 
 vi.mock('@/api/admin-data-quality', () => ({
   fetchDataQualityOverview: vi.fn(),
-  listDataImportJobs: vi.fn(),
   listQualityAssignees: vi.fn(),
   updateQualityIssue: vi.fn(),
 }))
 
-import {
-  fetchDataQualityOverview,
-  listDataImportJobs,
-  listQualityAssignees,
-  updateQualityIssue,
-} from '@/api/admin-data-quality'
+import { fetchDataQualityOverview, listQualityAssignees, updateQualityIssue } from '@/api/admin-data-quality'
 import AdminDataQualityView from '@/views/admin/AdminDataQualityView.vue'
 
 const OVERVIEW = {
@@ -102,34 +96,9 @@ const OVERVIEW = {
   ],
 }
 
-const JOB: DataImportJob = {
-  id: 'j1',
-  data_type: 'items',
-  source_file: 'seeds/items_demo.json',
-  source_version: '',
-  dry_run: false,
-  total_count: 12,
-  created_count: 12,
-  updated_count: 0,
-  skipped_count: 0,
-  failed_count: 1,
-  error_summary: ['第 4 行：item_category 非法'],
-  operator: 'tester',
-  started_at: '2026-01-15T00:00:00Z',
-  finished_at: '2026-01-15T00:00:01Z',
-  created_at: '2026-01-15T00:00:00Z',
-}
-
-async function mountView(overview = OVERVIEW, jobs = [JOB]) {
+async function mountView(overview = OVERVIEW) {
   setActivePinia(createPinia())
   ;(fetchDataQualityOverview as ReturnType<typeof vi.fn>).mockResolvedValue(overview)
-  ;(listDataImportJobs as ReturnType<typeof vi.fn>).mockResolvedValue({
-    items: jobs,
-    total: jobs.length,
-    page: 1,
-    pageSize: 15,
-    totalPages: 1,
-  })
   ;(listQualityAssignees as ReturnType<typeof vi.fn>).mockResolvedValue([
     { id: 'a1', name: '质量负责人' },
   ])
@@ -142,7 +111,7 @@ async function mountView(overview = OVERVIEW, jobs = [JOB]) {
     updated_by: 'tester',
   })
   const wrapper = mount(AdminDataQualityView, {
-    global: { stubs: { Pagination: true, RouterLink: true } },
+    global: { stubs: { RouterLink: true } },
   })
   await flushPromises()
   return wrapper
@@ -153,38 +122,94 @@ describe('数据质量监控页', () => {
     vi.clearAllMocks()
   })
 
-  it('加载时请求概览与导入任务', async () => {
+  it('加载时只请求概览（导入任务已拆到独立 Tab）', async () => {
     await mountView()
     expect(fetchDataQualityOverview).toHaveBeenCalledTimes(1)
-    expect(listDataImportJobs).toHaveBeenCalledTimes(1)
   })
 
   it('展示严重 / 提醒汇总与需要关注的检查项', async () => {
     const wrapper = await mountView()
     const text = wrapper.text()
     expect(text).toContain('严重问题项')
-    expect(text).toContain('结果物品不存在于物品库')
-    expect(text).toContain('会导致断链。')
-    // 统计类不应出现在「需要关注」区域，但仍应出现在全量表格中
-    expect(text).toContain('物品总数')
+    expect(text).toContain('需要关注的检查项')
+    expect(text).toContain('2 项')
+
+    await wrapper.find('button[aria-controls="quality-issues-body"]').trigger('click')
+    expect(wrapper.text()).toContain('结果物品不存在于物品库')
+    expect(wrapper.text()).toContain('会导致断链。')
   })
 
-  it('渲染导入任务行并标注失败数与来源', async () => {
+  it('需要关注的检查项默认收起，展开后才渲染处理控件', async () => {
     const wrapper = await mountView()
-    const text = wrapper.text()
-    expect(text).toContain('seeds/items_demo.json')
-    expect(text).toContain('items')
-    expect(text).toContain('tester')
+    const toggle = wrapper.find('button[aria-controls="quality-issues-body"]')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('#quality-issues-body').exists()).toBe(false)
+    // 未展开时不渲染负责人下拉等重控件，减少首屏 DOM 与滚动长度
+    expect(wrapper.find('select[aria-label="问题负责人"]').exists()).toBe(false)
+
+    await toggle.trigger('click')
+    expect(wrapper.find('#quality-issues-body').exists()).toBe(true)
+    expect(wrapper.findAll('select[aria-label="问题负责人"]')).toHaveLength(2)
+
+    await wrapper.find('button[aria-controls="quality-issues-body"]').trigger('click')
+    expect(wrapper.find('#quality-issues-body').exists()).toBe(false)
+  })
+
+  it('全部检查项按分类默认收起，点击分类标题后展开该分类', async () => {
+    const wrapper = await mountView()
+    // 明细行默认不渲染：避免统计类检查项把页面拉得过长
+    expect(wrapper.text()).not.toContain('物品总数')
+    expect(wrapper.text()).toContain('物品资料库')
+    expect(wrapper.text()).toContain('2 项有命中')
+
+    const headers = wrapper.findAll('button[aria-controls^="quality-group-"]')
+    expect(headers).toHaveLength(2)
+    expect(headers.every((h) => h.attributes('aria-expanded') === 'false')).toBe(true)
+
+    await headers[0].trigger('click')
+    expect(wrapper.text()).toContain('物品总数')
+    // 只展开点击的分类，其它分类仍保持收起
+    expect(wrapper.findAll('button[aria-controls^="quality-group-"][aria-expanded="true"]')).toHaveLength(1)
+    expect(wrapper.findAll('button[aria-controls^="quality-group-"][aria-expanded="false"]')).toHaveLength(1)
+  })
+
+  it('支持一键展开全部 / 收起全部', async () => {
+    const wrapper = await mountView()
+    const expandAll = wrapper.findAll('button').find((b) => b.text() === '展开全部')
+    expect(expandAll).toBeTruthy()
+    await expandAll!.trigger('click')
+
+    expect(wrapper.findAll('button[aria-controls^="quality-group-"][aria-expanded="true"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('物品总数')
+    expect(wrapper.text()).toContain('结果物品不存在于物品库')
+
+    const collapseAll = wrapper.findAll('button').find((b) => b.text() === '收起全部')
+    expect(collapseAll).toBeTruthy()
+    await collapseAll!.trigger('click')
+    expect(wrapper.findAll('button[aria-controls^="quality-group-"][aria-expanded="false"]')).toHaveLength(2)
+    expect(wrapper.text()).not.toContain('物品总数')
+  })
+
+  it('质量概览的检查项分组与「需要关注」折叠互不影响', async () => {
+    const wrapper = await mountView()
+    // 展开「需要关注」
+    await wrapper.find('button[aria-controls="quality-issues-body"]').trigger('click')
+    expect(wrapper.find('#quality-issues-body').exists()).toBe(true)
+    // 分组折叠仍可独立操作
+    const groupHeader = wrapper.find('button[aria-controls^="quality-group-"]')
+    await groupHeader.trigger('click')
+    expect(wrapper.text()).toContain('物品总数')
+    expect(wrapper.find('#quality-issues-body').exists()).toBe(true)
   })
 
   it('无问题时给出明确的无问题提示', async () => {
-    const wrapper = await mountView({ generated_at: '2026-01-15T00:00:00Z', error_checks: 0, warning_checks: 0, checks: [check({ severity: 'info', count: 5 })] }, [])
+    const wrapper = await mountView({ generated_at: '2026-01-15T00:00:00Z', error_checks: 0, warning_checks: 0, checks: [check({ severity: 'info', count: 5 })] })
     expect(wrapper.text()).toContain('未发现需要处理的数据质量问题')
-    expect(wrapper.text()).toContain('暂无导入任务记录')
   })
 
   it('指派负责人时提交 check_key / 状态与实时快照条数', async () => {
     const wrapper = await mountView()
+    await wrapper.find('button[aria-controls="quality-issues-body"]').trigger('click')
     const select = wrapper.find('select[aria-label="问题负责人"]')
     expect(select.exists()).toBe(true)
     await select.setValue('a1')
@@ -220,6 +245,7 @@ describe('数据质量监控页', () => {
         }),
       ],
     })
+    await wrapper.find('button[aria-controls="quality-issues-body"]').trigger('click')
     expect(wrapper.text()).toContain('已解决')
     expect(wrapper.text()).toContain('重新打开')
     expect(wrapper.findAll('button').some((b) => b.text() === '标记已解决')).toBe(false)

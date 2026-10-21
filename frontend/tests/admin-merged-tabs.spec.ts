@@ -23,6 +23,7 @@ const stubs = {
   AdminCommunityView: { template: '<div data-test="community" />' },
   AdminCommentsView: { template: '<div data-test="comments" />' },
   AdminDataQualityView: { template: '<div data-test="quality" />' },
+  AdminDataImportJobsView: { template: '<div data-test="import-jobs" />' },
   AdminKeywordBlocklistView: { template: '<div data-test="keywords" />' },
   AdminLinkHealthView: { template: '<div data-test="links" />' },
   AdminAlertsView: { template: '<div data-test="alerts" />' },
@@ -95,12 +96,22 @@ describe('后台合并页 Tab', () => {
     expect(wrapper.find('[data-test="comments"]').exists()).toBe(true)
   })
 
-  it('内容健康：数据质量权限同时显示关键字屏蔽', async () => {
+  it('内容健康：数据质量权限同时显示数据导入任务与关键字屏蔽', async () => {
     const { wrapper } = await mountPage(AdminContentHealthView, '/admin/content-health', [
       'ops.dataquality',
     ])
-    expect(tabLabels(wrapper)).toEqual(['数据质量', '关键字屏蔽'])
+    expect(tabLabels(wrapper)).toEqual(['数据质量', '数据导入任务', '关键字屏蔽'])
     expect(wrapper.find('[data-test="quality"]').exists()).toBe(true)
+  })
+
+  it('内容健康：数据导入任务 Tab 可独立打开并同步 URL query', async () => {
+    const { wrapper, router } = await mountPage(
+      AdminContentHealthView,
+      '/admin/content-health?tab=jobs',
+      ['ops.dataquality'],
+    )
+    expect(wrapper.find('[data-test="import-jobs"]').exists()).toBe(true)
+    expect(router.currentRoute.value.query.tab).toBe('jobs')
   })
 
   it('内容健康：链接健康单独授权时默认链接 Tab', async () => {
