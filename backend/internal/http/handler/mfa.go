@@ -54,6 +54,7 @@ func (h *AuthHandler) MFAVerify(w http.ResponseWriter, r *http.Request) {
 				ObjectType: "admin",
 				SourceIP:   clientIP(r),
 				Result:     domain.AuditFailure,
+				After:      map[string]any{"user_agent": userAgent(r)},
 			})
 		}
 		switch {
@@ -80,6 +81,7 @@ func (h *AuthHandler) MFAVerify(w http.ResponseWriter, r *http.Request) {
 			ObjectID:     result.Admin.ID.String(),
 			SourceIP:     clientIP(r),
 			Result:       domain.AuditSuccess,
+			After:        map[string]any{"user_agent": userAgent(r)},
 		})
 	}
 	h.respondLogin(w, r, result)

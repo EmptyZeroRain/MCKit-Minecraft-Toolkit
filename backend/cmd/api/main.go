@@ -381,6 +381,8 @@ func registerRoutes(ctx context.Context, r chi.Router, gormDB *gorm.DB, collecto
 			protected.Post("/me", authHandler.Me)
 			// 会话管理：列出当前账号全部有效会话（只读）。
 			protected.Post("/sessions/list", authHandler.Sessions)
+			// 登录历史：当前账号最近的登录记录（设备 / IP / 时间，含失败尝试）。
+			protected.Post("/login-history", authHandler.LoginHistory)
 			// MFA 状态（只读，不含密钥材料）。
 			protected.Post("/mfa/status", authHandler.MFAStatus)
 			protected.Group(func(csrf chi.Router) {

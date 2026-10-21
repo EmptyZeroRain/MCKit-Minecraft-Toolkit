@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"mckit/backend/internal/audit"
@@ -125,5 +126,68 @@ func TestExportHonoursFiltersAndLimit(t *testing.T) {
 	}
 	if len(items) != 5 || truncated {
 		t.Fatalf("导出条数异常: len=%d truncated=%v", len(items), truncated)
+	}
+}
+
+// TestLoginHistoryScopesToAccount 「登录历史」只能看到本人的登录：
+//   - 本人的成功登录按 actor_admin_id 归集；
+//   - 失败登录没有 actor，只能按 after_summary.username 归集（撞库尝试也要可见）；
+//   - 其它账号的登录、非登录动作一律不出现。
+func TestLoginHistoryScopesToAccount(t *testing.T) {
+	gdb := setupAuditDB(t)
+	svc := audit.NewService(gdb)
+
+	me := uuid.MustParse("11111111-1111-1111-1111-111111111111").String()
+	other := uuid.MustParse("22222222-2222-2222-2222-222222222222").String()
+
+	// audit_logs.actor_admin_id 有外键（0022 起指向 accounts），先准备两个管理员账号。
+	for _, a := range []struct{ id, username string }{{me, "it-alice"}, {other, "it-bob"}} {
+		if err := gdb.Exec(
+			"INSERT INTO accounts (id, username, password_hash, role) VALUES (?, ?, ?, 'admin')",
+			a.id, a.username, "x",
+		).Error; err != nil {
+			t.Fatalf("准备管理员失败: %v", err)
+		}
+	}
+
+	seed := func(actor, action, result, ip, after string) {
+		t.Helper()
+		row := domain.AuditLog{
+			Action:        action,
+			ObjectType:    "admin",
+			Result:        result,
+			SourceIP:      ip,
+			BeforeSummary: "{}",
+			AfterSummary:  after,
+		}
+		if actor != "" {
+			id := uuid.MustParse(actor)
+			row.ActorAdminID = &id
+		}
+		if err := gdb.Create(&row).Error; err != nil {
+			t.Fatalf("写入登录审计失败: %v", err)
+		}
+	}
+
+	seed(me, "admin.login", domain.AuditSuccess, "198.51.100.10", `{"user_agent":"UA-OK"}`)
+	seed("", "admin.login", domain.AuditFailure, "198.51.100.11", `{"username":"alice","user_agent":"UA-FAIL"}`)
+	seed("", "admin.login", domain.AuditFailure, "198.51.100.12", `{"username":"bob","user_agent":"UA-OTHER"}`)
+	seed(other, "admin.login", domain.AuditSuccess, "198.51.100.13", `{}`)
+	seed(me, "resource.update", domain.AuditSuccess, "198.51.100.14", `{}`)
+
+	items, err := svc.LoginHistory(context.Background(), me, "alice", audit.LoginHistoryMax)
+	if err != nil {
+		t.Fatalf("查询登录历史失败: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("期望 2 条（本人成功 + 针对本人的失败），实际 %d 条: %+v", len(items), items)
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		ua, _ := it.AfterSummary["user_agent"].(string)
+		got[it.SourceIP] = ua
+	}
+	if got["198.51.100.10"] != "UA-OK" || got["198.51.100.11"] != "UA-FAIL" {
+		t.Fatalf("登录历史内容不符: %+v", got)
 	}
 }

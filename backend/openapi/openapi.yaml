@@ -1582,6 +1582,38 @@ paths:
                       total: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /admin/auth/login-history:
+    post:
+      tags: [admin-auth]
+      summary: 当前后台账号的登录历史
+      description: >
+        返回最近 50 次登录记录（成功与失败，按时间倒序），含登录设备
+        （登录时记录的 User-Agent）、来源 IP 与结果。仅需已登录，不要求
+        ops.audit 权限：接口强制限定为会话所属账号，不能查询他人。
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: 登录历史
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            created_at: { type: string, format: date-time }
+                            source_ip: { type: string, description: 来源 IP，可能为空 }
+                            user_agent: { type: string, description: 登录时的 User-Agent，历史数据可能为空 }
+                            result: { type: string, enum: [success, failure] }
+                            action: { type: string, description: "admin.login / admin.login.mfa" }
+                      total: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /admin/auth/sessions/revoke:
     post:
       tags: [admin-auth]

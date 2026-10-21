@@ -187,7 +187,7 @@ func (h *AuthHandler) loginAdmin(w http.ResponseWriter, r *http.Request, usernam
 				ObjectType: "admin",
 				SourceIP:   ip,
 				Result:     domain.AuditFailure,
-				After:      map[string]any{"username": username},
+				After:      map[string]any{"username": username, "user_agent": userAgent(r)},
 			})
 		}
 		if errors.Is(err, auth.ErrLocked) {
@@ -213,6 +213,7 @@ func (h *AuthHandler) loginAdmin(w http.ResponseWriter, r *http.Request, usernam
 				ObjectID:     result.Admin.ID.String(),
 				SourceIP:     ip,
 				Result:       domain.AuditSuccess,
+				After:        map[string]any{"user_agent": userAgent(r)},
 			})
 		}
 		response.OK(w, map[string]any{
@@ -230,6 +231,7 @@ func (h *AuthHandler) loginAdmin(w http.ResponseWriter, r *http.Request, usernam
 			ObjectID:     result.Admin.ID.String(),
 			SourceIP:     ip,
 			Result:       domain.AuditSuccess,
+			After:        map[string]any{"user_agent": userAgent(r)},
 		})
 	}
 
@@ -514,6 +516,19 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// maxUserAgentLength 写入审计的 User-Agent 长度上限。
+// UA 由客户端完全控制，不设上限会让人写入超长字符串撑大审计表。
+const maxUserAgentLength = 256
+
+// userAgent 提取并截断客户端 User-Agent（按字符截断，避免切坏多字节字符）。
+func userAgent(r *http.Request) string {
+	ua := strings.TrimSpace(r.UserAgent())
+	if runes := []rune(ua); len(runes) > maxUserAgentLength {
+		ua = string(runes[:maxUserAgentLength])
+	}
+	return ua
+}
+
 // sessionItem 会话列表项。
 //
 // 刻意不返回会话 ID 原文：会话 ID 就是 Cookie 中的 bearer 凭据，
@@ -557,6 +572,52 @@ func (h *AuthHandler) Sessions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	response.OK(w, map[string]any{"sessions": items, "total": len(items)})
+}
+
+// loginHistoryItem 登录历史条目。
+//
+// 只暴露登录本身的信息（时间 / IP / 设备 / 结果），不含变更前后摘要与请求 ID，
+// 因为该接口只要求「已登录」，不要求 ops.audit 权限。
+type loginHistoryItem struct {
+	CreatedAt string `json:"created_at"`
+	SourceIP  string `json:"source_ip"`
+	UserAgent string `json:"user_agent"`
+	Result    string `json:"result"`
+	Action    string `json:"action"`
+}
+
+// LoginHistory POST /api/v1/admin/auth/login-history
+//
+// 当前后台账号最近的登录记录（成功 + 失败），供「用户信息 → 登录历史」展示。
+// 登录时写入的 user_agent 从审计的 after_summary 里取出；历史数据没有该字段时为空，
+// 前端按「未知设备」展示。
+func (h *AuthHandler) LoginHistory(w http.ResponseWriter, r *http.Request) {
+	session := middleware.SessionFrom(r.Context())
+	if !isAdminSide(session) {
+		response.Unauthorized(w, r)
+		return
+	}
+	if h.audit == nil {
+		response.OK(w, map[string]any{"items": []loginHistoryItem{}, "total": 0})
+		return
+	}
+	logs, err := h.audit.LoginHistory(r.Context(), session.AccountID, session.Username, audit.LoginHistoryMax)
+	if err != nil {
+		response.HandleError(w, r, err)
+		return
+	}
+	items := make([]loginHistoryItem, 0, len(logs))
+	for _, l := range logs {
+		ua, _ := l.AfterSummary["user_agent"].(string)
+		items = append(items, loginHistoryItem{
+			CreatedAt: l.CreatedAt,
+			SourceIP:  l.SourceIP,
+			UserAgent: ua,
+			Result:    l.Result,
+			Action:    l.Action,
+		})
+	}
+	response.OK(w, map[string]any{"items": items, "total": len(items)})
 }
 
 // revokeSessionsRequest 撤销会话请求体。
