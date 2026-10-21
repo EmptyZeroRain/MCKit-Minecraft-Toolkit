@@ -122,24 +122,24 @@ describe('管理后台顶栏 · 用户菜单', () => {
     expect(authApi.logout).not.toHaveBeenCalled()
   })
 
-  it('点击「用户信息」跳转到用户信息页账号锚点', async () => {
+  it('点击「用户信息」跳转到用户信息页（默认 Tab）', async () => {
     const { wrapper, router } = await mountLayout()
     await openMenu(wrapper)
     const link = wrapper.findAll('[role="menuitem"]').find((b) => b.text() === '用户信息')!
     await link.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/admin/profile')
-    expect(router.currentRoute.value.hash).toBe('#account')
+    expect(router.currentRoute.value.hash).toBe('')
   })
 
-  it('点击「修改密码」跳转到用户信息页改密锚点', async () => {
+  it('点击「修改密码」跳转到用户信息页的修改密码 Tab', async () => {
     const { wrapper, router } = await mountLayout()
     await openMenu(wrapper)
     const link = wrapper.findAll('[role="menuitem"]').find((b) => b.text() === '修改密码')!
     await link.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/admin/profile')
-    expect(router.currentRoute.value.hash).toBe('#password')
+    expect(router.currentRoute.value.query.tab).toBe('password')
   })
 
   it('点击「退出登录」调用登出并回到统一登录页', async () => {

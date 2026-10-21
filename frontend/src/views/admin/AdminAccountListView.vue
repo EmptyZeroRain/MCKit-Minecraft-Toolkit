@@ -546,7 +546,7 @@ onMounted(async () => {
       </div>
 
       <div v-if="items.length" class="card overflow-x-auto">
-        <table class="w-full min-w-[1100px] text-left text-sm">
+        <table class="w-full min-w-[1200px] text-left text-sm">
           <thead class="border-b border-border-dark bg-ink-900 text-xs text-text-muted">
             <tr>
               <th scope="col" class="px-4 py-2.5">用户 ID</th>
@@ -555,9 +555,9 @@ onMounted(async () => {
               <th scope="col" class="px-4 py-2.5">状态</th>
               <th scope="col" class="px-4 py-2.5">最后登录</th>
               <th scope="col" class="px-4 py-2.5">注册</th>
-              <th scope="col" class="px-4 py-2.5 text-right">收藏</th>
-              <th scope="col" class="px-4 py-2.5 text-right">最近使用</th>
-              <th scope="col" class="px-4 py-2.5 text-right">常用种子</th>
+              <th scope="col" class="px-4 py-2.5">邮箱</th>
+              <th scope="col" class="px-4 py-2.5 text-right">礼物币</th>
+              <th scope="col" class="px-4 py-2.5 text-right">等级</th>
               <th scope="col" class="px-4 py-2.5 text-right">操作</th>
             </tr>
           </thead>
@@ -610,9 +610,11 @@ onMounted(async () => {
                 {{ item.last_login_at ? timeAgo(item.last_login_at) : '从未登录' }}
               </td>
               <td class="px-4 py-3 text-xs text-text-muted">{{ timeAgo(item.created_at) }}</td>
-              <td class="px-4 py-3 text-right text-text-secondary">{{ item.favorite_count }}</td>
-              <td class="px-4 py-3 text-right text-text-secondary">{{ item.recent_count }}</td>
-              <td class="px-4 py-3 text-right text-text-secondary">{{ item.seed_count }}</td>
+              <td class="max-w-[220px] truncate px-4 py-3 text-xs text-text-secondary" :title="item.email">
+                {{ item.email || '—' }}
+              </td>
+              <td class="px-4 py-3 text-right text-text-secondary">{{ item.gift_coins }}</td>
+              <td class="px-4 py-3 text-right text-text-secondary">Lv.{{ item.level }}</td>
               <td class="px-4 py-3">
                 <div class="flex justify-end gap-1.5 text-xs">
                   <button

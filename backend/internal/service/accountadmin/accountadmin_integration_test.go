@@ -10,6 +10,7 @@ import (
 	"mckit/backend/internal/domain"
 	db "mckit/backend/internal/repository"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -131,5 +132,62 @@ func TestLastAdminGuardIntegration(t *testing.T) {
 	}
 	if err := svc.Delete(ctx, a2.ID); err != nil {
 		t.Fatalf("保留一名启用 admin 后应允许删除，实际 %v", err)
+	}
+}
+
+// TestListMetaIntegration 校验列表附带的运营指标：
+//   - 邮箱取 accounts.email；
+//   - 礼物币为签到币 + 通用币之和，无钱包记录按 0；
+//   - 等级优先取后台覆盖值（level_override）。
+func TestListMetaIntegration(t *testing.T) {
+	gdb := setupAccountAdminDB(t)
+	ctx := context.Background()
+	svc := NewService(gdb)
+
+	alice, err := svc.Create(ctx, CreateInput{Username: "meta-alice", Password: "user-pass-123", Role: domain.RoleUser})
+	if err != nil {
+		t.Fatalf("创建 alice 失败: %v", err)
+	}
+	bob, err := svc.Create(ctx, CreateInput{Username: "meta-bob", Password: "user-pass-123", Role: domain.RoleUser})
+	if err != nil {
+		t.Fatalf("创建 bob 失败: %v", err)
+	}
+	if err := gdb.Model(&domain.Account{}).Where("id = ?", alice.ID).
+		Update("email", "alice@example.com").Error; err != nil {
+		t.Fatalf("写入邮箱失败: %v", err)
+	}
+	if err := gdb.Create(&domain.GiftWallet{
+		UserID:         uuid.MustParse(alice.ID),
+		GeneralBalance: 100,
+		CheckinBalance: 20,
+	}).Error; err != nil {
+		t.Fatalf("创建钱包失败: %v", err)
+	}
+	override := 7
+	for _, g := range []domain.UserGrowth{
+		{UserID: uuid.MustParse(alice.ID), Level: 3},
+		{UserID: uuid.MustParse(bob.ID), Level: 1, LevelOverride: &override},
+	} {
+		if err := gdb.Create(&g).Error; err != nil {
+			t.Fatalf("创建成长记录失败: %v", err)
+		}
+	}
+
+	items, total, err := svc.List(ctx, ListFilter{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("查询列表失败: %v", err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("期望 2 个账号，实际 total=%d len=%d", total, len(items))
+	}
+	byName := map[string]Item{}
+	for _, it := range items {
+		byName[it.Username] = it
+	}
+	if a := byName["meta-alice"]; a.Email != "alice@example.com" || a.GiftCoins != 120 || a.Level != 3 {
+		t.Fatalf("alice 运营指标不符：%+v", a)
+	}
+	if b := byName["meta-bob"]; b.Email != "" || b.GiftCoins != 0 || b.Level != 7 {
+		t.Fatalf("bob 运营指标不符：%+v", b)
 	}
 }

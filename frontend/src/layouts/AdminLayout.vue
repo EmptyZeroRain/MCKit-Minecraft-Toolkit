@@ -136,7 +136,7 @@ onBeforeUnmount(() => {
             </button>
             <RouterLink
               role="menuitem"
-              to="/admin/profile#account"
+              to="/admin/profile"
               class="flex w-full items-center px-3 py-2 text-left text-xs text-text-secondary transition hover:bg-ink-700 hover:text-text-primary"
               @click="closeMenu"
             >
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
             </RouterLink>
             <RouterLink
               role="menuitem"
-              to="/admin/profile#password"
+              to="/admin/profile?tab=password"
               class="flex w-full items-center px-3 py-2 text-left text-xs text-text-secondary transition hover:bg-ink-700 hover:text-text-primary"
               @click="closeMenu"
             >

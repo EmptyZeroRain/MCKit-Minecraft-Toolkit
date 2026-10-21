@@ -301,7 +301,7 @@ func (h *AccountAdminHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"用户ID", "用户名", "角色", "状态", "注册时间", "最后登录", "收藏数", "最近使用数", "常用种子数"})
+	_ = cw.Write([]string{"用户ID", "用户名", "角色", "状态", "注册时间", "最后登录", "邮箱", "礼物币", "等级"})
 	for _, it := range items {
 		last := ""
 		if it.LastLoginAt != nil {
@@ -314,9 +314,9 @@ func (h *AccountAdminHandler) Export(w http.ResponseWriter, r *http.Request) {
 			statusLabel(it.IsActive),
 			it.CreatedAt.UTC().Format(time.RFC3339),
 			last,
-			strconv.FormatInt(it.FavoriteCount, 10),
-			strconv.FormatInt(it.RecentCount, 10),
-			strconv.FormatInt(it.SeedCount, 10),
+			csvSafe(it.Email),
+			strconv.FormatInt(it.GiftCoins, 10),
+			strconv.Itoa(it.Level),
 		})
 	}
 	cw.Flush()

@@ -131,19 +131,24 @@ type ListFilter struct {
 	PageSize int
 }
 
-// Item 列表条目：账号基础信息 + 个人数据计数。
+// Item 列表条目：账号基础信息 + 运营常用指标（礼物币、等级）。
+//
+// 列表只放「识别账号 / 判断状态 / 运营常用」的字段：收藏、最近使用、常用种子
+// 属于个人内容明细，放在详情抽屉里查看，不占列表列。
 type Item struct {
-	ID            string     `json:"id"`
-	UserNo        string     `json:"user_no"`
-	Username      string     `json:"username"`
-	Nickname      string     `json:"nickname"`
-	Role          string     `json:"role"`
-	IsActive      bool       `json:"is_active"`
-	LastLoginAt   *time.Time `json:"last_login_at"`
-	CreatedAt     time.Time  `json:"created_at"`
-	FavoriteCount int64      `json:"favorite_count"`
-	RecentCount   int64      `json:"recent_count"`
-	SeedCount     int64      `json:"seed_count"`
+	ID          string     `json:"id"`
+	UserNo      string     `json:"user_no"`
+	Username    string     `json:"username"`
+	Nickname    string     `json:"nickname"`
+	Email       string     `json:"email"`
+	Role        string     `json:"role"`
+	IsActive    bool       `json:"is_active"`
+	LastLoginAt *time.Time `json:"last_login_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	// GiftCoins 礼物币总余额（签到币 + 通用币）；无钱包记录为 0。
+	GiftCoins int64 `json:"gift_coins"`
+	// Level 有效成长等级；后台覆盖值优先于自动计算值。
+	Level int `json:"level"`
 }
 
 // FavoriteItem 收藏明细。
@@ -250,7 +255,7 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Item, int64, error)
 		return nil, 0, err
 	}
 
-	items, err := s.attachCounts(ctx, accounts)
+	items, err := s.attachMeta(ctx, accounts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -267,7 +272,7 @@ func (s *Service) Export(ctx context.Context, f ListFilter) ([]Item, bool, error
 	if truncated {
 		accounts = accounts[:exportMax]
 	}
-	items, err := s.attachCounts(ctx, accounts)
+	items, err := s.attachMeta(ctx, accounts)
 	if err != nil {
 		return nil, false, err
 	}
@@ -482,7 +487,7 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateInput) (*Item,
 		s.revokeSessions(ctx, id)
 	}
 
-	items, err := s.attachCounts(ctx, []domain.Account{*result})
+	items, err := s.attachMeta(ctx, []domain.Account{*result})
 	if err != nil {
 		return nil, err
 	}
@@ -645,21 +650,17 @@ func (s *Service) listQuery(ctx context.Context, f ListFilter) *gorm.DB {
 	return tx
 }
 
-// attachCounts 批量补齐个人数据计数，避免 N+1。
-func (s *Service) attachCounts(ctx context.Context, accounts []domain.Account) ([]Item, error) {
+// attachMeta 批量补齐列表运营指标（礼物币余额、成长等级），避免 N+1。
+func (s *Service) attachMeta(ctx context.Context, accounts []domain.Account) ([]Item, error) {
 	ids := make([]uuid.UUID, 0, len(accounts))
 	for _, a := range accounts {
 		ids = append(ids, a.ID)
 	}
-	favCounts, err := countByUserIDs(ctx, s.db, &domain.UserFavorite{}, ids)
+	walletBalances, err := giftBalances(ctx, s.db, ids)
 	if err != nil {
 		return nil, err
 	}
-	recCounts, err := countByUserIDs(ctx, s.db, &domain.UserRecent{}, ids)
-	if err != nil {
-		return nil, err
-	}
-	seedCounts, err := countByUserIDs(ctx, s.db, &domain.UserSeed{}, ids)
+	levels, err := growthLevels(ctx, s.db, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -668,20 +669,67 @@ func (s *Service) attachCounts(ctx context.Context, accounts []domain.Account) (
 	for _, a := range accounts {
 		key := a.ID.String()
 		items = append(items, Item{
-			ID:            key,
-			UserNo:        a.UserNo,
-			Username:      a.Username,
-			Nickname:      a.Nickname,
-			Role:          a.Role,
-			IsActive:      a.IsActive,
-			LastLoginAt:   a.LastLoginAt,
-			CreatedAt:     a.CreatedAt,
-			FavoriteCount: favCounts[key],
-			RecentCount:   recCounts[key],
-			SeedCount:     seedCounts[key],
+			ID:          key,
+			UserNo:      a.UserNo,
+			Username:    a.Username,
+			Nickname:    a.Nickname,
+			Email:       a.Email,
+			Role:        a.Role,
+			IsActive:    a.IsActive,
+			LastLoginAt: a.LastLoginAt,
+			CreatedAt:   a.CreatedAt,
+			GiftCoins:   walletBalances[key],
+			Level:       levels[key],
 		})
 	}
 	return items, nil
+}
+
+// giftBalances 批量查询礼物币余额；没有钱包记录的账号视为 0。
+//
+// 0041 起钱包拆成签到币 / 通用币两类，列表展示两者之和（总持有量），
+// 具体构成仍以「礼物与成长」页的明细为准。
+func giftBalances(ctx context.Context, db *gorm.DB, ids []uuid.UUID) (map[string]int64, error) {
+	out := make(map[string]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		UserID  uuid.UUID `gorm:"column:user_id"`
+		Balance int64     `gorm:"column:balance"`
+	}
+	if err := db.WithContext(ctx).Table("gift_wallets").
+		Select("user_id, general_balance + checkin_balance AS balance").
+		Where("user_id IN ?", ids).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.UserID.String()] = r.Balance
+	}
+	return out, nil
+}
+
+// growthLevels 批量查询有效成长等级：后台覆盖值优先于自动计算的等级。
+func growthLevels(ctx context.Context, db *gorm.DB, ids []uuid.UUID) (map[string]int, error) {
+	out := make(map[string]int, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		UserID uuid.UUID `gorm:"column:user_id"`
+		Level  int       `gorm:"column:level"`
+	}
+	if err := db.WithContext(ctx).Table("user_growth").
+		Select("user_id, coalesce(level_override, level) AS level").
+		Where("user_id IN ?", ids).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.UserID.String()] = r.Level
+	}
+	return out, nil
 }
 
 // findAccountByID 按主键查询任意账号；非法 UUID 视为不存在。
@@ -742,29 +790,6 @@ const adminGuardLockKey int64 = 0x6d636b6974 // "mckit"
 // lockAdminGuard 在事务内获取咨询锁。
 func lockAdminGuard(tx *gorm.DB) error {
 	return tx.Exec("SELECT pg_advisory_xact_lock(?)", adminGuardLockKey).Error
-}
-
-// countByUserIDs 按 user_id 聚合计数；ids 为空时返回空表。
-func countByUserIDs(ctx context.Context, db *gorm.DB, model any, ids []uuid.UUID) (map[string]int64, error) {
-	out := make(map[string]int64, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-	var rows []struct {
-		UserID string
-		N      int64
-	}
-	if err := db.WithContext(ctx).Model(model).
-		Select("user_id::text AS user_id, count(*) AS n").
-		Where("user_id IN ?", ids).
-		Group("user_id").
-		Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		out[row.UserID] = row.N
-	}
-	return out, nil
 }
 
 // countByUserColumn 统计单个账号在指定表中的记录数。

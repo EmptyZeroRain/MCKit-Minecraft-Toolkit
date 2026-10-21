@@ -65,35 +65,37 @@ function makeRows(): AccountRow[] {
       user_no: 'UAB12CD34E',
       username: 'alice',
       nickname: '爱丽丝',
+      email: 'alice@example.com',
       role: 'user',
       is_active: true,
       last_login_at: null,
       created_at: '2026-10-01T00:00:00Z',
-      favorite_count: 2,
-      recent_count: 1,
-      seed_count: 3,
+      gift_coins: 120,
+      level: 3,
     },
     {
       id: 'a1',
       user_no: 'UZZ98YX76W',
       username: 'root',
       nickname: '',
+      email: 'root@example.com',
       role: 'admin',
       is_active: true,
       last_login_at: '2026-10-02T00:00:00Z',
       created_at: '2026-09-01T00:00:00Z',
-      favorite_count: 0,
-      recent_count: 0,
-      seed_count: 0,
+      gift_coins: 0,
+      level: 0,
     },
   ]
 }
 
 const detail: AccountDetail = {
   ...makeRows()[0],
-  email: 'alice@example.com',
   avatar_url: '',
   updated_at: '2026-10-01T00:00:00Z',
+  favorite_count: 1,
+  recent_count: 0,
+  seed_count: 0,
   favorites: [
     {
       id: 'f1',
@@ -202,6 +204,22 @@ describe('统一账号管理列表', () => {
     expect(cells[1][1]).toContain('root')
     expect(cells[0][2]).toContain('普通用户')
     expect(cells[1][2]).toContain('超级管理员')
+    // 列表聚焦账号本身：邮箱 / 礼物币 / 等级，不再展示收藏等个人内容计数。
+    expect(cells[0][6]).toBe('alice@example.com')
+    expect(cells[0][7]).toBe('120')
+    expect(cells[0][8]).toBe('Lv.3')
+    expect(wrapper.findAll('thead th').map((th) => th.text())).toEqual([
+      '用户 ID',
+      '用户名',
+      '角色',
+      '状态',
+      '最后登录',
+      '注册',
+      '邮箱',
+      '礼物币',
+      '等级',
+      '操作',
+    ])
 
     // 双权限下每行都有角色下拉。
     expect(wrapper.find('select[aria-label="修改 alice 的角色"]').exists()).toBe(true)

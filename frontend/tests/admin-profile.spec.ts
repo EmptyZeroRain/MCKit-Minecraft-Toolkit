@@ -54,13 +54,24 @@ async function mountView(user: Partial<AdminUser> = {}) {
 
   const wrapper = mount(AdminProfileView, { global: { plugins: [pinia, router] } })
   await flushPromises()
-  return { wrapper, auth }
+  return { wrapper, auth, router }
 }
 
 const MAC_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 const WINDOWS_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36 Edg/125.0'
+
+/** 切换到指定 Tab（按钮文案即标签）。 */
+async function openTab(
+  wrapper: Awaited<ReturnType<typeof mountView>>['wrapper'],
+  label: string,
+) {
+  const tab = wrapper.findAll('[role="tab"]').find((t) => t.text() === label)
+  expect(tab, `未找到 Tab：${label}`).toBeTruthy()
+  await tab!.trigger('click')
+  await flushPromises()
+}
 
 describe('用户信息页 · 页面结构', () => {
   beforeEach(() => {
@@ -77,17 +88,49 @@ describe('用户信息页 · 页面结构', () => {
     })
   })
 
-  it('只保留修改密码 / 双因子认证 / 登录历史三块', async () => {
+  it('以 Tab 组织：修改密码 / 双因子认证 / 登录历史', async () => {
     const { wrapper } = await mountView()
-    const text = wrapper.text()
-    expect(text).toContain('修改密码')
-    expect(text).toContain('双因子认证（MFA）')
-    expect(text).toContain('登录历史')
+    const tabs = wrapper.findAll('[role="tab"]').map((t) => t.text())
+    expect(tabs).toEqual(['修改密码', '双因子认证（MFA）', '登录历史'])
+
+    // 默认停在修改密码，其它两块内容不渲染。
+    expect(wrapper.find('#password').exists()).toBe(true)
+    expect(wrapper.find('#mfa').exists()).toBe(false)
+    expect(wrapper.find('#history').exists()).toBe(false)
+
     // 后台管理账号不再维护昵称 / 头像，也不展示会话指纹。
-    expect(text).not.toContain('用户信息')
-    expect(text).not.toContain('昵称')
+    expect(wrapper.text()).not.toContain('昵称')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
-    expect(text).not.toContain('会话指纹')
+    expect(wrapper.text()).not.toContain('会话指纹')
+  })
+
+  it('切换 Tab 同步到 URL query，且只渲染当前块', async () => {
+    const { wrapper, router } = await mountView()
+    await openTab(wrapper, '登录历史')
+
+    expect(wrapper.find('#history').exists()).toBe(true)
+    expect(wrapper.find('#password').exists()).toBe(false)
+    expect(router.currentRoute.value.query.tab).toBe('history')
+
+    await openTab(wrapper, '双因子认证（MFA）')
+    expect(wrapper.find('#mfa').exists()).toBe(true)
+    expect(router.currentRoute.value.query.tab).toBe('mfa')
+  })
+
+  it('进入 MFA / 登录历史 Tab 才发起各自请求', async () => {
+    const { wrapper } = await mountView()
+    // 默认在修改密码：两个只读接口都不该被调用。
+    expect(authApi.mfaStatus).not.toHaveBeenCalled()
+    expect(authApi.listLoginHistory).not.toHaveBeenCalled()
+
+    await openTab(wrapper, '双因子认证（MFA）')
+    expect(authApi.mfaStatus).toHaveBeenCalledTimes(1)
+
+    await openTab(wrapper, '登录历史')
+    expect(authApi.listLoginHistory).toHaveBeenCalledTimes(1)
+    // 来回切换不重复请求。
+    await openTab(wrapper, '双因子认证（MFA）')
+    expect(authApi.mfaStatus).toHaveBeenCalledTimes(1)
   })
 
   it('必须改密时展示提示', async () => {
@@ -129,6 +172,7 @@ describe('用户信息页 · 登录历史', () => {
     ])
 
     const { wrapper } = await mountView()
+    await openTab(wrapper, '登录历史')
     const text = wrapper.text()
     expect(text).toContain('203.0.113.9')
     expect(text).toContain('198.51.100.7')
@@ -150,12 +194,14 @@ describe('用户信息页 · 登录历史', () => {
       },
     ])
     const { wrapper } = await mountView()
+    await openTab(wrapper, '登录历史')
     expect(wrapper.text()).toContain('Edge · Windows')
   })
 
   it('刷新按钮重新拉取登录历史', async () => {
     authApi.listLoginHistory.mockResolvedValue([])
     const { wrapper } = await mountView()
+    await openTab(wrapper, '登录历史')
     expect(authApi.listLoginHistory).toHaveBeenCalledTimes(1)
 
     const refresh = wrapper.findAll('button').find((b) => b.text().includes('刷新'))
@@ -244,6 +290,7 @@ describe('用户信息页 · 双因子认证', () => {
       configured: false,
     })
     const { wrapper } = await mountView()
+    await openTab(wrapper, '双因子认证（MFA）')
     expect(wrapper.text()).toContain('服务端未配置 MFA 加密密钥')
     expect(wrapper.findAll('button').some((b) => b.text().includes('开始绑定'))).toBe(false)
   })
@@ -263,6 +310,7 @@ describe('用户信息页 · 双因子认证', () => {
     authApi.mfaEnable.mockResolvedValue(['AAAAA-BBBBB', 'CCCCC-DDDDD'])
 
     const { wrapper } = await mountView()
+    await openTab(wrapper, '双因子认证（MFA）')
     const start = wrapper.findAll('button').find((b) => b.text().includes('开始绑定'))
     await start!.trigger('click')
     await flushPromises()
@@ -299,6 +347,7 @@ describe('用户信息页 · 双因子认证', () => {
     authApi.mfaDisable.mockResolvedValue(undefined)
 
     const { wrapper } = await mountView()
+    await openTab(wrapper, '双因子认证（MFA）')
     expect(wrapper.text()).toContain('已启用')
     expect(wrapper.text()).toContain('剩余恢复码')
 

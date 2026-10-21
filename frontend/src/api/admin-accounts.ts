@@ -13,14 +13,16 @@ export interface AccountRow {
   user_no: string
   username: string
   nickname: string
+  email: string
   /** 角色标识：内置 user 为普通用户，其余为后台角色。 */
   role: string
   is_active: boolean
   last_login_at: string | null
   created_at: string
-  favorite_count: number
-  recent_count: number
-  seed_count: number
+  /** 礼物币余额（无钱包记录为 0） */
+  gift_coins: number
+  /** 有效成长等级（后台覆盖值优先） */
+  level: number
 }
 
 /** 收藏明细 */

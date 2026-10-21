@@ -2204,11 +2204,13 @@ paths:
   /admin/accounts/list:
     post:
       tags: [admin]
-      summary: 统一账号列表（普通用户与后台账号；含个人数据计数）
+      summary: 统一账号列表（普通用户与后台账号）
       description: |
         `scope` 为空表示全部（需同时具备两个权限点）；`admin` 仅后台账号；`user` 仅普通用户。
         仅具备单个权限点时自动收敛到对应范围，显式请求无权限范围返回 403。
         支持用户名 / 用户 ID 模糊匹配（`q`）与状态筛选（`status`）。
+        每条附带 `email` / `gift_coins` / `level`（邮箱、礼物币余额、有效成长等级，
+        等级优先取后台覆盖值）；收藏、最近使用、常用种子仅出现在详情接口。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]
       requestBody:
@@ -2381,7 +2383,7 @@ paths:
       tags: [admin]
       summary: 导出账号 CSV（按当前筛选，不分页）
       description: |
-        返回 `text/csv` 附件（UTF-8 BOM），列含用户ID / 用户名 / 角色 / 状态 / 注册时间 / 最后登录 / 个人数据计数。
+        返回 `text/csv` 附件（UTF-8 BOM），列含用户ID / 用户名 / 角色 / 状态 / 注册时间 / 最后登录 / 邮箱 / 礼物币 / 等级。
         单次导出上限 10000 条，超出时响应头 `X-Export-Truncated: true`。
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/CsrfToken" }]

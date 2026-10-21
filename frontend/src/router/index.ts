@@ -580,7 +580,7 @@ router.beforeEach(async (to) => {
     auth.user?.must_change_password &&
     to.path !== '/admin/profile'
   ) {
-    return { path: '/admin/profile', hash: '#password' }
+    return { path: '/admin/profile', query: { tab: 'password' } }
   }
 
   // 统一登录页：已登录用户按角色回到对应首页，避免重复登录。
