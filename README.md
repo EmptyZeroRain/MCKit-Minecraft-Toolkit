@@ -2,7 +2,7 @@
 
 面向 Minecraft Java 版玩家、整合包玩家、服务器管理者和 Mod 开发者的**工具与资源导航站**。非官方社区项目，不暗示 Mojang 或 Microsoft 背书；不重新分发任何 Minecraft 代码或字节码。
 
-技术栈：**Go 1.27 + Chi + GORM + PostgreSQL 16** · **Vue 3.5 + TypeScript + Vite 6 + Pinia + Tailwind CSS 4**
+技术栈：**Go 1.27 + Go-Chi + GORM + PostgreSQL 16** · **Vue 3.5 + TypeScript + Vite 6 + Pinia + Tailwind CSS 4**
 
 ![首页](./images/首页.png)
 
