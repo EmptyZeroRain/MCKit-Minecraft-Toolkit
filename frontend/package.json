@@ -15,7 +15,7 @@
     "@katana-project/zip": "^0.7.3",
     "axios": "^1.7.9",
     "comlink": "^4.4.2",
-    "echarts": "^5.6.0",
+    "echarts": "^6.1.0",
     "monaco-editor": "^0.56.0",
     "pinia": "^2.2.6",
     "vf-1.12.0": "npm:@run-slicer/vf@^0.6.4-1.12.0",
